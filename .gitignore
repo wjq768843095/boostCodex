@@ -1,0 +1,6 @@
+.dev/
+node_modules/
+*.log
+*.db*
+*.png
+.env*

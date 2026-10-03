@@ -1,0 +1,1 @@
+const lib=require('./lib.cjs');if(lib.read(require('node:path').join(lib.DEV,'activated.json'))){lib.validate();console.log('Sources validated; watcher handles application.');}else console.log(JSON.stringify({prepared:true,build:lib.bootstrap().current}));
