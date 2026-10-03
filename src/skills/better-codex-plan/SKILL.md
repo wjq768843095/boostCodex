@@ -29,9 +29,9 @@ metadata:
 
 ## 保存与转换
 
-调用 `project_plan_save` 保存计划草稿，传入 `project_id`、`thread_id`、读取时的 `expected_revision`，并按工具声明提供计划内容和所依赖的确认总纲修订。遇到冲突，重新读取并合并，不覆盖并发修改。将保存后的计划内容及范围变更交给用户审阅，不仅报告任务数量。
+调用当前可用的 `better_codex_project_plan_save` 或兼容的 `project_plan_save` 保存计划草稿，按工具声明传入读取时的 `expected_revision`、计划内容和所依赖的确认总纲修订；仅兼容工具需要明确的 `project_id`、`thread_id`。遇到冲突，重新读取并合并，不覆盖并发修改。将保存后的计划内容及范围变更交给用户审阅，不仅报告任务数量。
 
-用户明确选择需要转换的规划项后，调用 `project_plan_convert`，传入 `project_id`、`thread_id`、当前计划的 `expected_revision` 和选择的稳定任务编号 `item_ids`。授权必须对应当前计划；存在重大修订时需用户确认新内容。工具失败时报告实际状态，不宣称转换成功。重复请求应复用转换结果，避免重复创建任务。
+用户明确选择需要转换的规划项后，调用当前可用的计划转换工具，按声明传入当前计划的 `expected_revision` 和选择的稳定任务编号 `item_ids`；仅兼容的 `project_plan_convert` 需要明确的 `project_id`、`thread_id`。授权必须对应当前计划；存在重大修订时需用户确认新内容。工具失败时报告实际状态，不宣称转换成功。重复请求应复用转换结果，避免重复创建任务。
 
 总纲或计划更新不会自动覆盖已经转换的任务。只有用户明确选择更新其规划资料时，重新读取 `project_context_read` 的任务版本，使用 `action: update`，并在 `issue_versions` 中按规划项编号提供关联任务的当前版本。已开始执行的任务若拒绝修改，报告实际限制，不重建任务或改写其聊天。
 

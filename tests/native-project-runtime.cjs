@@ -182,6 +182,7 @@ async function run() {
     await assert.rejects(api('/api/project-tools/project_charter_save','POST',f.charterArgs('p1','work-p1',{expected_revision:3})),/session_thread_mismatch/);
     const payload = workPayload(store,store.getIssue(issue.id),f.roots[0],'现在开发',[{type:'text',text:'现在开发'}]);
     assert.equal(payload.native_defaults,true);assert.deepEqual(payload.root_paths,f.roots);
+    assert.equal(payload.dynamic_tools.length,5);assert(payload.dynamic_tools.every(tool=>tool.name.startsWith('better_codex_project_')));
     assert.ok(payload.message.includes('项目总纲版本：2'));assert.ok(payload.message.includes('规划项：deliver-login'));
     assert.ok(payload.message.includes('Web前端'));assert.ok(payload.message.includes('本地源码'));
     assert.ok(!payload.message.includes('外部目录'));
@@ -258,6 +259,16 @@ async function run() {
     const again = secondRestart.startSession('p4',{kind:'charter'});
     assert.equal(again.session.thread_id,'thread-without-first-turn');assert.equal(again.command,null);
     assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM project_native_commands WHERE project_id=?').get('p4').count,1);
+    secondRestart.planning.enqueueCommand({project_id:'p2',session_kind:'planning',kind:'start',expected_revision:0,
+      request_id:'retire-automatic-open',payload:{native_defaults:true,message:'previous generated opening prompt'}});
+    const migrated = createNativeProjectRuntime({store,worker:{wake(){throw Error('unexpected migration wake');}},home:f.home,userHome:f.userHome,codexHome:f.codexHome});
+    assert.equal(migrated.planning.getCommand('retire-automatic-open').status,'failed');
+    assert.equal(migrated.planning.getCommand('retire-automatic-open').payload.message,'previous generated opening prompt');
+    assert.equal(migrated.planning.listPendingCommands().length,0,'previous auto-opening requests must never be resent');
+    const migrationBackups=fs.readdirSync(path.join(f.home,'backups','native-conversations'));
+    assert(migrationBackups.length>0);
+    createNativeProjectRuntime({store,worker:{wake(){throw Error('unexpected migration wake');}},home:f.home,userHome:f.userHome,codexHome:f.codexHome});
+    assert.deepEqual(fs.readdirSync(path.join(f.home,'backups','native-conversations')),migrationBackups,'idempotent migration only backs up actual affected records once');
     assert.equal(state.dispatch,0);assert.equal(state.wake,0);
     console.log('PASS: native project runtime lifecycle, confirmation evidence, safe backlog conversion, pinned work payload and Skill API');
   } finally { f.cleanup(); }

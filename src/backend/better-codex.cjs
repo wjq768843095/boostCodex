@@ -59340,7 +59340,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
           AND issues.status NOT IN ('backlog', 'done')
           AND NOT EXISTS (SELECT 1 FROM native_conversation_operations WHERE native_conversation_operations.issue_id=issues.id AND status IN ('prepared','allocated','bound','outcome_unknown'))
           AND NOT EXISTS (SELECT 1 FROM issue_replies WHERE issue_replies.issue_id=issues.id AND status='running')
-          AND NOT EXISTS (SELECT 1 FROM issue_sessions WHERE issue_sessions.issue_id=issues.id AND active_turn_id IS NOT NULL)
+          AND NOT EXISTS (SELECT 1 FROM issue_sessions WHERE issue_sessions.issue_id=issues.id AND (active_turn_id IS NOT NULL OR status IN ('starting','active','stopping','waiting_on_approval','waiting_on_user')))
           AND (
             NOT EXISTS (
               SELECT 1 FROM session_commands
@@ -60039,6 +60039,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             }
           }
           const reply = this.getIssueReplyState(input.issueId);
+          if (this.db.prepare("SELECT 1 FROM native_conversation_operations WHERE issue_id=? AND status IN ('prepared','allocated','bound','outcome_unknown')").get(input.issueId)) throw new Error("issue_execution_running");
           if (!input.deferred && issue.active_run_status) throw new Error("issue_execution_running");
           if (!input.deferred && reply.status === "running" && reply.request_id !== input.requestId) throw new Error("reply_busy");
           if (input.deferred) {
@@ -60625,6 +60626,13 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
               last_error = NULL, updated_at = ?
           WHERE issue_id = ? AND thread_id = ?
         `).run(turnId ? "active" : "starting", turnId || null, command2.id, turnId || null, timestamp, command2.issue_id, threadId);
+          }
+          if ((command2.kind === "bind" || command2.kind === "start") && (this.db.prepare("SELECT 1 FROM issue_native_ownership WHERE issue_id=?").get(command2.issue_id) || this.getIssue(command2.issue_id)?.session_handoff_at)) {
+            const issue = this.getIssue(command2.issue_id);
+            const recorded = this.db.prepare("SELECT project_id,kind,issue_id,host_id,archived_at FROM native_conversation_bindings WHERE thread_id=?").get(threadId);
+            if (recorded && (recorded.project_id !== issue.project_id || recorded.kind !== "work" || recorded.issue_id !== issue.id || recorded.host_id !== command2.host_id || recorded.archived_at)) throw new Error("session_thread_mismatch");
+            if (this.db.prepare("SELECT 1 FROM project_native_sessions WHERE thread_id=?").get(threadId)) throw new Error("session_thread_mismatch");
+            this.db.prepare("INSERT OR IGNORE INTO native_conversation_bindings(thread_id,project_id,kind,issue_id,host_id,request_id,created_at) VALUES(?,?,'work',?,?,?,?)").run(threadId,issue.project_id,issue.id,command2.host_id,command2.request_id,timestamp);
           }
           this.db.prepare("UPDATE session_commands SET thread_id = ?, turn_id = ? WHERE id = ? AND status = 'claimed' AND relay_id = ?").run(threadId, turnId || null, commandId, relayId);
           if (command2.run_id) {
@@ -71562,7 +71570,7 @@ data: ${JSON.stringify({ revision })}
         const agentReasoningEfforts = [...new Set(agentModelCatalog.flatMap((model) => model.supportedReasoningEfforts.map((effort) => effort.value)))];
         const mockup = mockupEnabled ? readMockupState(mockupLocale) : null;
         if (!mockup) syncCodexProjects(store);
-        return sendJson(response, 200, { projects: projectSummaries(mockup ? mockup.projects : store.listProjects()), agents: mockup ? mockup.agents : visibleAgentProfiles(), statuses: issueStatuses, priorities: issuePriorities, appearance: readCodexAppearance(), hostTheme: readHostThemeInput(), locale: readCodexLocale(), user: readCodexUserProfile(), agentModelCatalog, agentModelCatalogError, agentModels, agentReasoningEfforts, autoDispatch: mockup ? mockup.auto_dispatch : store.getAutoDispatch(), schedulerModel: mockup ? mockup.scheduler_model : store.getSchedulerModel(defaultAgentProfile().model), schedulerReasoningEffort: mockup ? mockup.scheduler_reasoning_effort : store.getSchedulerReasoningEffort(), limits: { issue_description: maxIssueDescriptionLength }, mockup: mockupEnabled, native_planning_enabled: !mockupEnabled, skills: projectRuntime.skills.list(), featureManifest: featureManifest() });
+        return sendJson(response, 200, { projects: projectSummaries(mockup ? mockup.projects : store.listProjects()), agents: mockup ? mockup.agents : visibleAgentProfiles(), statuses: issueStatuses, priorities: issuePriorities, appearance: readCodexAppearance(), hostTheme: readHostThemeInput(), locale: readCodexLocale(), user: readCodexUserProfile(), agentModelCatalog, agentModelCatalogError, agentModels, agentReasoningEfforts, autoDispatch: mockup ? mockup.auto_dispatch : store.getAutoDispatch(), schedulerModel: mockup ? mockup.scheduler_model : store.getSchedulerModel(defaultAgentProfile().model), schedulerReasoningEffort: mockup ? mockup.scheduler_reasoning_effort : store.getSchedulerReasoningEffort(), limits: { issue_description: maxIssueDescriptionLength }, mockup: mockupEnabled, native_planning_enabled: !mockupEnabled, native_thread_bindings: mockupEnabled ? [] : projectRuntime.conversations.listBindings(), skills: projectRuntime.skills.list(), featureManifest: featureManifest() });
       }
       if (mockupEnabled && path[0] === "api" && path[1] === "scheduled-tasks") {
         if (method === "GET" && path.length === 2) return sendJson(response, 200, []);
@@ -73124,7 +73132,7 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
     path = typeof request2.path === "string" ? request2.path : "";
     method = typeof request2.method === "string" ? request2.method : "GET";
     traceId = typeof request2.traceId === "string" && /^[A-Za-z0-9_-]{8,200}$/.test(request2.traceId) ? request2.traceId : (0, import_node_crypto3.randomUUID)();
-    if (!requestId || request2.token !== accessToken3 || !/^\/api\/(?:bootstrap(?:[?]|$)|commands(?:[/?]|$)|profile(?:[?]|$)|scheduled-tasks(?:[/?]|$)|sessions(?:[/?]|$)|system\/(?:directories(?:\/create)?|directory)(?:[?]|$)|update(?:\/(?:install|check))?(?:[?]|$)|projects(?:[/?]|$)|issues(?:[/?]|$)|session-relay(?:[/?]|$)|agents(?:[/?]|$)|skills(?:[/?]|$)|project-tools(?:[/?]|$)|mockup\/(?:state|reset)(?:[?]|$)|settings\/auto-dispatch(?:[?]|$)|settings\/scheduler-model(?:[?]|$)|settings\/scheduler-reasoning-effort(?:[?]|$))/.test(path) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("invalid_bridge_request");
+    if (!requestId || request2.token !== accessToken3 || !/^\/api\/(?:bootstrap(?:[?]|$)|commands(?:[/?]|$)|profile(?:[?]|$)|scheduled-tasks(?:[/?]|$)|sessions(?:[/?]|$)|system\/(?:directories(?:\/create)?|directory)(?:[?]|$)|update(?:\/(?:install|check))?(?:[?]|$)|projects(?:[/?]|$)|issues(?:[/?]|$)|session-relay(?:[/?]|$)|agents(?:[/?]|$)|skills(?:[/?]|$)|project-tools(?:[/?]|$)|native-conversations(?:[/?]|$)|mockup\/(?:state|reset)(?:[?]|$)|settings\/auto-dispatch(?:[?]|$)|settings\/scheduler-model(?:[?]|$)|settings\/scheduler-reasoning-effort(?:[?]|$))/.test(path) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("invalid_bridge_request");
     const response = await fetch(`http://127.0.0.1:${runtimePort2}${path}`, {
       method,
       signal: AbortSignal.timeout(cdpCommandTimeoutMs),

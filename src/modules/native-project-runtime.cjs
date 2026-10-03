@@ -6,6 +6,7 @@ const { createProjectPlanning } = require('./project-planning.cjs');
 const { createManagedSkills } = require('./managed-skills.cjs');
 const { getWorkspaceContext } = require('./workspace-context.cjs');
 const { createNativeConversationRuntime, ensureConversationTables } = require('./native-conversation-runtime.cjs');
+const { nativeTools } = require('./project-mcp.cjs');
 
 function directoryBrief(workspace) {
   return workspace.workspaces.map(entry => `- ${entry.id}: ${entry.path}；职责：${entry.role === 'unknown' ? '待确认' : entry.role}；数据来源：${entry.source_of_truth === 'unknown' ? '待核对' : entry.source_of_truth}${entry.availability === 'available' ? '' : '（无法访问，待核对）'}`).join('\n');
@@ -244,7 +245,7 @@ function workPayload(store, issue, workspacePath, message, input) {
     ...(charter?.status === 'confirmed' ? [`项目总纲版本：${charter.revision}。按需使用 project_context_read 读取此版本的相关章节。${link ? `规划版本：${link.plan_revision}；规划项：${link.item_id}。` : ''}`] : [])].join('\n\n');
   const combined = context + '\n\n' + message;
   const original = input || [{ type: 'text', text: message }];
-  return { native_defaults: true, root_paths: workspace.root_paths, workspace_path: workspacePath,
+  return { native_defaults: true, dynamic_tools: nativeTools, root_paths: workspace.root_paths, workspace_path: workspacePath,
     title: `${issue.identifier} ${issue.title}`.trim().slice(0, 200), message: combined,
     input: [{ type: 'text', text: context + '\n\n' }, ...original, ...(skill?.path ? [{ type: 'skill', name: skill.slug || skill.name, path: skill.path }] : [])],
     config_fingerprint: JSON.stringify({ roots: workspace.root_paths, skill: skill?.id || '', version: skill?.version || 0, charter_revision: charter?.status === 'confirmed' ? charter.revision : 0 }) };

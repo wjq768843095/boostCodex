@@ -47,7 +47,13 @@ async function bridgeFixtures() {
     ['/api/skills/fixture-skill', 'PATCH', JSON.stringify({ version: 2, instructions: 'fixture' })],
     ['/api/skills/fixture-skill', 'DELETE', JSON.stringify({ version: 2 })],
     ['/api/project-tools/project_context_read', 'POST', JSON.stringify({ project_id: 'fixture-project' })],
-    ['/api/project-tools/project_plan_convert', 'POST', JSON.stringify({ project_id: 'fixture-project', item_ids: ['one'] })]
+    ['/api/project-tools/project_plan_convert', 'POST', JSON.stringify({ project_id: 'fixture-project', item_ids: ['one'] })],
+    ['/api/native-conversations/context?project_id=fixture-project&kind=charter&relay_id=fixture-relay&host_id=local', 'GET'],
+    ['/api/native-conversations/prepare', 'POST', JSON.stringify({ project_id: 'fixture-project', kind: 'charter', relay_id: 'fixture-relay', host_id: 'local', expected_revision: 0, request_id: 'fixture-request' })],
+    ['/api/native-conversations/bind', 'POST', JSON.stringify({ checkpoint: 'bound', thread_id: 'fixture-thread' })],
+    ['/api/native-conversations/receipt', 'POST', JSON.stringify({ status: 'accepted', turn_id: 'fixture-turn' })],
+    ['/api/native-conversations/tool', 'POST', JSON.stringify({ name: 'better_codex_project_context_read', arguments: {} })],
+    ['/api/native-conversations/restart', 'POST', JSON.stringify({ expected_revision: 1, explicit: true })]
   ]) {
     const before = requests.length;
     assert.deepEqual(await request(route, method, body === undefined ? {} : { body }), { ok: true, status: 200, value: { fixture: true } });
@@ -64,6 +70,8 @@ async function bridgeFixtures() {
     ['/unrelated/api/skills', {}],
     ['/api/skills-other', {}],
     ['/api/project-tools-other', {}],
+    ['/api/native-conversations-other', {}],
+    ['/api/native-conversations/context', { token: 'wrong-token' }],
     ['/api/remote-access/status', {}],
     ['/api/relay/status', {}],
     ['/api/sync/status', {}]

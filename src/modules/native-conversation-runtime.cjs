@@ -109,6 +109,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     return value;
   }
   function prepare(args) {
+    recoverStale();
     const value = target(args), auth = identity(args);
     if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 0) fail('invalid_expected_revision');
     const fingerprint = hash({ project_id: value.project.id, kind: value.kind, issue_id: value.issue?.id || null, host_id: auth.host_id, expected_revision: args.expected_revision, draft_generation: args.draft_generation });
@@ -203,6 +204,30 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     if (issue && nativeOwned(issue) && session.host_id === hostId) return {project_id:issue.project_id,kind:'work',issue_id:issue.id,thread_id:threadId,host_id:hostId};
     fail('native_binding_required');
   }
+  function listBindings() {
+    // Bootstrap exposes identity only. Current sessions remain authoritative;
+    // archived historical bindings must never redirect a normal native chat.
+    const result = new Map(), conflicts = new Set();
+    const recorded = new Map(db.prepare('SELECT * FROM native_conversation_bindings').all().map(row=>[row.thread_id,row]));
+    const add = (session,projectId,kind,issueId) => {
+      if (!session.thread_id || !store.getProject(projectId)) return;
+      const metadata=recorded.get(session.thread_id);
+      if (metadata && (metadata.archived_at || metadata.project_id!==projectId || metadata.kind!==kind || (metadata.issue_id || null)!==(issueId || null))) return;
+      const hostId=metadata?.host_id || session.host_id || 'local';
+      if (session.host_id && session.host_id!==hostId) return;
+      const value={thread_id:session.thread_id,host_id:hostId,project_id:projectId,kind,issue_id:issueId || null};
+      const key=hostId+':'+session.thread_id, previous=result.get(key);
+      if (conflicts.has(key)) return;
+      if (previous && (previous.project_id!==value.project_id || previous.kind!==value.kind || previous.issue_id!==value.issue_id)) {result.delete(key);conflicts.add(key);return;}
+      result.set(key,value);
+    };
+    for (const session of db.prepare('SELECT project_id,kind,thread_id FROM project_native_sessions').all()) add(session,session.project_id,session.kind,null);
+    if (hasTable('issue_sessions')) for (const session of db.prepare('SELECT issue_id,thread_id,host_id FROM issue_sessions').all()) {
+      const issue=store.getIssue(session.issue_id);
+      if (issue && !issue.archived_at && nativeOwned(issue)) add(session,issue.project_id,'work',issue.id);
+    }
+    return [...result.values()];
+  }
   async function tool(args) {
     const relayId = text(args.relay_id,'relay_id'), hostId = text(args.host_id,'host_id'), threadId = text(args.thread_id,'thread_id'), callId = text(args.call_id,'call_id');
     if (!store.nativeSessionProxyIsLeader(relayId)) fail('session_relay_not_leader');
@@ -215,7 +240,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const fingerprint = hash({threadId,hostId,name:args.name,input});
     const existing = db.prepare('SELECT * FROM native_conversation_tool_calls WHERE call_id=?').get(callId);
     if (existing) {
-      if (existing.fingerprint !== fingerprint || existing.relay_id !== relayId) fail('native_tool_call_conflict');
+      if (existing.fingerprint !== fingerprint) fail('native_tool_call_conflict');
       if (existing.status === 'completed') return JSON.parse(existing.result_json);
       fail(existing.error || 'native_tool_outcome_unknown');
     }
@@ -266,6 +291,6 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     } else {sendJson(response,404,{error:'not_found'});return true;}
     sendJson(response,200,result);return true;
   }
-  return {readContext,prepare,bind,receipt,tool,restart,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale};
+  return {readContext,prepare,bind,receipt,tool,restart,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings};
 }
 module.exports = {ensureConversationTables,createNativeConversationRuntime};

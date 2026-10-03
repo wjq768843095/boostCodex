@@ -1,0 +1,622 @@
+"use strict";
+// This adapter keeps the native composer and message renderer in their owning
+// React tree. It only coordinates native IPC and trusted project bindings.
+(function installNativeConversationAdapter(root) {
+  const HUB_KEY = "__betterCodexNativeConversationHub__";
+  const DRAFT_KEY = "better-codex-native-drafts-v1";
+  const PREFIX = "better_codex_";
+  const API_ROOT = "/api/native-conversations/";
+  const LOCAL = "local";
+  const toolNames = new Set([
+    "better_codex_project_context_read", "better_codex_project_charter_save",
+    "better_codex_project_charter_confirm", "better_codex_project_plan_save",
+    "better_codex_project_plan_convert"
+  ]);
+  const normalizePath = value => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase();
+  const targetKey = context => [context.project_id, context.kind, context.issue_id || ""].join(":");
+  const threadKey = (host, thread) => [host || LOCAL, thread].join(":");
+  const requestKey = (host, id) => JSON.stringify([host || LOCAL, id]);
+  const messageId = value => value?.message?.id ?? value?.response?.id;
+  const messageBody = value => value?.message || value?.response;
+  const errorText = error => String(error?.message || error || "原生会话暂时无法打开");
+  const uuid = () => root.crypto.randomUUID();
+
+  function flattenContext(value) {
+    const context = { ...(value?.context || {}), ...(value?.target || {}), ...(value || {}) };
+    delete context.context;
+    context.kind = context.kind || context.session_kind;
+    context.project_id = context.project_id || context.binding?.project_id || context.project?.id;
+    context.issue_id = context.issue_id || context.binding?.issue_id;
+    context.thread_id = context.thread_id || context.binding?.thread_id || "";
+    context.host_id = context.host_id || LOCAL;
+    context.cwd = context.cwd || context.workspace_path || "";
+    context.root_paths = Array.isArray(context.root_paths) && context.root_paths.length ? context.root_paths : [context.cwd].filter(Boolean);
+    context.mode = context.mode || (context.thread_id ? "thread" : "draft");
+    return context;
+  }
+
+  function responseError(request, message, code = -32000) {
+    return {
+      type: "mcp-response", hostId: request.hostId || LOCAL,
+      message: { id: request.request.id, error: { code, message } }
+    };
+  }
+
+  function toolsForThread(context, existing) {
+    const supplied = context.dynamic_tools || [];
+    if (!Array.isArray(supplied) || supplied.length !== toolNames.size) throw Error("项目资料工具暂时不可用");
+    const names = new Set();
+    for (const tool of supplied) {
+      if (!toolNames.has(tool.name) || names.has(tool.name) || !tool.inputSchema || typeof tool.description !== "string") throw Error("项目资料工具暂时不可用");
+      names.add(tool.name);
+    }
+    const native = Array.isArray(existing) ? existing : [];
+    if (native.some(tool => names.has(tool?.name))) throw Error("项目资料工具名称重复");
+    return [...native, ...supplied];
+  }
+
+  function ownDataFunction(value, name) {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(value, name);
+      return descriptor && "value" in descriptor && typeof descriptor.value === "function" && descriptor.writable === true;
+    } catch { return false; }
+  }
+
+  function nativeDispatcher(value) {
+    try {
+      const handlers = Object.getOwnPropertyDescriptor(value, "handlers");
+      const buffered = Object.getOwnPropertyDescriptor(value, "bufferedMessages");
+      if (!handlers || !(handlers.value instanceof Map) || !buffered || !(buffered.value instanceof Map)) return false;
+      let prototype = value;
+      while (prototype) {
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, "deliverOrBufferMessage");
+        if (descriptor) return typeof descriptor.value === "function" && descriptor.writable === true && typeof value.dispatchHostMessage === "function";
+        prototype = Object.getPrototypeOf(prototype);
+      }
+    } catch { /* Remote RPC stubs are not locally mutable host objects. */ }
+    return false;
+  }
+
+  function findNativeScope(predicate) {
+    const seen = new Set();
+    for (const element of root.document.querySelectorAll('[contenteditable],[data-app-shell-main-content-layout]')) {
+      if (element.hasAttribute?.("contenteditable") && element.getBoundingClientRect?.().width === 0) continue;
+      let parent = element;
+      while (parent) {
+        const key = Object.keys(parent).find(name => name.startsWith("__reactFiber$"));
+        let fiber = key ? parent[key] : null;
+        while (fiber && !seen.has(fiber)) {
+          seen.add(fiber);
+          let hook = fiber.memoizedState;
+          let limit = 0;
+          while (hook && typeof hook === "object" && limit++ < 128) {
+            const scope = hook.memoizedState?.current;
+            if (scope?.scope && typeof scope.get === "function" && typeof scope.set === "function" && predicate(scope)) return scope;
+            hook = hook.next;
+          }
+          fiber = fiber.return;
+        }
+        parent = parent.parentElement;
+      }
+    }
+    return null;
+  }
+
+  function nativeDraftAccess(namespace) {
+    // Source-managed capability profile for the installed native scope runtime.
+    // Each role is verified; a changed host fails closed instead of navigating
+    // to an unregistered worktree draft and leaving a permanently busy composer.
+    const descriptor = namespace.GJt;
+    const identity = namespace.Pyt;
+    const location = namespace.hbt;
+    const project = namespace.ZTt;
+    if (!descriptor?.__scopeBrand || identity?.scope !== descriptor || typeof location !== "function" || !project?.resolve) return null;
+    const draftLocation = location({ entrypoint: "home" });
+    if (draftLocation !== "new-conversation") return null;
+    const getScope = () => {
+      const scope = findNativeScope(scope => scope.scope === descriptor);
+      if (!scope || !/^client-new-thread:[a-z0-9-]+$/i.test(scope.get(identity, draftLocation) || "")) throw Error("当前 Codex 暂时不支持页内会话");
+      return scope;
+    };
+    return {
+      readDraft() { return getScope().get(identity, draftLocation); },
+      async waitForProject(context, current) {
+        for (let index = 0; index < 100; index++) {
+          if (!current()) return false;
+          if (findNativeScope(scope => scope.value?.routeKind === "home" && scope.value?.projectContext?.projectId === context.native_project_id)) return true;
+          await new Promise(resolve => root.setTimeout(resolve, 30));
+        }
+        throw Error("原生项目尚未就绪，请重新打开会话");
+      },
+      selectDraft(id, context) {
+        if (!/^client-new-thread:[a-z0-9-]+$/i.test(id || "")) throw Error("会话草稿资料已更新");
+        const scope = getScope();
+        if (context && !findNativeScope(scope => scope.value?.routeKind === "home" && scope.value?.projectContext?.projectId === context.native_project_id)) throw Error("原生项目尚未就绪，请重新打开会话");
+        // This is the same native identity atom/setter used by new-chat. Native
+        // prompt documents, Skills, images and attachment order stay in native
+        // retained ComposerScopes and native persisted drafts, without copying.
+        scope.set(identity, draftLocation, id);
+        if (scope.get(identity, draftLocation) !== id) throw Error("会话草稿暂时无法恢复");
+      }
+    };
+  }
+
+  async function loadInstalledHost() {
+    const scripts = [...root.document.querySelectorAll('script[type="module"][src]')];
+    for (const script of scripts) {
+      const entry = new URL(script.src, root.location.href);
+      if (entry.origin !== root.location.origin) continue;
+      const source = await (await root.fetch(entry.href)).text();
+      const sharedName = /["'`]([^"'`]*app-shared-[^"'`]+\.js)["'`]/.exec(source)?.[1];
+      if (!sharedName) continue;
+      const moduleUrl = new URL(sharedName, entry);
+      if (moduleUrl.origin !== entry.origin) continue;
+      const sharedSource = await (await root.fetch(moduleUrl.href)).text();
+      const namespace = await import(moduleUrl.href);
+      const values = Object.values(namespace);
+      // RPC proxies fabricate methods on property access. Require real writable
+      // own data properties instead of accidentally wrapping a remote stub.
+      const sender = values.find(value => value && ownDataFunction(value, "postMessage") && ownDataFunction(value, "getState") && ownDataFunction(value, "setState"));
+      const dispatcher = values.find(value => value && nativeDispatcher(value));
+      if (!sender || !dispatcher) continue;
+      const draftAccess = nativeDraftAccess(namespace);
+      return {
+        sender, dispatcher, moduleUrl: moduleUrl.href,
+        dynamicTools: sharedSource.includes("dynamic-tool-call-requested"),
+        prewarm: sharedSource.includes("thread-prewarm-start"),
+        draftIdentity: !!draftAccess, ...draftAccess
+      };
+    }
+    throw Error("当前 Codex 暂时不支持页内会话");
+  }
+
+  function readDraftIds(storage) {
+    try {
+      const value = JSON.parse(storage?.getItem(DRAFT_KEY) || "{}");
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    } catch { return {}; }
+  }
+
+  function createHub(host) {
+    const hub = {
+      host, clients: new Set(), threads: new Map(), requests: new Map(), calls: new Map(), pending: 0,
+      originalSend: host.sender.postMessage, originalDeliver: host.dispatcher.deliverOrBufferMessage,
+      released: false,
+      latestClient() { return [...this.clients].reverse().find(client => !client.disposed) || null; },
+      activeClient() { return [...this.clients].reverse().find(client => client.ownsCurrentDraft()) || null; },
+      send(message) { return Reflect.apply(this.originalSend, this.host.sender, [message]); },
+      deliver(message) { return Reflect.apply(this.originalDeliver, this.host.dispatcher, [message]); },
+      release() {
+        if (this.clients.size || this.pending || this.requests.size) return;
+        if (this.host.sender.postMessage === this.sendWrapper) this.host.sender.postMessage = this.originalSend;
+        if (this.host.dispatcher.deliverOrBufferMessage === this.deliverWrapper) this.host.dispatcher.deliverOrBufferMessage = this.originalDeliver;
+        this.released = true;
+        if (root[HUB_KEY] === this) delete root[HUB_KEY];
+      },
+      run(promise) {
+        this.pending++;
+        Promise.resolve(promise).catch(error => this.latestClient()?.report(error)).finally(() => { this.pending--; this.release(); });
+      }
+    };
+
+    hub.sendWrapper = function wrappedNativeSend(message) {
+      const client = hub.activeClient();
+      const request = message?.request;
+      const method = request?.method;
+      if (client && message.source !== "better-codex" && message?.type === "thread-prewarm-start" && request?.method === "thread/start" && (message.hostId || LOCAL) === client.current.host_id && (client.isNavigating() || client.ownsNativeDraft() && client.matchesWorkspace(message))) {
+        // Native prewarming catches this error and drops only this reservation.
+        // Existing warm threads and other native projects remain untouched.
+        hub.deliver(responseError(message, "当前项目会话在发送后创建", -32001));
+        return;
+      }
+      if (client && message.source !== "better-codex" && message?.type === "mcp-request" && method === "thread/start" && (message.hostId || LOCAL) === client.current.host_id && !request.params?.ephemeral && request.params?.threadSource !== "mcp_extension_host") {
+        if (!client.ownsNativeDraft() || !client.matchesWorkspace(message)) {
+          hub.deliver(responseError(message, "当前项目会话尚未就绪，请重新打开会话"));
+          client.report(Error("当前项目会话尚未就绪，请重新打开会话"));
+        } else hub.run(client.beginThread(message));
+        return;
+      }
+      if (message?.type === "mcp-request" && method === "turn/start") {
+        const scope = hub.threads.get(threadKey(message.hostId, request.params?.threadId));
+        if (client && !client.current.thread_id && !scope) {
+          // A native warm reservation must never become a Better Codex binding.
+          hub.deliver(responseError(message, "当前会话尚未绑定，请重新发送"));
+          client.report(Error("当前会话尚未绑定，请重新发送"));
+          return;
+        }
+        if (scope && message.source !== "better-codex") { hub.run(beginTurn(hub, scope, message)); return; }
+      }
+      return hub.send(message);
+    };
+
+    hub.deliverWrapper = function wrappedNativeDeliver(message) {
+      if (message?.type === "new-chat" || message?.type === "navigate-to-route") {
+        for (const client of hub.clients) {
+          if (!client.current || client.isNavigating()) continue;
+          if (message.type === "new-chat" || !client.ownsRoute(message.path)) {
+            const origin = { ...client.current };
+            client.leave();
+            client.options.onNavigateAway?.(origin);
+          }
+        }
+      }
+      if (message?.type === "dynamic-tool-call-requested") {
+        const request = message.serverRequest;
+        const params = request?.params;
+        const name = params?.tool || params?.name;
+        if (typeof name === "string" && name.startsWith(PREFIX)) {
+          hub.run(handleTool(hub, message));
+          return;
+        }
+      }
+      if (message?.type === "mcp-response") {
+        const key = requestKey(message.hostId, messageId(message));
+        const pending = hub.requests.get(key);
+        if (pending) {
+          hub.requests.delete(key);
+          if (pending.timer) root.clearTimeout(pending.timer);
+          if (pending.type === "start") {
+            hub.run(pending.client.acceptThread(pending, message));
+            return;
+          }
+          if (pending.type === "turn") {
+            hub.run(acceptTurn(hub, pending, message));
+            return;
+          }
+        }
+      }
+      return hub.deliver(message);
+    };
+    host.sender.postMessage = hub.sendWrapper;
+    host.dispatcher.deliverOrBufferMessage = hub.deliverWrapper;
+    root[HUB_KEY] = hub;
+    return hub;
+  }
+
+  async function post(scope, endpoint, data) {
+    const client = scope.hub.latestClient() || scope.client;
+    const relayId = client.options.getRelayId?.() || scope.context.relay_id;
+    if (!relayId) throw Error("本地连接尚未就绪");
+    return client.options.api(API_ROOT + endpoint, {
+      method: "POST", body: JSON.stringify({ ...data, relay_id: relayId })
+    });
+  }
+
+  function operationIdentity(scope) {
+    return {
+      project_id: scope.context.project_id, kind: scope.context.kind,
+      ...(scope.context.issue_id ? { issue_id: scope.context.issue_id } : {}),
+      host_id: scope.context.host_id, request_id: scope.operation.request_id,
+      expected_revision: scope.operation.expected_revision ?? scope.context.expected_revision
+    };
+  }
+
+  async function receipt(scope, status, values = {}) {
+    if (!scope.operation) return;
+    return post(scope, "receipt", { ...operationIdentity(scope), thread_id: scope.context.thread_id || undefined, status, ...values });
+  }
+
+  async function beginTurn(hub, threadScope, message) {
+    const key = requestKey(message.hostId, message.request.id);
+    if (hub.requests.has(key)) return;
+    const scope = { ...threadScope, context: { ...threadScope.context }, operation: threadScope.awaitingFirstTurn ? threadScope.operation : null };
+    const pending = { type: "turn", scope, message };
+    hub.requests.set(key, pending);
+    try {
+      if (!scope.operation) {
+        const client = hub.latestClient() || scope.client;
+        const target = scope.context;
+        const query = new URLSearchParams({ project_id: target.project_id, kind: target.kind, relay_id: client.options.getRelayId?.() || target.relay_id, host_id: target.host_id });
+        if (target.issue_id) query.set("issue_id", target.issue_id);
+        const context = flattenContext({ ...target, ...await client.options.api(API_ROOT + "context?" + query) });
+        if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
+        scope.context = context;
+        const prepared = await post(scope, "prepare", {
+          project_id: context.project_id, kind: context.kind,
+          ...(context.issue_id ? { issue_id: context.issue_id } : {}),
+          host_id: context.host_id, request_id: uuid(), expected_revision: context.expected_revision,
+          draft_generation: context.draft_generation
+        });
+        scope.operation = prepared.operation;
+        if (scope.operation?.thread_id !== context.thread_id) throw Error("会话资料已更新，请重新打开会话");
+        const identity = { ...operationIdentity(scope), thread_id: context.thread_id };
+        await post(scope, "bind", { ...identity, checkpoint: "allocated" });
+        await post(scope, "bind", { ...identity, checkpoint: "bound" });
+      }
+      threadScope.awaitingFirstTurn = false;
+      pending.timer = root.setTimeout(() => {
+        if (hub.requests.get(key) !== pending) return;
+        hub.run(receipt(scope, "outcome_unknown", { error: "发送结果尚待核对" }));
+        (hub.latestClient() || scope.client).report(Error("发送结果尚待核对"), scope.context);
+      }, Math.max(15_000, Math.min(message.timeoutMs || 60_000, 120_000)) + 1_000);
+      hub.send(message);
+    } catch (error) {
+      hub.requests.delete(key);
+      if (scope.operation) try { await receipt(scope, "failed", { error: errorText(error) }); } catch { /* Surface the originating request failure. */ }
+      hub.deliver(responseError(message, errorText(error)));
+      (hub.latestClient() || scope.client).report(error, scope.context);
+    }
+  }
+
+  async function acceptTurn(hub, pending, message) {
+    const body = messageBody(message);
+    const scope = pending.scope;
+    const turnId = body?.result?.turn?.id;
+    try {
+      if (body?.error) await receipt(scope, "failed", { error: String(body.error.message || "发送失败") });
+      else await receipt(scope, "accepted", { turn_id: turnId });
+    } catch (error) { hub.latestClient()?.report(error); }
+    // The native UI owns delivery semantics. A receipt failure must not hide a
+    // turn which the server has already accepted, or trigger an automatic retry.
+    hub.deliver(message);
+    if (!body?.error) {
+      const client = hub.latestClient() || scope.client;
+      client.options.onTurn?.({ target: { ...scope.context }, context: { ...scope.context }, thread_id: scope.context.thread_id, turn_id: turnId });
+    }
+  }
+
+  async function handleTool(hub, message) {
+    const request = message.serverRequest;
+    const params = request?.params || {};
+    const name = params.tool || params.name;
+    const hostId = message.hostId || LOCAL;
+    const key = JSON.stringify([hostId, request?.id, params.threadId, params.callId, name, params.arguments]);
+    let response;
+    if (hub.calls.has(key)) response = await hub.calls.get(key);
+    else {
+      const work = (async () => {
+        try {
+          const client = hub.latestClient();
+          const scope = hub.threads.get(threadKey(hostId, params.threadId)) || (client && params.threadId ? { hub, client, context: { host_id: hostId, thread_id: params.threadId } } : null);
+          // A restored native thread need not have been opened through this UI
+          // process. The backend verifies the trusted server envelope against
+          // its durable host/thread binding before allowing any document write.
+          if (!scope || request?.method !== "item/tool/call" || !params.callId || !toolNames.has(name)) throw Error("项目资料工具无法确认当前会话");
+          const result = await post(scope, "tool", {
+            host_id: hostId, thread_id: params.threadId, call_id: params.callId,
+            ...(params.turnId ? { turn_id: params.turnId } : {}), name, arguments: params.arguments
+          });
+          if (result?.result?.contentItems) return result.result;
+          if (result?.contentItems) return result;
+          return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+        } catch (error) {
+          return { success: false, contentItems: [{ type: "inputText", text: errorText(error) }] };
+        }
+      })();
+      hub.calls.set(key, work);
+      response = await work;
+      // Keep a bounded replay cache for duplicate server envelopes.
+      if (hub.calls.size > 128) hub.calls.delete(hub.calls.keys().next().value);
+    }
+    hub.send({ type: "mcp-response", hostId, requestMethod: "item/tool/call", response: { id: request.id, result: response } });
+  }
+
+  function create(options) {
+    if (typeof options?.api !== "function") throw Error("Native conversation API is required");
+    let hub = null;
+    let host = null;
+    let hostPromise = null;
+    let navigationGeneration = 0;
+    let internalNavigation = 0;
+    let initialRoute = "";
+    let currentRoute = "";
+    let originalNativeDraft = "";
+    const drafts = readDraftIds(options.storage || root.sessionStorage);
+    const client = {
+      options, disposed: false, current: null,
+      report(error, origin = this.current) { options.onError?.(error instanceof Error ? error : Error(errorText(error)), origin ? { ...origin } : undefined); },
+      isNavigating() { return internalNavigation > 0; },
+      ownsNativeDraft() {
+        try { return !!host && !!this.current?.client_draft_id && host.readDraft() === this.current.client_draft_id; }
+        catch { return false; }
+      },
+      async ensureHost() {
+        if (this.disposed) throw Error("会话页面已关闭");
+        if (!hostPromise) hostPromise = Promise.resolve(options.host || loadInstalledHost());
+        host = await hostPromise;
+        if (!host.dynamicTools || !host.prewarm || !host.draftIdentity || typeof host.readDraft !== "function" || typeof host.selectDraft !== "function" || typeof host.sender?.postMessage !== "function" || typeof host.dispatcher?.deliverOrBufferMessage !== "function") throw Error("当前 Codex 暂时不支持页内会话");
+        host.readDraft();
+        if (!hub) {
+          const existing = root[HUB_KEY];
+          hub = existing && !existing.released && existing.host.sender === host.sender && existing.host.dispatcher === host.dispatcher ? existing : createHub(host);
+          hub.clients.add(this);
+        }
+        return host;
+      },
+      route() {
+        const actual = options.getActiveRoute?.() || (root.location.pathname + root.location.search);
+        // Electron also hosts the native memory router at /index.html.
+        return /^\/index\.html(?:\?|$)/.test(actual) && currentRoute ? currentRoute : actual || currentRoute;
+      },
+      ownsCurrentDraft() {
+        if (this.disposed || !this.current || this.current.mode !== "draft") return false;
+        if (options.isCurrentContext && !options.isCurrentContext(this.current)) return false;
+        return internalNavigation > 0 || this.ownsRoute(this.route());
+      },
+      ownsRoute(route) {
+        if (!this.current) return false;
+        const supplied = String(route || "");
+        const path = /^\/index\.html(?:\?|$)/.test(supplied) && currentRoute ? currentRoute : supplied;
+        const context = this.current;
+        if (context.thread_id && path.split("?")[0] === "/local/" + encodeURIComponent(context.thread_id)) return true;
+        if (context.thread_id && path.split("?")[0] === "/local/" + context.thread_id) return true;
+        try {
+          const url = new URL(path, "https://codex.local");
+          return url.pathname === "/projects" && !!context.native_project_id && url.searchParams.get("projectId") === context.native_project_id;
+        } catch { return false; }
+      },
+      matchesWorkspace(message) {
+        if ((message.hostId || LOCAL) !== this.current.host_id) return false;
+        const cwd = message.request?.params?.cwd;
+        return cwd == null || normalizePath(cwd) === normalizePath(this.current.cwd);
+      },
+      async navigate(path, state) {
+        currentRoute = path;
+        if (options.navigate) return options.navigate(path, state);
+        host.dispatcher.dispatchHostMessage({ type: "navigate-to-route", path, ...(state ? { state } : {}) });
+        if (typeof options.afterNavigate === "function") await options.afterNavigate(path);
+        else await new Promise(resolve => root.setTimeout(resolve, 40));
+      },
+      draftId(context) {
+        const key = targetKey(context) + ":" + (context.draft_generation ?? context.binding?.generation ?? "0");
+        let id = drafts[key];
+        if (typeof id !== "string" || !/^client-new-thread:[a-z0-9-]+$/i.test(id)) {
+          id = "client-new-thread:" + uuid();
+          drafts[key] = id;
+          try { (options.storage || root.sessionStorage)?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* Native draft still remains in this mounted adapter. */ }
+        }
+        return id;
+      },
+      async open(value, restored) {
+        const generation = ++navigationGeneration;
+        const context = flattenContext(value);
+        if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id) throw Error("项目会话资料不完整");
+        const previous = this.current;
+        this.current = context;
+        if (!initialRoute) initialRoute = this.route();
+        if (context.mode === "legacy_busy" || context.mode === "handoff_required") return { mode: context.mode, context: { ...context }, capabilities: this.capabilities() };
+        try {
+          await this.ensureHost();
+          if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
+          if (!context.thread_id && context.pending_operation && ["allocated", "outcome_unknown", "prepared"].includes(context.pending_operation.status)) throw Error("上次会话连接尚待核对，请恢复后再发送");
+          if (context.thread_id) {
+            const scope = { hub, client: this, context: { ...context }, operation: null };
+            hub.threads.set(threadKey(context.host_id, context.thread_id), scope);
+            internalNavigation++;
+            try { await this.navigate("/local/" + encodeURIComponent(context.thread_id)); }
+            finally { internalNavigation--; }
+          } else {
+            const restoreDraft = restored && targetKey(restored) === targetKey(context) && (restored.draft_generation ?? 0) === (context.draft_generation ?? 0) && /^client-new-thread:[a-z0-9-]+$/i.test(restored.client_draft_id || "");
+            context.client_draft_id = restoreDraft ? restored.client_draft_id : this.draftId(context);
+            if (!context.native_project_id) throw Error("该项目尚未关联到 Codex 项目");
+            const draftRoute = "/projects?projectId=" + encodeURIComponent(context.native_project_id);
+            if (previous?.client_draft_id === context.client_draft_id && this.route() === draftRoute && host.readDraft() === context.client_draft_id) return { mode: "draft", context: { ...context }, capabilities: this.capabilities() };
+            internalNavigation++;
+            try {
+              // Project selection supplies native projectId and prevents the
+              // host from consuming a projectless warm reservation of this cwd.
+              await this.navigate(draftRoute);
+              if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
+              if (host.waitForProject && !await host.waitForProject(context, () => generation === navigationGeneration && !this.disposed)) return { cancelled: true };
+              if (!originalNativeDraft) originalNativeDraft = host.readDraft();
+              host.selectDraft(context.client_draft_id, context);
+            } finally { internalNavigation--; }
+          }
+          return { mode: context.mode, context: { ...context }, capabilities: this.capabilities() };
+        } catch (error) {
+          this.report(error, context);
+          return { mode: "unavailable", context: { ...context }, error: errorText(error), capabilities: this.capabilities() };
+        }
+      },
+      async beginThread(message) {
+        const context = { ...this.current };
+        const scope = { hub, client: this, context, operation: null };
+        const nativeKey = requestKey(message.hostId, message.request.id);
+        if (hub.requests.has(nativeKey)) return;
+        const inProgress = [...hub.requests.values()].find(value => value.type === "start" && targetKey(value.scope.context) === targetKey(context));
+        if (inProgress) { hub.deliver(responseError(message, "当前会话正在连接")); return; }
+        // Reserve before awaiting HTTP so two native sends cannot prepare two
+        // operations or allocate two native threads for the same target.
+        const pending = { type: "start", scope, client: this, message, timer: null };
+        hub.requests.set(nativeKey, pending);
+        try {
+          const requestId = uuid();
+          const prepared = await post(scope, "prepare", {
+            project_id: context.project_id, kind: context.kind,
+            ...(context.issue_id ? { issue_id: context.issue_id } : {}),
+            host_id: context.host_id, request_id: requestId, expected_revision: context.expected_revision,
+            draft_generation: context.draft_generation
+          });
+          scope.operation = prepared.operation;
+          if (!scope.operation?.request_id || scope.operation.thread_id) throw Error("上次会话连接尚待核对，请恢复后再发送");
+          scope.context = { ...context, dynamic_tools: prepared.dynamic_tools || context.dynamic_tools };
+          if (this.disposed || !this.current || targetKey(this.current) !== targetKey(context) || !this.ownsCurrentDraft()) throw Error("会话页面已切换，请回到原页面发送");
+          const params = { ...message.request.params, cwd: context.cwd, runtimeWorkspaceRoots: [...context.root_paths], dynamicTools: toolsForThread(scope.context, message.request.params?.dynamicTools) };
+          const outgoing = { ...message, request: { ...message.request, params } };
+          pending.timer = root.setTimeout(() => {
+            if (hub.requests.get(nativeKey) !== pending) return;
+            hub.run(receipt(scope, "outcome_unknown", { error: "会话连接结果尚待核对" }));
+            this.report(Error("会话连接结果尚待核对"), context);
+          }, Math.max(15_000, Math.min(message.timeoutMs || 60_000, 120_000)) + 1_000);
+          hub.send(outgoing);
+        } catch (error) {
+          hub.requests.delete(nativeKey);
+          if (scope.operation) try { await receipt(scope, "failed", { error: errorText(error) }); } catch { /* Failure is already surfaced by the native request. */ }
+          hub.deliver(responseError(message, errorText(error)));
+          this.report(error, context);
+        }
+      },
+      async acceptThread(pending, message) {
+        const scope = pending.scope;
+        const body = messageBody(message);
+        if (body?.error) {
+          try { await receipt(scope, "failed", { error: String(body.error.message || "连接失败") }); } catch (error) { this.report(error); }
+          hub.deliver(message);
+          return;
+        }
+        const threadId = body?.result?.thread?.id;
+        try {
+          if (!threadId) throw Error("原生会话未返回会话编号");
+          scope.context.thread_id = threadId;
+          const identity = { ...operationIdentity(scope), thread_id: threadId };
+          await post(scope, "bind", { ...identity, checkpoint: "allocated" });
+          const bound = await post(scope, "bind", { ...identity, checkpoint: "bound" });
+          scope.context = { ...scope.context, binding: bound.binding, mode: "thread" };
+          scope.awaitingFirstTurn = true;
+          hub.threads.set(threadKey(scope.context.host_id, threadId), scope);
+          if (!this.disposed && this.current && targetKey(this.current) === targetKey(scope.context)) {
+            this.current = { ...this.current, ...scope.context };
+          }
+          const receiver = hub.latestClient() || this;
+          receiver.options.onBound?.({ target: { ...scope.context }, context: { ...scope.context }, thread_id: threadId, binding: bound.binding, operation: bound.operation });
+          // Native's thread/start continuation sends the original rich input.
+          // Delivering only after both checkpoints is the binding/send barrier.
+          hub.deliver(message);
+        } catch (error) {
+          try { await receipt(scope, threadId ? "outcome_unknown" : "failed", { thread_id: threadId, error: errorText(error) }); } catch { /* Keep the original failure. */ }
+          hub.deliver(responseError(pending.message, errorText(error)));
+          this.report(error, scope.context);
+        }
+      },
+      leave() {
+        navigationGeneration++;
+        if (host && originalNativeDraft && this.current?.client_draft_id) {
+          try { if (host.readDraft() === this.current.client_draft_id) host.selectDraft(originalNativeDraft); } catch { /* Native navigation may have already disposed its scope. */ }
+        }
+        this.current = null; currentRoute = ""; originalNativeDraft = "";
+      },
+      destroy() {
+        if (this.disposed) return;
+        this.leave(); this.disposed = true;
+        if (hub) { hub.clients.delete(this); hub.release(); }
+      },
+      capture() {
+        return this.current ? {
+          project_id: this.current.project_id, kind: this.current.kind,
+          ...(this.current.issue_id ? { issue_id: this.current.issue_id } : {}),
+          thread_id: this.current.thread_id, client_draft_id: this.current.client_draft_id,
+          draft_generation: this.current.draft_generation, route: this.route()
+        } : null;
+      },
+      restore(value, snapshot) { return this.open(value, snapshot); },
+      getCurrentContext() { return this.current ? { ...this.current } : null; },
+      capabilities() {
+        return {
+          available: !!host && host.dynamicTools === true && host.prewarm === true && host.draftIdentity === true,
+          native_composer: !!host, dynamic_tools: host?.dynamicTools === true,
+          scoped_prewarm: host?.prewarm === true, isolated_native_drafts: host?.draftIdentity === true
+        };
+      }
+    };
+    return {
+      connect: client.ensureHost.bind(client),
+      mount: client.open.bind(client), open: client.open.bind(client),
+      leave: client.leave.bind(client), destroy: client.destroy.bind(client),
+      capture: client.capture.bind(client), restore: client.restore.bind(client),
+      capabilities: client.capabilities.bind(client), ownsRoute: client.ownsRoute.bind(client),
+      getCurrentContext: client.getCurrentContext.bind(client)
+    };
+  }
+
+  root.BetterCodexNativeConversation = Object.freeze({ create });
+})(typeof window !== "undefined" ? window : globalThis);

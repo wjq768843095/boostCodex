@@ -81,6 +81,12 @@ for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePers
   assert.deepEqual(http.filter(item => item.url.endsWith('/checkpoint')).map(item => item.body.result), [{ thread_id: 'fixture-thread' }, { thread_id: 'fixture-thread', turn_id: 'fixture-turn' }]);
   assert.deepEqual(opened, ['fixture-thread']);
   assert.equal(context.relayThreads.has('fixture-thread'), true);
+  const workRequests = requests.length;
+  const dynamicTools = [{ name: 'better_codex_project_context_read', description: 'Read task architecture', inputSchema: { type: 'object', properties: {} } }];
+  await context.executeSessionCommand({ id: 'fixture-work-command', kind: 'start', scope: 'issue', issue_id: 'fixture-work', payload: { ...injected, dynamic_tools: dynamicTools, message: 'Explicit task instruction' } });
+  const explicitWork = requests.slice(workRequests);
+  assert.deepEqual(explicitWork[0], { method: 'thread/start', params: { cwd: 'D:\\workspace', runtimeWorkspaceRoots: ['D:\\workspace', 'E:\\backend'], dynamicTools } });
+  assert(!Object.hasOwn(explicitWork.find(item => item.method === 'turn/start').params, 'dynamicTools'), 'thread tools must not be sent as turn settings');
   const userMessage = plain(context.nativeUserMessage({ id: 'confirmation-message', type: 'userMessage', content: [{ type: 'text', text: 'Confirm'.repeat(1000) }, { type: 'image', url: 'private' }, { type: 'text', text: 'extra' }] }));
   assert.equal(userMessage.id, 'confirmation-message');
   assert.equal(userMessage.content.length, 1);

@@ -159,12 +159,9 @@ try {
       write(path.join(templateDir, id, 'SKILL.md'), source);
     }
     const upgradeStore = createManagedSkills({ db: upgradeDb, home: upgradeHome, userHome: upgradeUser, templatesDir: templateDir });
-    const previousCharter = templates['better-codex-charter'].body
-      .replace('工具中的确认参数是 `message_id`，取自 `project_context_read` 返回的 `confirmation_candidates[].event_id`；不得虚构消息标识或仅凭助手回复确认。\n\n', '')
-      .replace('保存目录证据时，保留正文的 `directories` 章节，并在总纲的 `metadata.workspace_map` 中用数组格式镜像项目已经关联的目录：每项包含原始 `path`、经证据核实的职责 `role` 和权威性质 `source_of_truth`。权威性质可以说明本地源码、线上映射、快照或 `unknown`；职责或权威尚不明确时使用 `unknown` 并列为待确认。仅使用 `project_context_read` 返回的已关联目录，按规范真实路径对应，不增加目录、不扩大读取或写入范围、不更改权限；关联目录缺失时保留其原路径和待核对状态，不把快照自动认定为线上权威。\n\n', '');
-    const previousPlan = templates['better-codex-plan'].body
-      .replace('用户明确选择需要转换的规划项后，调用 `project_plan_convert`，传入 `project_id`、`thread_id`、当前计划的 `expected_revision` 和选择的稳定任务编号 `item_ids`。', '用户明确授权把当前计划转为任务后，调用 `project_plan_convert`，传入 `project_id`、`thread_id`、当前计划的 `expected_revision` 和工具声明要求的实际用户消息标识。')
-      .replace('总纲或计划更新不会自动覆盖已经转换的任务。只有用户明确选择更新其规划资料时，重新读取 `project_context_read` 的任务版本，使用 `action: update`，并在 `issue_versions` 中按规划项编号提供关联任务的当前版本。已开始执行的任务若拒绝修改，报告实际限制，不重建任务或改写其聊天。\n\n', '');
+    // Fixed shipped bodies keep adoption tests independent of current Skill wording.
+    const previousCharter = fs.readFileSync(path.join(__dirname, 'fixtures', 'skills', 'better-codex-charter-initial.md'), 'utf8').trim();
+    const previousPlan = fs.readFileSync(path.join(__dirname, 'fixtures', 'skills', 'better-codex-plan-initial.md'), 'utf8').trim();
     assert.notEqual(previousCharter, templates['better-codex-charter'].body);
     assert.notEqual(previousPlan, templates['better-codex-plan'].body);
     // Emulate the previously shipped DB: old default bodies, no template-hash settings.
