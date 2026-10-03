@@ -38,7 +38,24 @@ async function main() {
   const project = (projects.projects||projects).find(entry=>path.resolve(entry.workspace_path||'').toLowerCase()===lib.ROOT.toLowerCase());
   assert.ok(project,'current project must exist');
   let ui;
-  await cdp('window.__bcAcceptanceSavedView=window.__betterCodexInjection__.captureReloadState();true');
+  await cdp(`(()=>{
+    window.__bcAcceptanceSavedView=window.__betterCodexInjection__.captureReloadState();
+    const seen=new Set();
+    for(const element of document.querySelectorAll('.ProseMirror')){
+      if(element.getBoundingClientRect().width<1)continue;
+      for(let node=element;node;node=node.parentElement){
+        const key=Object.keys(node).find(name=>name.startsWith('__reactFiber$'));
+        let fiber=key&&node[key];
+        while(fiber&&!seen.has(fiber)){
+          seen.add(fiber);const values=[fiber.memoizedProps?.value];let hook=fiber.memoizedState;
+          for(let index=0;hook&&typeof hook==='object'&&index<100;index++,hook=hook.next)values.push(hook.memoizedState?.current);
+          for(const scope of values)if(typeof scope?.value?.routeKind==='string'&&scope.value.pathname){window.__bcAcceptanceNativeRoute=scope.value.pathname+(scope.value.search||'');return true;}
+          fiber=fiber.return;
+        }
+      }
+    }
+    return true;
+  })()`);
   try {
     ui = await cdp(`(async()=>{
       const api=window.__betterCodexInjection__,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -50,6 +67,7 @@ async function main() {
       await sleep(150);
       await wait(()=>{if(api.captureReloadState().nativeConversation?.adapterSnapshot?.project_id===${JSON.stringify(project.id)})return true;const button=document.querySelector('[data-project-dashboard-view="planning"]');if(button)button.click();return false;});
       await wait(()=>api.captureReloadState().nativeConversation?.adapterSnapshot?.project_id===${JSON.stringify(project.id)}&&!document.querySelector('.better-codex-inline-status')?.textContent);
+      window.__bcAcceptanceNativeHost=window.__betterCodexNativeConversationHub__?.host;
       const inline=document.querySelector('#better-codex-native-conversation');
       if(inline.querySelector('.better-codex-inline-details').hidden)inline.querySelector('[data-inline-details]').click();
       const center=nativeLayout(),editor=center?.querySelector('.ProseMirror[contenteditable="true"]'),detail=inline.querySelector('.better-codex-inline-details');
@@ -89,7 +107,7 @@ async function main() {
       assert.equal(ui.planningReload.nativeComposerVisible,true,'real native composer remains visible after reload');
     }
   } finally {
-    await cdp('(async()=>{const saved=window.__bcAcceptanceSavedView;delete window.__bcAcceptanceSavedView;delete window.__bcAcceptancePlanningView;delete window.__bcAcceptanceSkillView;if(saved)await window.__betterCodexInjection__.restoreReloadState(saved);return true;})()');
+    await cdp('(async()=>{const saved=window.__bcAcceptanceSavedView,route=window.__bcAcceptanceNativeRoute,host=window.__bcAcceptanceNativeHost;delete window.__bcAcceptanceSavedView;delete window.__bcAcceptancePlanningView;delete window.__bcAcceptanceSkillView;delete window.__bcAcceptanceNativeRoute;delete window.__bcAcceptanceNativeHost;if(saved)await window.__betterCodexInjection__.restoreReloadState(saved);if(!saved?.open&&route&&host)host.dispatcher.dispatchHostMessage({type:"navigate-to-route",path:route});return true;})()');
   }
   assert.equal(ui.ready,true,'UI ready: '+JSON.stringify({error:ui.error,layout:ui.layout}));assert.equal(ui.error,null,'UI bootstrap');
   assert.equal(ui.planning.charter,true,'charter entry');assert.equal(ui.planning.planning,true,'planning entry');assert.equal(ui.planning.customChat,false,'custom chat removed');assert.equal(ui.planning.nativeComposer,true,'real native composer');assert.equal(ui.planning.nativeLayout,true,'native layout retained');assert.equal(ui.planning.details,true,'project documents beside native chat');

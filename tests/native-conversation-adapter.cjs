@@ -58,7 +58,7 @@ function fixture(config = {}) {
   }
   const reloadSource = () => vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
   reloadSource();
-  const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':') + (context.kind !== 'work' && context.conversation_id ? ':conversation:' + encodeURIComponent(context.conversation_id) : '');
+  const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':') + (context.kind !== 'work' && context.conversation_id ? ':conversation:' + encodeURIComponent(context.conversation_id) : '') + (context.history_id ? ':history:' + encodeURIComponent(context.history_id) : '');
   const context = (overrides = {}) => ({ project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides });
   const remember = value => { records.set(key(value), value); return value; };
   const api = async (url, options) => {
@@ -67,7 +67,7 @@ function fixture(config = {}) {
     if (config.api) { const answer = await config.api(url, body); if (answer !== undefined) return answer; }
     if (url.includes('/context?')) {
       const query = new URL(url, 'http://fixture.invalid').searchParams;
-      return records.get(key({ project_id: query.get('project_id'), kind: query.get('kind'), issue_id: query.get('issue_id'), conversation_id: query.get('conversation_id') }));
+      return records.get(key({ project_id: query.get('project_id'), kind: query.get('kind'), issue_id: query.get('issue_id'), conversation_id: query.get('conversation_id'), history_id: query.get('history_id') }));
     }
     if (url.endsWith('/prepare')) {
       const known = records.get(key(body));
@@ -107,6 +107,81 @@ function fixture(config = {}) {
 }
 
 (async () => {
+  {
+    const f = fixture();
+    const current = f.remember(f.context({ kind: 'work', issue_id: 'task-one', mode: 'thread', thread_id: 'current-task-thread' }));
+    const history = f.remember(f.context({ kind: 'work', issue_id: 'task-one', history_id: 'history-one', mode: 'thread', thread_id: 'old-task-thread', read_only: true }));
+    const opened = await f.adapter.open({ ...history, history_id: undefined, target: { history_id: history.history_id } });
+    assert.equal(opened.mode, 'thread'); assert.equal(opened.context.read_only, true);
+    assert.equal(f.adapter.capture().history_id, history.history_id, 'historical route survives source reload independently of the current task');
+    assert.equal(f.nativeRoute(), '/local/old-task-thread');
+    f.adapter.registerBindings([current, { ...history, read_only: false }]);
+    assert.equal(f.root.__betterCodexNativeConversationHub__.threads.get('local:old-task-thread').context.history_id, history.history_id, 'bootstrap cannot turn visible history into an editable current binding');
+    const blocked = f.send('turn/start', { threadId: history.thread_id, input: [{ type: 'text', text: 'must stay unsent' }] }, 'history-send');
+    f.send('thread/start', { cwd: history.cwd }, 'history-create');
+    await tick();
+    assert.equal(f.sent.length, 0); assert.equal(f.http.length, 0, 'historical send and thread creation are rejected before prepare or native send');
+    assert.ok(f.delivered.some(value => value.message?.id === blocked.request.id && value.message.error));
+    const ordinary = f.send('turn/start', { threadId: 'ordinary-thread', input: [] }, 'ordinary-while-history');
+    assert.equal(f.sent.at(-1), ordinary, 'unrelated ordinary conversations retain native send semantics');
+    f.dispatcher.deliverOrBufferMessage({ type: 'dynamic-tool-call-requested', hostId: 'local', serverRequest: { id: 'history-tool', method: 'item/tool/call', params: { threadId: history.thread_id, callId: 'old-tool', tool: 'better_codex_project_plan_save', arguments: {} } } });
+    await settle(() => f.sent.some(value => value.response?.id === 'history-tool'));
+    assert.equal(f.http.length, 0, 'history dynamic tools never write project material');
+    assert.equal(f.sent.find(value => value.response?.id === 'history-tool').response.result.success, false);
+    const snapshot = f.adapter.capture(); f.adapter.destroy(); f.reloadSource();
+    const replacement = f.root.BetterCodexNativeConversation.create(f.options);
+    await replacement.restore(history, snapshot);
+    assert.equal(replacement.capture().history_id, history.history_id);
+    assert.equal(replacement.getCurrentContext().thread_id, history.thread_id);
+    await replacement.open(current);
+    assert.equal(f.root.__betterCodexNativeConversationHub__.threads.has('local:old-task-thread'), false, 'switching away removes the historical view-only hook from ordinary native navigation');
+    f.send('turn/start', { threadId: current.thread_id, input: [] }, 'current-after-history');
+    await settle(() => f.http.some(value => value.url.endsWith('/prepare')));
+    assert.equal(f.http.find(value => value.url.endsWith('/prepare')).body.history_id, undefined);
+    await settle(() => f.sent.some(value => value.request?.id === 'current-after-history'));
+    f.reply('current-after-history', { turn: { id: 'current-turn' } }); await settle(() => f.turns.length === 1);
+    replacement.destroy(); console.log('PASS: native historical work scope, reload identity, readonly send/tool barrier and writable current conversation isolation');
+  }
+  {
+    const f = fixture();
+    const planning = f.remember(f.context({ kind: 'planning', conversation_id: 'plan-locked', mode: 'thread', thread_id: 'planning-thread', read_only: true, planning_available: false }));
+    await f.adapter.open(planning); f.adapter.registerBindings([planning]);
+    f.send('turn/start', { threadId: planning.thread_id, input: [] }, 'planning-locked-send');
+    assert.equal(f.http.length, 0); assert.equal(f.sent.length, 0);
+    const confirmed = f.remember({ ...planning, read_only: false, planning_available: true });
+    f.adapter.registerBindings([confirmed]);
+    assert.equal(f.adapter.updateContext(confirmed), true);
+    assert.equal(f.adapter.getCurrentContext().read_only, false);
+    assert.equal(f.root.__betterCodexNativeConversationHub__.threads.get('local:planning-thread').context.read_only, false);
+    f.send('turn/start', { threadId: planning.thread_id, input: [] }, 'planning-confirmed-send');
+    await settle(() => f.sent.length === 1); f.reply('planning-confirmed-send', { turn: { id: 'confirmed-turn' } }); await settle(() => f.turns.length === 1);
+    const requests = f.http.length;
+    f.remember(planning); assert.equal(f.adapter.updateContext(planning), true);
+    f.send('turn/start', { threadId: planning.thread_id, input: [] }, 'planning-revised-send');
+    assert.equal(f.http.length, requests); assert.equal(f.sent.length, 1, 'a charter revision locks the selected planning thread again without navigation or allocation');
+    assert.equal(f.adapter.updateContext({ ...confirmed, conversation_id: 'different-plan' }), false, 'late foreign context cannot unlock the selected conversation');
+    f.adapter.destroy(); console.log('PASS: authoritative planning confirmation and revision update readonly bidirectionally without route or thread changes');
+  }
+  {
+    const f = fixture(); const history = f.context({ kind: 'work', issue_id: 'task', history_id: 'old', thread_id: 'old-native-thread', mode: 'thread', read_only: true });
+    await f.adapter.open(history);
+    f.dispatcher.deliverOrBufferMessage({ type: 'navigate-to-route', path: '/local/ordinary-thread' });
+    assert.equal(f.adapter.getCurrentContext(), null);
+    assert.equal(f.root.__betterCodexNativeConversationHub__.threads.has('local:old-native-thread'), false);
+    const message = f.send('turn/start', { threadId: history.thread_id, input: [] }, 'ordinary-outside-history');
+    assert.equal(f.sent.at(-1), message, 'history-view restrictions cease after normal native navigation leaves Better Codex');
+    f.adapter.destroy(); console.log('PASS: leaving historical workspace releases only historical scope while ordinary native navigation stays writable');
+  }
+  {
+    const f = fixture(); const history = f.context({ kind: 'work', issue_id: 'task', history_id: 'old', thread_id: 'old-native-thread', mode: 'thread', read_only: true });
+    await f.adapter.open(history);
+    assert.equal(f.adapter.ownsRoute('/projects?projectId='+history.native_project_id), false, 'bound history owns its thread route rather than native project home');
+    f.dispatcher.deliverOrBufferMessage({ type: 'navigate-to-route', path: '/projects?projectId='+history.native_project_id });
+    assert.equal(f.adapter.getCurrentContext(), null); assert.equal(f.away.length, 1);
+    const message = f.send('thread/start', { cwd: history.cwd }, 'ordinary-new-project-thread');
+    assert.equal(f.sent.at(-1), message); assert.equal(f.http.length, 0);
+    f.adapter.destroy(); console.log('PASS: native project navigation exits bound history and allows ordinary native conversation creation');
+  }
   {
     const f = fixture();
     const a = f.remember(f.context({ conversation_id: 'charter-a' }));

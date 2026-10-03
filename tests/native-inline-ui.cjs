@@ -12,7 +12,7 @@ function readFunction(name) {
   return source.slice(match.index, match.index + match[0].length + next.index);
 }
 const plain = value => JSON.parse(JSON.stringify(value));
-const http = [], hostActions = [], registeredBindings = [], acceptedRoutes = new Set();
+const http = [], hostActions = [], registeredBindings = [], adapterContextUpdates = [], acceptedRoutes = new Set();
 let hooks, desiredMode = 'draft', confirmed = true, binding = null;
 const adapter = {
   open: async response => { hostActions.push({ action: 'open', target: plain(response.target) }); const route = response.binding ? '/local/' + response.binding.thread_id : '/local/client-new-thread:' + response.target.project_id + ':' + response.target.kind + ':' + (response.target.issue_id || ''); acceptedRoutes.clear(); acceptedRoutes.add(route); ctx.location.pathname = route; ctx.location.search = ''; return { mode: response.mode }; },
@@ -20,6 +20,7 @@ const adapter = {
   restore: async (response, saved) => { hostActions.push({ action: 'restore', target: plain(response.target), saved }); acceptedRoutes.clear(); acceptedRoutes.add(ctx.location.pathname + ctx.location.search); return { mode: response.mode }; },
   ownsRoute: route => acceptedRoutes.has(route),
   registerBindings: bindings => registeredBindings.push(plain(bindings)),
+  updateContext: context => adapterContextUpdates.push(plain(context)),
   capture: () => ({ opaque: 'native-draft-state' })
 };
 const ctx = vm.createContext({
@@ -38,6 +39,8 @@ const ctx = vm.createContext({
     http.push({ url, method: options.method || 'GET' });
     if (url.endsWith('/conversation')) return { messages: [{ role: 'user', markdown: 'Historical request' }] };
     const query = new URLSearchParams(url.split('?')[1]);
+    if (url.includes('/list?') && query.get('kind') === 'work') return { conversations: [{ project_id: query.get('project_id'), kind: 'work', issue_id: 'work', title: 'Work task', source: 'current', status: 'todo' }] };
+    if (query.get('history_id')) return { mode: 'thread', read_only: true, thread_id: 'history-work-thread', binding: { thread_id: 'history-work-thread' }, target: { project_id: query.get('project_id'), kind: 'work', issue_id: query.get('issue_id'), history_id: query.get('history_id') }, context: { task: { id: query.get('issue_id'), title: 'Historical work' } } };
     return { mode: desiredMode, binding, expected_revision: 3, native_project_id: 'native-' + query.get('project_id'), planning_available: confirmed, context: { project: { id: query.get('project_id') }, charter: { revision: 2, status: confirmed ? 'confirmed' : 'draft' }, plan: { revision: 1, items: [] } } };
   },
   isBetterCodexRoute: () => false,
@@ -48,7 +51,7 @@ const ctx = vm.createContext({
   isNativeRailDestination: () => false, isSidebarNavigationTarget: () => false,
   closeAuxiliaryMenu() {}, openRoute() {}, close() {}
 });
-for (const name of ['inlineConversationKey', 'inlineConversationTarget', 'inlineConversationRouteAllowed', 'nativeInlineErrorLabel', 'ensureInlineConversationAdapter', 'registerInlineConversationBindings', 'inlineConversationQuery', 'reloadInlineConversationContext', 'openInlineConversation', 'openIssueNativeConversation', 'loadProjectNativeConversations', 'openProjectNativeSession', 'captureReloadState', 'restoreReloadState', 'isManagedNativeThread', 'onClick']) vm.runInContext(readFunction(name), ctx);
+for (const name of ['inlineConversationKey', 'inlineConversationTarget', 'inlineConversationRouteAllowed', 'nativeInlineErrorLabel', 'ensureInlineConversationAdapter', 'registerInlineConversationBindings', 'inlineConversationQuery', 'reloadInlineConversationContext', 'openInlineConversation', 'openIssueNativeConversation', 'loadProjectWorkConversations', 'openProjectWorkSession', 'loadProjectNativeConversations', 'openProjectNativeSession', 'captureReloadState', 'restoreReloadState', 'isManagedNativeThread', 'onClick']) vm.runInContext(readFunction(name), ctx);
 
 class NodeFixture {
   constructor(name) { this.name = name; this.children = []; this.attrs = new Map(); this.style = { values: new Map(), setProperty(name, value) { this.values.set(name, value); } }; this.listeners = {}; this.parentElement = null; this.appendCount = 0; this.innerHTML = ''; }
@@ -188,8 +191,9 @@ class NodeFixture {
   assert.equal(layoutCtx.panel.hasAttribute('data-better-codex-inline-shell'), true);
   layoutCtx.inlineConversation.target = { project_id: 'p1', kind: 'work', issue_id: 'work' };
   layoutCtx.mountInlineConversation(surface);
-  assert.equal(layoutCtx.panel.hidden, true, 'work conversations retain the existing task layout');
-  assert.equal(layoutCtx.inlineConversationRoot.parentElement, surface);
+  assert.equal(layoutCtx.panel.hidden, false, 'work conversations retain the Better Codex workspace shell');
+  assert.equal(layoutCtx.inlineConversationRoot.parentElement, layoutCtx.panel);
+  assert.equal(surface.children[0], native, 'opening work keeps the same native React layout mounted');
 
   class LifecycleNode {
     constructor(name) { this.name = name; this.children = []; this.dataset = {}; this.parentElement = null; this.isConnected = false; }
@@ -343,8 +347,9 @@ class NodeFixture {
     inlineConversationDetailsOpen: true, inlineConversationCompactDetailsOpen: false, inlineConversationWidth: 360, innerWidth: 1326,
     window: { matchMedia: () => ({ matches: compactWorkspace }) }, document: { documentElement: { style: new NodeFixture('html').style } },
     t: value => value, te: value => value, escapeHtml2: value => String(value), icon: name => '<i>' + name + '</i>', projectLabel: project => project.name,
+    statusLabels: { todo: '待办', backlog: '待规划', in_progress: '进行中', done: '已完成' },
     projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {} });
-  for (const name of ['inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
+  for (const name of ['inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineWorkDetailsMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
   renderCtx.renderInlineConversation();
   assert(projectColumn.innerHTML.includes('Project one') && projectColumn.innerHTML.includes('Project two'), 'four-column workspace uses Better Codex project data');
   assert(conversationColumn.innerHTML.includes('Architecture A') && conversationColumn.innerHTML.includes('Architecture B'), 'second column contains current project planning conversation history');
@@ -359,13 +364,155 @@ class NodeFixture {
   assert.equal(detailsColumn.hidden, false);
   assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '0px', 'compact document drawer never narrows the native chat column');
 
+  renderCtx.state.nativeWorkConversations = { p1: [
+    { project_id: 'p1', kind: 'work', issue_id: 'work-one', title: 'First task', source: 'current', status: 'todo' },
+    { project_id: 'p1', kind: 'work', issue_id: 'work-one', title: 'First task', source: 'history', history_id: 'old-one', thread_id: 'old-work-one', archived_at: '2026-10-03T12:00:00Z' },
+    { project_id: 'p1', kind: 'work', issue_id: 'work-two', title: 'Second task', source: 'current', status: 'in_progress', active_run_status: 'running', thread_id: 'work-two-thread' }
+  ] };
+  renderCtx.inlineConversation = { target: { project_id: 'p1', kind: 'work', issue_id: 'work-one' }, mode: 'draft', context: {
+    task: { id: 'work-one', title: 'First task', status: 'todo', agent_enabled: true, description: 'Task requirements', architecture: 'Module responsibilities', acceptance_criteria: ['Required acceptance result'], charter_revision: 3 },
+    charter: { revision: 3, sections: [{ title: 'Contract chapter', content: 'Referenced contract version three' }] }
+  } };
+  compactWorkspace = false; renderCtx.innerWidth = 1326; renderCtx.inlineConversationDetailsOpen = true;
+  const heading = planningRoot.parts['.better-codex-inline-heading'];
+  heading.parts = { '.better-codex-inline-heading-actions': { getBoundingClientRect: () => ({ width: 244 }) } };
+  renderCtx.renderInlineConversation();
+  assert.equal(projectColumn.hidden, false); assert.equal(conversationColumn.hidden, false); assert.equal(detailsColumn.hidden, false);
+  assert(conversationColumn.innerHTML.includes('First task') && conversationColumn.innerHTML.includes('Second task'), 'work navigation groups all tasks in the current project');
+  assert(conversationColumn.innerHTML.includes('data-work-history="old-one"'), 'each task exposes its associated history without replacing current session');
+  assert(conversationColumn.innerHTML.includes('工作中'), 'second-column status comes from real task execution fields');
+  assert(heading.innerHTML.includes('data-inline-start'), 'eligible task retains the explicit queue start action');
+  for (const value of ['Task requirements', 'Module responsibilities', 'Required acceptance result', 'Referenced contract version three', '任务状态 · 待办', '版本 3']) assert(detailsColumn.innerHTML.includes(value), value);
+  assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '370px', 'work reserves the same first two columns as planning');
+  assert.equal(renderCtx.document.documentElement.style.values.get('--bc-planning-toolbar-space'), '268px', 'native menu reserves the measured workspace toolbar width');
+  renderCtx.inlineConversation.context.task.status = 'backlog'; renderCtx.renderInlineConversation();
+  assert(!heading.innerHTML.includes('data-inline-start'), 'backlog tasks cannot skip planning through a start button');
+  renderCtx.inlineConversation.context.task.status = 'todo';
+  renderCtx.inlineConversation.target.history_id = 'old-one'; renderCtx.inlineConversation.read_only = true; renderCtx.inlineConversation.mode = 'thread';
+  renderCtx.renderInlineConversation();
+  assert(!heading.innerHTML.includes('data-inline-start') && !heading.innerHTML.includes('data-inline-restart'), 'history has no task mutation buttons');
+  assert.equal(planningRoot.parts['.better-codex-inline-status'].hidden, true, 'native historical messages are never replaced by a Better Codex message renderer');
+  assert.equal(planningRoot.parts['.better-codex-inline-notice'].textContent, '历史会话仅供查看。');
+  compactWorkspace = true; renderCtx.innerWidth = 900; renderCtx.inlineConversationCompactDetailsOpen = true; renderCtx.renderInlineConversation();
+  assert.equal(detailsColumn.hidden, false);
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '0px', 'work material drawer overlays without compressing native messages');
+
+  let resizeFrameSequence = 0, navigationRebuilds = 0;
+  const resizeFrames = new Map(), cancelledResizeFrames = [];
+  renderCtx.destroyed = false; renderCtx.inlineConversationResizeFrame = null;
+  renderCtx.requestAnimationFrame = callback => { const id = ++resizeFrameSequence; resizeFrames.set(id, callback); return id; };
+  renderCtx.cancelAnimationFrame = id => { cancelledResizeFrames.push(id); resizeFrames.delete(id); };
+  for (const name of ['cancelInlineConversationViewportResize', 'onInlineConversationViewportResize']) vm.runInContext(readFunction(name), renderCtx);
+  for (const column of [projectColumn, conversationColumn]) {
+    let markup = column.innerHTML;
+    Object.defineProperty(column, 'innerHTML', { get: () => markup, set: value => { markup = value; navigationRebuilds++; }, configurable: true });
+  }
+  const flushResizeFrame = () => { const [id, callback] = resizeFrames.entries().next().value; resizeFrames.delete(id); callback(); };
+  renderCtx.inlineConversationCompactDetailsOpen = false;
+  compactWorkspace = false; renderCtx.innerWidth = 1920; renderCtx.onInlineConversationViewportResize(); flushResizeFrame();
+  assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '370px');
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '360px');
+  assert.equal(detailsColumn.hidden, false);
+  compactWorkspace = true; renderCtx.innerWidth = 900;
+  for (let index = 0; index < 8; index++) renderCtx.onInlineConversationViewportResize();
+  assert.equal(resizeFrames.size, 1, 'continuous window resize events coalesce into one native layout update');
+  flushResizeFrame();
+  assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '328px', 'narrow resize immediately matches the CSS sidebar widths');
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '0px', 'narrow resize releases the document column without waiting for a task event');
+  assert.equal(detailsColumn.hidden, true);
+  compactWorkspace = false; renderCtx.innerWidth = 1920; renderCtx.onInlineConversationViewportResize(); flushResizeFrame();
+  assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '370px');
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '360px', 'returning to desktop restores its saved document preference');
+  assert.equal(detailsColumn.hidden, false);
+  assert.equal(navigationRebuilds, 0, 'viewport resizing keeps project and task sidebar nodes intact');
+  renderCtx.onInlineConversationViewportResize();
+  const pendingResizeFrame = renderCtx.inlineConversationResizeFrame;
+  renderCtx.cancelInlineConversationViewportResize();
+  assert.equal(resizeFrames.size, 0); assert.equal(renderCtx.inlineConversationResizeFrame, null);
+  assert(cancelledResizeFrames.includes(pendingResizeFrame));
+  assert(readFunction('destroy').includes('cancelInlineConversationViewportResize()') && readFunction('destroy').includes('window.removeEventListener("resize", onInlineConversationViewportResize)'), 'final teardown cancels pending updates and releases the listener');
+  assert(readFunction('leaveInlineConversation').includes('cancelInlineConversationViewportResize()'), 'leaving a workspace cancels its queued layout update');
+
+  const historyTarget = { project_id: 'p1', kind: 'work', issue_id: 'work', history_id: 'history-one' };
+  assert.notEqual(ctx.inlineConversationKey(historyTarget), ctx.inlineConversationKey({ project_id: 'p1', kind: 'work', issue_id: 'work' }));
+  assert.notEqual(ctx.inlineConversationKey(historyTarget), ctx.inlineConversationKey({ ...historyTarget, history_id: 'history-two' }));
+  assert.match(ctx.inlineConversationQuery(historyTarget), /history_id=history-one/);
+  const historyHttpStart = http.length;
+  await ctx.openInlineConversation(historyTarget);
+  assert.equal(ctx.inlineConversation.read_only, true);
+  assert.equal(ctx.inlineConversation.binding.thread_id, 'history-work-thread');
+  assert.equal(ctx.state.nativeThreadLinks['history-work-thread'], undefined, 'historical threads never enter the active editable binding registry');
+  await ctx.reloadInlineConversationContext();
+  assert.equal(ctx.inlineConversation.read_only, true, 'refresh keeps historical work read-only even with a confirmed charter');
+  const workHistorySnapshot = plain(ctx.captureReloadState());
+  assert.equal(workHistorySnapshot.nativeConversation.target.history_id, 'history-one');
+  assert.equal(workHistorySnapshot.nativeConversation.context.read_only, true);
+  await ctx.restoreReloadState(workHistorySnapshot);
+  assert.equal(ctx.inlineConversationTarget().history_id, 'history-one', 'hot reload restores the precise historical target');
+  assert.equal(http.slice(historyHttpStart).filter(call => call.method !== 'GET').length, 0, 'opening, refreshing and restoring history is fully read-only');
+  assert(registeredBindings.at(-1).every(row => row.thread_id !== 'history-work-thread'));
+
+  conversationCtx.inlineConversation = { target: historyTarget, read_only: true, mode: 'thread' };
+  const beforeHistoryMutation = conversationCalls.length;
+  for (const selector of ['[data-inline-start]', '[data-inline-restart]', '[data-inline-handoff]']) conversationCtx.onInlineConversationClick({ target: { closest: () => interactionButton(selector) } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(conversationCalls.length, beforeHistoryMutation, 'readonly guards reject stale task toolbar events before API calls');
+
+  const originalApi = ctx.api;
+  let releaseProjectList;
+  ctx.api = async (url, options) => url.includes('/list?project_id=p2&kind=work') ? new Promise(resolve => { releaseProjectList = resolve; }) : originalApi(url, options);
+  const pendingProjectSwitch = ctx.openProjectWorkSession('p2');
+  desiredMode = 'draft'; binding = null;
+  await ctx.openIssueNativeConversation({ id: 'new-current-work', project_id: 'p1' });
+  releaseProjectList({ conversations: [{ project_id: 'p2', kind: 'work', source: 'current', issue_id: 'other-project-work' }] });
+  assert.equal((await pendingProjectSwitch).reason, 'navigation_changed');
+  assert.equal(ctx.inlineConversationTarget().issue_id, 'new-current-work', 'a late project work list cannot override a more recent direct task click');
+  let releaseOldContext;
+  ctx.api = async (url, options) => url.includes('/context?') && url.includes('issue_id=old-current-work') ? new Promise(resolve => { releaseOldContext = resolve; }) : originalApi(url, options);
+  const pendingOldWork = ctx.openIssueNativeConversation({ id: 'old-current-work', project_id: 'p1' });
+  await new Promise(resolve => setImmediate(resolve));
+  await ctx.openInlineConversation({ ...historyTarget, history_id: 'history-two' });
+  releaseOldContext({ mode: 'draft', binding: null, context: { task: { id: 'old-current-work' } } });
+  assert.equal((await pendingOldWork).reason, 'navigation_changed');
+  assert.equal(ctx.inlineConversationTarget().history_id, 'history-two', 'a late task context cannot replace a different historical native conversation');
+  assert.equal(ctx.inlineConversation.read_only, true);
+  hooks.onBound({ target: { project_id: 'p1', kind: 'work', issue_id: 'old-current-work' }, thread_id: 'late-old-work-thread' });
+  assert.equal(ctx.inlineConversation.binding.thread_id, 'history-work-thread', 'a late offscreen task binding stays under its own task');
+  assert.equal(ctx.state.nativeThreadLinks['late-old-work-thread'].issue_id, 'old-current-work');
+  ctx.api = originalApi;
+
+  const workQueueRequests = [];
+  let queueRefreshes = 0, materialRefreshes = 0, releaseQueuedStart;
+  conversationCtx.inlineConversation = { target: { project_id: 'p1', kind: 'work', issue_id: 'explicit-queue-task' }, mode: 'draft' };
+  conversationCtx.api = async (url, options = {}) => {
+    workQueueRequests.push({ url, method: options.method || 'GET', body: options.body && JSON.parse(options.body) });
+    if (url.endsWith('/start')) return new Promise(resolve => { releaseQueuedStart = resolve; });
+    return { id: 'explicit-queue-task', version: 9 };
+  };
+  conversationCtx.loadIssues = async () => queueRefreshes++;
+  conversationCtx.reloadInlineConversationContext = async () => materialRefreshes++;
+  const explicitStart = interactionButton('[data-inline-start]'); explicitStart.isConnected = true;
+  conversationCtx.onInlineConversationClick({ target: { closest: () => explicitStart } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(conversationCtx.inlineConversation.start_requested, true);
+  assert.deepEqual(workQueueRequests.filter(call => call.method === 'POST'), [{ url: '/api/issues/explicit-queue-task/start', method: 'POST', body: { version: 9 } }], 'explicit Start uses the existing versioned task queue exactly once');
+  conversationCtx.inlineConversation = { target: historyTarget, mode: 'thread', read_only: true };
+  releaseQueuedStart({ queued: true }); await pendingInteraction;
+  assert.equal(queueRefreshes, 1);
+  assert.equal(materialRefreshes, 0, 'a late queued start never navigates or reloads another task history');
+  assert.equal(conversationCtx.inlineConversation.start_requested, undefined, 'queued start state cannot leak into the newly selected history');
+
   desiredMode = 'thread'; binding = { thread_id: 'history-planning-thread' }; confirmed = false;
   await ctx.openInlineConversation({ project_id: 'p1', kind: 'planning', conversation_id: 'history' });
   assert.equal(ctx.inlineConversation.read_only, true, 'bound planning history opens read-only during charter revision');
   confirmed = true; await ctx.reloadInlineConversationContext();
   assert.equal(ctx.inlineConversation.read_only, false, 'confirming charter releases current planning composer');
+  assert.equal(adapterContextUpdates.at(-1).read_only, false, 'authoritative charter confirmation also releases the adapter send scope');
+  assert.equal(adapterContextUpdates.at(-1).target.conversation_id, 'history', 'scope refresh keeps the same planning identity');
   confirmed = false; await ctx.reloadInlineConversationContext();
   assert.equal(ctx.inlineConversation.read_only, true, 'fresh charter revision disables the already-open planning composer');
+  assert.equal(adapterContextUpdates.at(-1).read_only, true, 'fresh charter revision also blocks the adapter send scope without navigation');
   console.log('PASS: planning conversation identity, precise sidebar selection, canonical restart, stale creation protection and native fail-closed/read-only fixtures');
   console.log('PASS: inline empty native drafts, scoped routes, stage isolation, stale callbacks, reload reattachment, legacy writer preservation and stable native DOM fixtures');
+  console.log('PASS: work four-column navigation, honest task material/state, immutable native histories, reload identity and readonly toolbar guards');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -20,6 +20,10 @@ const root=path.resolve(__dirname,'..'),lib=require('../integration/lib.cjs');
  assert(!restored(saved,{surface:'projects',open:true,nativeConversation:{target:{project_id:'p',kind:'charter',conversation_id:'c2'}}}));
  assert(!restored(saved,{surface:'projects',open:true,nativeConversation:{target:{project_id:'other',kind:'charter',conversation_id:'c1'}}}));
  assert(!restored(saved,{surface:'projects',open:true,nativeConversation:null}));
+ const historySaved={surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i',history_id:'h1'}}};
+ assert(restored(historySaved,{surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i',history_id:'h1'}}}));
+ assert(!restored(historySaved,{surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i'}}}));
+ assert(!restored(historySaved,{surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i',history_id:'h2'}}}));
  assert(restored({surface:'agents',open:true},{surface:'agents',open:true}));
  // Discovery accepts Unicode and spaces and recovers when the old CLI disappears.
  const core=fs.readFileSync(path.join(root,'src/backend/better-codex.cjs'),'utf8');const begin=core.indexOf('function createCodexExecutablePathResolver('),end=core.indexOf('function codexExecutablePath()',begin);

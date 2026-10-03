@@ -71213,6 +71213,8 @@ function errorCode4(error2) {
   return message;
 }
 function errorStatus(code2) {
+  if (code2 === 'native_history_read_only') return 403;
+  if (code2 === 'native_history_scope_mismatch') return 409;
   if (["native_operation_not_found"].includes(code2)) return 404;
   if (["native_operation_scope_mismatch", "native_operation_identity_mismatch", "native_host_mismatch", "native_binding_required", "native_operation_busy", "native_conversation_busy", "native_outcome_unknown", "native_operation_finished", "native_handoff_required", "native_tool_call_conflict", "native_tool_outcome_unknown", "native_allocation_checkpoint_required", "explicit_restart_required","conversation_project_mismatch","conversation_kind_mismatch","conversation_select_required"].includes(code2)) return 409;
   if (["confirmed_charter_required", "explicit_user_confirmation_required", "confirmation_message_mismatch", "session_thread_mismatch", "command_project_mismatch", "command_relay_mismatch", "command_turn_mismatch", "command_already_finished", "native_start_already_pending", "event_id_conflict", "item_charter_revision_mismatch", "item_not_converted", "issue_project_mismatch", "skill_name_conflict", "skill_slug_conflict", "skill_export_path_conflict", "builtin_skill_slug_locked"].includes(code2)) return 409;
@@ -72558,6 +72560,7 @@ data: ${JSON.stringify({ revision })}
         if (method === "POST" && path[3] === "start" && path.length === 4) {
           if (updateInstallInProgress) throw new Error("update_in_progress");
           const body = await readBody(request2);
+          if (Object.prototype.hasOwnProperty.call(body, "history_id")) throw new Error("native_history_read_only");
           const skillId = validateIssueSkill(body);
           const version = Number(body.version);
           if (!Number.isInteger(version) || version < 1) throw new Error("invalid_version");
@@ -72616,6 +72619,7 @@ data: ${JSON.stringify({ revision })}
         }
         if (method === "POST" && path[3] === "session-handoff" && path.length === 4) {
           const body = await readBody(request2);
+          if (Object.prototype.hasOwnProperty.call(body, "history_id")) throw new Error("native_history_read_only");
           const threadId = normalizeSessionId(cleanString(body.thread_id, 200));
           if (!threadId) throw new Error("session_required");
           if (issue.run_thread_id !== threadId) throw new Error("issue_session_mismatch");
@@ -72729,6 +72733,7 @@ data: ${JSON.stringify({ revision })}
           if (updateInstallInProgress) throw new Error("update_in_progress");
           if (issue.archived_at) throw new Error("issue_archived");
           const body = await readBody(request2, maxRemoteFileBodyBytes);
+          if (Object.prototype.hasOwnProperty.call(body, "history_id")) throw new Error("native_history_read_only");
           const requestId = cleanString(body.request_id, 200) || (0, import_node_crypto17.randomUUID)();
           const files = saveRemoteFiles(body.files, requestId);
           let filesCommitted = false;

@@ -66,6 +66,9 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     LEFT JOIN native_conversation_operation_links AS links ON links.request_id=operations.request_id WHERE operations.request_id=?`).get(requestId) || null;
   const conversation = conversationId => db.prepare('SELECT * FROM project_native_conversations WHERE conversation_id=?').get(conversationId) || null;
   const display = row => row && {...row,selected:Boolean(row.selected),draft_generation:row.generation};
+  const hasHistory = args => Object.hasOwn(args,'history_id');
+  const assertWritable = args => {if (hasHistory(args)) fail('native_history_read_only');};
+  const safeIdentifier = value => typeof value==='string' && Boolean(value.trim()) && value.length<=200 && !value.includes('\0') && value===value.trim();
   function defaultConversation(projectId,kind) {
     const selected=db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND kind=? AND selected=1').get(projectId,kind);
     if (selected) return selected;
@@ -161,6 +164,56 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const rows=db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? ORDER BY selected DESC,created_at DESC,conversation_id').all(projectId).map(display);
     return {conversations:rows,selected_conversation_id:rows.find(row=>row.selected)?.conversation_id || null};
   }
+  function workHistory(row,issue) {
+    if (row.project_id!==issue.project_id || row.kind!=='work' || row.issue_id!==issue.id || !safeIdentifier(row.id) || !safeIdentifier(row.thread_id)) fail('native_history_scope_mismatch');
+    // The history row is the durable identity. Snapshot JSON is optional display
+    // metadata: damage must not prevent current task access or rewrite old data.
+    let previous={};
+    try {const value=JSON.parse(row.binding_json);if (value && typeof value==='object' && !Array.isArray(value)) previous=value;} catch {}
+    for (const [key,expected] of [['project_id',row.project_id],['kind','work'],['issue_id',issue.id],['thread_id',row.thread_id]]) {
+      if (previous[key]!==undefined && previous[key]!==null && previous[key]!==expected) fail('native_history_scope_mismatch');
+    }
+    const metadata=db.prepare('SELECT * FROM native_conversation_bindings WHERE thread_id=?').get(row.thread_id);
+    if (metadata && (metadata.project_id!==row.project_id || metadata.kind!=='work' || metadata.issue_id!==issue.id || !metadata.archived_at)) fail('native_history_scope_mismatch');
+    const savedHost=safeIdentifier(previous.host_id)?previous.host_id:null;
+    if (metadata && (!safeIdentifier(metadata.host_id) || savedHost && metadata.host_id!==savedHost)) fail('native_history_scope_mismatch');
+    // A historical identity cannot borrow a current work/planning binding or a
+    // different project's history, even when an old snapshot claims otherwise.
+    if ((hasTable('issue_sessions') && db.prepare('SELECT 1 FROM issue_sessions WHERE thread_id=?').get(row.thread_id)) ||
+      db.prepare('SELECT 1 FROM project_native_conversations WHERE thread_id=?').get(row.thread_id) ||
+      db.prepare('SELECT 1 FROM project_native_sessions WHERE thread_id=?').get(row.thread_id) ||
+      db.prepare("SELECT 1 FROM native_conversation_history WHERE thread_id=? AND (project_id!=? OR kind!='work' OR issue_id IS NULL OR issue_id!=?)").get(row.thread_id,row.project_id,issue.id)) fail('native_history_scope_mismatch');
+    return {project_id:row.project_id,kind:'work',issue_id:issue.id,history_id:row.id,thread_id:row.thread_id,
+      host_id:metadata?.host_id || savedHost || 'local',title:issue.title,status:issue.status,active_run_status:issue.active_run_status || null,
+      mode:'thread',source:'history',read_only:true,created_at:typeof previous.created_at==='string' && previous.created_at.length<=80?previous.created_at:row.archived_at,
+      updated_at:row.archived_at,archived_at:row.archived_at};
+  }
+  function historyTarget(args) {
+    const value=target(args);
+    if (value.kind!=='work' || args.conversation_id) fail('native_history_scope_mismatch');
+    const row=db.prepare('SELECT * FROM native_conversation_history WHERE id=?').get(text(args.history_id,'history_id'));
+    if (!row) fail('native_history_not_found');
+    return {value,history:workHistory(row,value.issue)};
+  }
+  function listWorkConversations(projectId) {
+    const project=store.getProject(text(projectId,'project_id'));if (!project) fail('project_not_found');
+    const conversations=[];
+    for (const issue of store.listIssues({projectId:project.id})) {
+      if (issue.project_id!==project.id || issue.archived_at) continue;
+      const binding=issueSession(issue.id),owned=nativeOwned(issue) || !(binding || issue.run_thread_id);
+      const metadata=binding?.thread_id && db.prepare('SELECT * FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL').get(binding.thread_id);
+      const hostId=metadata?.host_id || binding?.host_id || 'local';
+      conversations.push({project_id:project.id,kind:'work',issue_id:issue.id,title:issue.title,status:issue.status,active_run_status:issue.active_run_status || null,
+        source:'current',read_only:false,thread_id:owned?binding?.thread_id || null:null,host_id:hostId,
+        binding:binding?{issue_id:issue.id,thread_id:binding.thread_id,host_id:hostId,status:binding.status}:null,
+        mode:!owned?(busyIssue(issue)?'legacy_busy':'handoff_required'):binding?'thread':'draft',
+        created_at:binding?.created_at || issue.created_at || null,updated_at:binding?.updated_at || issue.updated_at || null,session_status:binding?.status || null});
+      for (const row of db.prepare("SELECT * FROM native_conversation_history WHERE project_id=? AND kind='work' AND issue_id=? ORDER BY archived_at DESC,id").all(project.id,issue.id)) {
+        try {conversations.push(workHistory(row,issue));} catch(error) {if (error.code!=='native_history_scope_mismatch') throw error;}
+      }
+    }
+    return {conversations,selected_conversation_id:null};
+  }
   function metadataBackup(projectId,kind,row) {
     const previous=planning.getSession(projectId,kind);
     const archived=row?.thread_id && db.prepare('SELECT * FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NOT NULL').get(row.thread_id);
@@ -171,6 +224,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     if (!fs.statSync(filename).size) fail('project_backup_failed');
   }
   function createConversation(args) {
+    assertWritable(args);
     const value=target({project_id:args.project_id,kind:args.kind});
     if (value.kind==='work') fail('invalid_session_kind');
     const title=args.title===undefined?undefined:text(args.title,'title');
@@ -184,6 +238,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     });publishChange();return {conversation:display(created)};
   }
   function selectConversation(args) {
+    assertWritable(args);
     const value=target({project_id:args.project_id,conversation_id:args.conversation_id});
     const row=value.conversation;
     if (args.expected_revision!==undefined && args.expected_revision!==row.revision) fail('version_conflict');
@@ -200,6 +255,18 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     });publishChange();return {conversation:display(updated)};
   }
   function readContext(args) {
+    if (hasHistory(args)) {
+      const {value,history}=historyTarget(args);
+      const details=context(value.project.id,{issue_id:value.issue.id});
+      if (!details.task) details.task={...value.issue};
+      const scopeTarget={project_id:value.project.id,kind:'work',issue_id:value.issue.id,history_id:history.history_id};
+      return {...scopeTarget,target:scopeTarget,context:details,history,read_only:true,source:'history',mode:'thread',thread_id:history.thread_id,host_id:history.host_id,
+        binding:{issue_id:value.issue.id,thread_id:history.thread_id,host_id:history.host_id,status:'closed',created_at:history.created_at,updated_at:history.updated_at},
+        conversation:null,pending_operation:null,expected_revision:value.issue.version,draft_generation:0,
+        native_project_id:value.project.external_id || '',workspace_path:value.issue.workspace_path || value.project.workspace_path || '',
+        cwd:value.issue.workspace_path || value.project.workspace_path || '',root_paths:details.root_paths || value.project.root_paths || [],
+        planning_available:planning.getCharter(value.project.id)?.status==='confirmed',dynamic_tools:[]};
+    }
     recoverStale();
     const value = target(args), binding = bindingFor(value), currentOperation = pending(value.scope_key);
     const owned = !value.issue || nativeOwned(value.issue) || !(binding || value.issue.run_thread_id), busy = busyIssue(value.issue);
@@ -209,7 +276,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     if (value.issue && !details.task) details.task = { ...value.issue };
     const draftGeneration = value.conversation?.generation ?? db.prepare('SELECT generation FROM native_conversation_scopes WHERE scope_key=?').get(value.scope_key)?.generation ?? 0;
     const scopeTarget={project_id:value.project.id,kind:value.kind,...(value.issue?{issue_id:value.issue.id}:{}),...(value.conversation?{conversation_id:value.conversation.conversation_id}:{})};
-    return { context: details, target:scopeTarget, ...scopeTarget, conversation:display(value.conversation), binding, pending_operation: currentOperation, expected_revision: expectedRevision, draft_generation: draftGeneration,
+    return { context: details, target:scopeTarget, ...scopeTarget, ...(value.issue?{read_only:false,source:'current'}:{}), conversation:display(value.conversation), binding, pending_operation: currentOperation, expected_revision: expectedRevision, draft_generation: draftGeneration,
       native_project_id: value.project.external_id || '', workspace_path: value.issue?.workspace_path || value.project.workspace_path || '',
       cwd: value.issue?.workspace_path || value.project.workspace_path || '', root_paths: details.root_paths || value.project.root_paths || [],
       host_id: metadata?.host_id || binding?.host_id || 'local', thread_id: owned ? binding?.thread_id || null : null,
@@ -222,6 +289,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     return { relay_id: relayId, host_id: hostId, request_id: requestId };
   }
   function checkOperation(args) {
+    assertWritable(args);
     const auth = identity(args), value = operation(auth.request_id); if (!value) fail('native_operation_not_found');
     if (value.relay_id !== auth.relay_id || value.host_id !== auth.host_id) fail('native_operation_identity_mismatch');
     if (args.expected_revision !== undefined && args.expected_revision !== value.expected_revision) fail('version_conflict');
@@ -230,6 +298,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     return value;
   }
   function prepare(args) {
+    assertWritable(args);
     recoverStale();
     let value = target(args); const auth = identity(args);
     if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 0) fail('invalid_expected_revision');
@@ -349,6 +418,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const session = hasTable('issue_sessions') && db.prepare('SELECT * FROM issue_sessions WHERE thread_id=?').get(threadId);
     const issue = session && store.getIssue(session.issue_id);
     if (issue && nativeOwned(issue) && session.host_id === hostId) return {project_id:issue.project_id,kind:'work',issue_id:issue.id,thread_id:threadId,host_id:hostId};
+    if (db.prepare("SELECT 1 FROM native_conversation_history WHERE thread_id=? AND kind='work'").get(threadId)) fail('native_history_read_only');
     fail('native_binding_required');
   }
   function listBindings() {
@@ -377,6 +447,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     return [...result.values()];
   }
   async function tool(args) {
+    assertWritable(args);
     const relayId = text(args.relay_id,'relay_id'), hostId = text(args.host_id,'host_id'), threadId = text(args.thread_id,'thread_id'), callId = text(args.call_id,'call_id');
     if (!store.nativeSessionProxyIsLeader(relayId)) fail('session_relay_not_leader');
     const bound = trustedBinding(threadId,hostId), definition = nativeTools.find(tool => tool.name === args.name);
@@ -407,6 +478,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     if (!fs.statSync(filename).size) fail('project_backup_failed');
   }
   function restart(args) {
+    assertWritable(args);
     if (args.explicit !== true) fail('explicit_restart_required');
     const value = target(args), binding = bindingFor(value);
     const expected = value.issue ? value.issue.version : binding?.revision || 0;
@@ -435,7 +507,11 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const endpoint = url.pathname.slice('/api/native-conversations/'.length);
     let result;
     if (endpoint === 'context' && method === 'GET') result = readContext(Object.fromEntries(url.searchParams));
-    else if (endpoint === 'list' && method === 'GET') result=listConversations(url.searchParams.get('project_id'));
+    else if (endpoint === 'list' && method === 'GET') {
+      const kind=url.searchParams.get('kind');
+      if (kind && !['charter','planning','work'].includes(kind)) fail('invalid_session_kind');
+      result=kind==='work'?listWorkConversations(url.searchParams.get('project_id')):listConversations(url.searchParams.get('project_id'));
+    }
     else if (method === 'POST') {
       const args = await readBody(request);
       if (endpoint === 'prepare') result = prepare(args);
@@ -449,6 +525,6 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     } else {sendJson(response,404,{error:'not_found'});return true;}
     sendJson(response,200,result);return true;
   }
-  return {readContext,prepare,bind,receipt,tool,restart,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings,listConversations,createConversation,selectConversation};
+  return {readContext,prepare,bind,receipt,tool,restart,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings,listConversations,listWorkConversations,createConversation,selectConversation};
 }
 module.exports = {ensureConversationTables,ensurePlanningConversationTables,createNativeConversationRuntime};

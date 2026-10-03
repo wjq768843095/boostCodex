@@ -16,8 +16,10 @@
   const normalizePath = value => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase();
   const conversationId = context => context.kind === "work" ? "" : context.conversation_id || "";
   const conversationFields = context => conversationId(context) ? { conversation_id: conversationId(context) } : {};
-  const targetIdentity = context => ({ project_id: context.project_id, kind: context.kind, ...(context.issue_id ? { issue_id: context.issue_id } : {}), ...conversationFields(context) });
-  const targetKey = context => [context.project_id, context.kind, context.issue_id || ""].join(":") + (conversationId(context) ? ":conversation:" + encodeURIComponent(conversationId(context)) : "");
+  const historyFields = context => context.history_id ? { history_id: context.history_id } : {};
+  const readOnly = context => !!context?.history_id || context?.read_only === true;
+  const targetIdentity = context => ({ project_id: context.project_id, kind: context.kind, ...(context.issue_id ? { issue_id: context.issue_id } : {}), ...conversationFields(context), ...historyFields(context) });
+  const targetKey = context => [context.project_id, context.kind, context.issue_id || ""].join(":") + (conversationId(context) ? ":conversation:" + encodeURIComponent(conversationId(context)) : "") + (context.history_id ? ":history:" + encodeURIComponent(context.history_id) : "");
   const threadKey = (host, thread) => [host || LOCAL, thread].join(":");
   const requestKey = (host, id) => JSON.stringify([host || LOCAL, id]);
   const messageId = value => value?.message?.id ?? value?.response?.id;
@@ -32,7 +34,10 @@
     context.project_id = context.project_id || context.binding?.project_id || context.project?.id;
     context.issue_id = context.issue_id || context.binding?.issue_id;
     context.conversation_id = context.kind === "work" ? undefined : context.conversation_id || context.binding?.conversation_id || value?.target?.conversation_id || undefined;
+    context.history_id = context.history_id || value?.target?.history_id || undefined;
+    if (context.history_id) context.read_only = true;
     context.thread_id = context.thread_id || context.binding?.thread_id || "";
+    if (!context.history_id && context.kind === "planning" && context.thread_id && typeof context.planning_available === "boolean") context.read_only = !context.planning_available;
     context.host_id = context.host_id || LOCAL;
     context.cwd = context.cwd || context.workspace_path || "";
     context.root_paths = Array.isArray(context.root_paths) && context.root_paths.length ? context.root_paths : [context.cwd].filter(Boolean);
@@ -44,6 +49,7 @@
     if (!returned) return;
     for (const key of ["project_id", "kind", "issue_id", "host_id", ...(expected.thread_id ? ["thread_id"] : [])]) if (returned[key] !== undefined && String(returned[key] || "") !== String(expected[key] || "")) throw Error("会话资料已更新，请重新打开会话");
     if (conversationId(expected) && returned.conversation_id !== undefined && returned.conversation_id !== conversationId(expected)) throw Error("会话资料已更新，请重新打开会话");
+    if (returned.history_id !== undefined && String(returned.history_id || "") !== String(expected.history_id || "")) throw Error("会话资料已更新，请重新打开会话");
   }
 
   function responseError(request, message, code = -32000) {
@@ -336,6 +342,11 @@
       const request = message?.request;
       const method = request?.method;
       const blocked = hub.latestClient();
+      const ownedThread = hub.threads.get(threadKey(message.hostId, request?.params?.threadId));
+      if (message.source !== "better-codex" && message?.type === "mcp-request" && (method === "turn/start" && readOnly(ownedThread?.context) || method === "thread/start" && blocked?.blocksReadOnlyInput() && (message.hostId || LOCAL) === blocked.current.host_id)) {
+        hub.deliver(responseError(message, "此会话仅供查看，请选择当前工作会话"));
+        return;
+      }
       if (message.source !== "better-codex" && message?.type === "mcp-request" && ["thread/start", "turn/start"].includes(method) && blocked?.blocksNativeInput() && (message.hostId || LOCAL) === blocked.current.host_id && !hub.threads.get(threadKey(message.hostId, request.params?.threadId))?.awaitingFirstTurn) {
         hub.deliver(responseError(message, "当前项目会话尚未就绪，请重新打开会话"));
         return;
@@ -433,6 +444,7 @@
   }
 
   async function beginTurn(hub, threadScope, message) {
+    if (readOnly(threadScope.context)) { hub.deliver(responseError(message, "此会话仅供查看，请选择当前工作会话")); return; }
     const key = requestKey(message.hostId, message.request.id);
     if (hub.requests.has(key)) return;
     const scope = { ...threadScope, context: { ...threadScope.context }, operation: threadScope.awaitingFirstTurn ? threadScope.operation : null };
@@ -445,10 +457,12 @@
         const query = new URLSearchParams({ project_id: target.project_id, kind: target.kind, relay_id: client.options.getRelayId?.() || target.relay_id, host_id: target.host_id });
         if (target.issue_id) query.set("issue_id", target.issue_id);
         if (conversationId(target)) query.set("conversation_id", conversationId(target));
+        if (target.history_id) query.set("history_id", target.history_id);
         const latest = await client.options.api(API_ROOT + "context?" + query);
         assertReturnedTarget(target, latest); assertReturnedTarget(target, latest?.target);
         const context = flattenContext({ ...target, ...latest });
         assertReturnedTarget(target, context);
+        if (readOnly(context)) throw Error("此会话仅供查看，请选择当前工作会话");
         if (conversationId(target) && conversationId(context) !== conversationId(target)) throw Error("会话资料已更新，请重新打开会话");
         if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
         scope.context = context;
@@ -520,6 +534,7 @@
           // process. The backend verifies the trusted server envelope against
           // its durable host/thread binding before allowing any document write.
           if (!scope || request?.method !== "item/tool/call" || !params.callId || !toolNames.has(name)) throw Error("项目资料工具无法确认当前会话");
+          if (readOnly(scope.context)) throw Error("此会话仅供查看，请选择当前工作会话");
           const result = await post(scope, "tool", {
             host_id: hostId, thread_id: params.threadId, call_id: params.callId,
             ...(params.turnId ? { turn_id: params.turnId } : {}), name, arguments: params.arguments
@@ -577,10 +592,11 @@
         return host;
       },
       registerBindings(values) {
-        registry = (Array.isArray(values) ? values : []).filter(value => value && value.host_id === LOCAL && typeof value.project_id === "string" && value.project_id && typeof value.thread_id === "string" && value.thread_id && ["charter", "planning", "work"].includes(value.kind) && (value.kind !== "work" || typeof value.issue_id === "string" && value.issue_id) && (value.kind === "work" || !value.conversation_id || typeof value.conversation_id === "string")).map(value => ({ ...targetIdentity(value), host_id: LOCAL, thread_id: value.thread_id, mode: "thread" }));
+        registry = (Array.isArray(values) ? values : []).filter(value => value && !value.history_id && value.host_id === LOCAL && typeof value.project_id === "string" && value.project_id && typeof value.thread_id === "string" && value.thread_id && ["charter", "planning", "work"].includes(value.kind) && (value.kind !== "work" || typeof value.issue_id === "string" && value.issue_id) && (value.kind === "work" || !value.conversation_id || typeof value.conversation_id === "string")).map(value => ({ ...targetIdentity(value), host_id: LOCAL, thread_id: value.thread_id, mode: "thread", read_only: value.read_only === true }));
         if (!hub || this.disposed) return { registered: 0 };
         const keys = new Set(registry.map(context => threadKey(context.host_id, context.thread_id)));
         for (const [key, scope] of hub.threads) {
+          if (scope.client === this && readOnly(scope.context) && this.current && targetKey(scope.context) === targetKey(this.current)) continue;
           if (keys.has(key) || scope.client !== this && scope.registryClient !== this) continue;
           const pending = [...hub.requests.values()].some(request => request.scope?.context?.thread_id === scope.context.thread_id && request.scope.context.host_id === scope.context.host_id);
           if (!pending && !scope.awaitingFirstTurn) hub.threads.delete(key);
@@ -590,7 +606,9 @@
           const key = threadKey(context.host_id, context.thread_id);
           const existing = hub.threads.get(key);
           if (existing) {
+            if (existing.context.history_id && this.current && targetKey(existing.context) === targetKey(this.current)) continue;
             existing.context = { ...existing.context, ...context };
+            if (this.current && targetKey(existing.context) === targetKey(this.current)) existing.context.read_only = readOnly(this.current);
             existing.registryClient = this;
             existing.registryRetired = false;
           } else hub.threads.set(key, { hub, client: this, registryClient: this, context, operation: null });
@@ -608,6 +626,23 @@
         return internalNavigation > 0 || this.ownsRoute(this.route());
       },
       blocksNativeInput() { return !this.disposed && this.current?.native_open_state === "failed" && options.isCurrentContext?.(this.current) !== false; },
+      blocksReadOnlyInput() { return !this.disposed && readOnly(this.current) && options.isCurrentContext?.(this.current) !== false && (internalNavigation > 0 || this.ownsRoute(this.route())); },
+      updateContext(value) {
+        const context = flattenContext(value);
+        if (!this.current || targetKey(context) !== targetKey(this.current) || context.thread_id !== this.current.thread_id || context.host_id !== this.current.host_id) return false;
+        this.current = { ...this.current, ...context, read_only: readOnly(context) };
+        if (hub && context.thread_id) {
+          const scope = hub.threads.get(threadKey(context.host_id, context.thread_id));
+          if (scope && targetKey(scope.context) === targetKey(context)) scope.context = { ...scope.context, ...context, read_only: readOnly(context) };
+        }
+        return true;
+      },
+      forgetHistory(context = this.current) {
+        if (!hub || !context?.history_id) return;
+        const key = threadKey(context.host_id, context.thread_id);
+        const scope = hub.threads.get(key);
+        if (scope?.client === this && scope.context.history_id === context.history_id) hub.threads.delete(key);
+      },
       ownsRoute(route) {
         if (!this.current) return false;
         const supplied = String(route || "");
@@ -615,6 +650,7 @@
         const context = this.current;
         if (context.thread_id && path.split("?")[0] === "/local/" + encodeURIComponent(context.thread_id)) return true;
         if (context.thread_id && path.split("?")[0] === "/local/" + context.thread_id) return true;
+        if (context.thread_id) return false;
         try {
           const url = new URL(path, "https://codex.local");
           return url.pathname === "/projects" && !!context.native_project_id && url.searchParams.get("projectId") === context.native_project_id;
@@ -664,7 +700,9 @@
         const context = flattenContext(value);
         if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id) throw Error("项目会话资料不完整");
         if (context.conversation_id && typeof context.conversation_id !== "string") throw Error("项目会话资料不完整");
+        if (context.history_id && (context.kind !== "work" || typeof context.history_id !== "string" || !context.thread_id)) throw Error("历史会话资料不完整");
         const previous = this.current;
+        if (previous?.history_id && targetKey(previous) !== targetKey(context)) this.forgetHistory(previous);
         if (previous?.mode === "draft" && previous.client_draft_id && this.ownsNativeDraft()) this.saveDraft(previous.client_draft_id, previous);
         this.current = context;
         context.native_open_state = "loading";
@@ -720,6 +758,7 @@
       },
       async beginThread(message) {
         const context = { ...this.current };
+        if (readOnly(context)) { hub.deliver(responseError(message, "此会话仅供查看，请选择当前工作会话")); return; }
         const scope = { hub, client: this, context, originTarget: { ...context }, operation: null };
         const nativeKey = requestKey(message.hostId, message.request.id);
         if (hub.requests.has(nativeKey)) return;
@@ -801,6 +840,7 @@
       },
       leave(preserveNative = false) {
         const generation = ++navigationGeneration;
+        this.forgetHistory();
         if (host && originalNativeDraft && this.current?.client_draft_id) {
           const origin = { ...this.current };
           const original = originalNativeDraft;
@@ -855,7 +895,8 @@
       capture: client.capture.bind(client), restore: client.restore.bind(client),
       capabilities: client.capabilities.bind(client), ownsRoute: client.ownsRoute.bind(client),
       inspectLayout: client.inspectLayout.bind(client),
-      getCurrentContext: client.getCurrentContext.bind(client)
+      getCurrentContext: client.getCurrentContext.bind(client),
+      updateContext: client.updateContext.bind(client)
     };
   }
 

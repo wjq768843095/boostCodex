@@ -90,12 +90,14 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     const groups = skillList();
     const planningLinks=store.db.prepare('SELECT item_id,issue_id,charter_revision,plan_revision FROM project_planning_issue_links WHERE project_id=?').all(projectId);
     return { ...value, project: { ...value.project, root_paths: project.root_paths || [] }, ...getWorkspaceContext(project, { workspaceMap: value.charter?.metadata?.workspace_map }),
-      tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version,...planningLinks.find(entry=>entry.issue_id===issue.id) })),
+      tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version,archived_at:issue.archived_at || null,...planningLinks.find(entry=>entry.issue_id===issue.id) })),
       planning_links: planningLinks.map(entry=>{const issue=store.getIssue(entry.issue_id);return {...entry,status:issue?.status || 'missing',version:issue?.version || null,archived:Boolean(issue?.archived_at)};}),
-      ...(workTask ? { task: { id: workTask.id, title: workTask.title, description: workTask.description, ...link } } : {}),
+      ...(workTask ? { task: { id: workTask.id, title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),
+        active_run_status:workTask.active_run_status || null,archived_at:workTask.archived_at || null, ...link } } : {}),
       skills: [...groups.managed, ...groups.external].map(({ id, name, slug, description, path, managed }) => ({ id, name, slug, description, path, managed })) };
   }
   function startSession(projectId, body) {
+    if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
     // Compatibility entrypoint is now read-only: opening never manufactures a turn.
     const value = conversations.readContext({ project_id: projectId, kind: body.kind,...(body.conversation_id?{conversation_id:body.conversation_id}:{}) });
     if (body.kind === 'planning' && !value.planning_available) throw Error('confirmed_charter_required');
@@ -148,6 +150,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     }
     if (parts[1] === 'project-tools' && method === 'POST') {
       const body = await readBody(request);
+      if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
       const name = parts[2];
       if (name === 'project_context_read') return send(context(body.project_id, body));
       return send(invokeTool(name, body));
@@ -157,6 +160,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     if (parts[3] === 'planning-context' && method === 'GET') return send(context(projectId));
     if (parts[3] === 'native-session' && method === 'POST') {
       const body = await readBody(request);
+      if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
       if (parts[4] === 'bind') {
         // Bind only an operation checkpoint owned by the current native proxy.
         if (!store.nativeSessionProxyIsLeader(body.relay_id)) throw Error('session_relay_not_leader');
@@ -168,12 +172,13 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     }
     if (parts[3] === 'charter') {
       if (method === 'GET') return send(planning.getCharter(projectId, { ...(url.searchParams.has('revision') ? { revision: Number(url.searchParams.get('revision')) } : {}), ...(url.searchParams.has('sections') ? { section_ids: url.searchParams.get('sections').split(',') } : {}) }));
-      if (method === 'POST') { const body = await readBody(request); const value = parts[4] === 'confirm' ? planning.confirmCharter({ ...body, project_id: projectId }) : planning.saveCharter({ ...body, project_id: projectId }); publishChange(); return send(value); }
+      if (method === 'POST') { const body = await readBody(request); if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only'); const value = parts[4] === 'confirm' ? planning.confirmCharter({ ...body, project_id: projectId }) : planning.saveCharter({ ...body, project_id: projectId }); publishChange(); return send(value); }
     }
     if (parts[3] === 'plan') {
       if (method === 'GET') return send(planning.getPlan(projectId));
       if (method === 'POST') {
         const body = await readBody(request);
+        if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
         const value = parts[4] === 'convert' ? convert({ ...body, project_id: projectId, thread_id: body.thread_id || planning.getSession(projectId, 'planning')?.thread_id }) : planning.savePlan({ ...body, project_id: projectId });
         publishChange(); return send(value);
       }
@@ -221,6 +226,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
   }
   const activeTurns = () => store.db.prepare("SELECT activity.thread_id,activity.turn_id FROM project_native_activity AS activity WHERE activity.status='running' AND (EXISTS(SELECT 1 FROM project_native_sessions AS sessions WHERE sessions.thread_id=activity.thread_id AND sessions.status='running') OR EXISTS(SELECT 1 FROM project_native_conversations AS conversations WHERE conversations.thread_id=activity.thread_id AND conversations.status='running'))").all();
   function invokeTool(name, body) {
+    if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
     let value;
     if (name === 'project_context_read') return context(body.project_id, body);
     if (name === 'project_charter_save') value = planning.saveCharter(body);

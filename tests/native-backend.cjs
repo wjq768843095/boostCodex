@@ -94,7 +94,8 @@ async function main() {
   assert.equal(followupRacedStart.status,409,JSON.stringify(followupRacedStart.value));
   assert.equal((await api('/api/native-conversations/bind','POST',{...followupArgs,thread_id:ordinaryThread,checkpoint:'allocated'})).status,200);
   assert.equal((await api('/api/native-conversations/bind','POST',{...followupArgs,thread_id:ordinaryThread,checkpoint:'bound'})).status,200);
-  assert.equal((await api('/api/native-conversations/receipt','POST',{...followupArgs,thread_id:ordinaryThread,turn_id:randomUUID(),status:'accepted'})).status,200);
+  const followupTurn=randomUUID();
+  assert.equal((await api('/api/native-conversations/receipt','POST',{...followupArgs,thread_id:ordinaryThread,turn_id:followupTurn,status:'accepted'})).status,200);
   const issue = await api('/api/issues', 'POST', { project_id: project.id, title: '隔离工作任务', description: 'Fixture only; never execute a model request.', status: 'backlog', agent_enabled: true, ai_enrich: false, skill_id: 'better-codex-charter' }); assert.equal(issue.status, 201, JSON.stringify(issue.value));
   const start = await api('/api/issues/' + issue.value.id + '/start', 'POST', { version: issue.value.version, status: 'todo', skill_id: 'better-codex-charter' }); assert.equal(start.status, 202, JSON.stringify(start.value));
   await new Promise(resolve => setTimeout(resolve, 200));
@@ -125,6 +126,61 @@ async function main() {
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM issue_runs WHERE issue_id=?').get(ordinaryIssue.value.id).count,0,'ordinary reply does not create an execution run');
     assert.equal(db.prepare('SELECT status FROM issue_replies WHERE issue_id=?').get(ordinaryIssue.value.id).status,'running');
   } finally { db.close(); } }
+  // Browse a restarted task's old native thread through real HTTP routes. The
+  // fixture only persists IDs/checkpoints; it never contacts an app server.
+  assert.equal((await api('/api/session-relay/events','POST',{relay_id:relayId,method:'turn/completed',params:{threadId:ordinaryThread,turn:{id:followupTurn,status:'completed'}}})).status,200);
+  const beforeRestart=(await api('/api/native-conversations/context?project_id='+project.id+'&kind=work&issue_id='+ordinaryIssue.value.id)).value;
+  const restartedWork=await api('/api/native-conversations/restart','POST',{project_id:project.id,kind:'work',issue_id:ordinaryIssue.value.id,expected_revision:beforeRestart.expected_revision,explicit:true});
+  assert.equal(restartedWork.status,200,JSON.stringify(restartedWork.value));assert.equal(restartedWork.value.mode,'draft');
+  const workList=await api('/api/native-conversations/list?project_id='+project.id+'&kind=work');assert.equal(workList.status,200);
+  const historicalWork=workList.value.conversations.find(row=>row.issue_id===ordinaryIssue.value.id&&row.source==='history');
+  assert(historicalWork?.history_id);assert.equal(historicalWork.thread_id,ordinaryThread);assert.equal(historicalWork.read_only,true);
+  assert.equal(workList.value.conversations.find(row=>row.issue_id===ordinaryIssue.value.id&&row.source==='current').mode,'draft');
+  const newCurrentArgs={...ordinaryArgs,request_id:randomUUID(),expected_revision:restartedWork.value.expected_revision,draft_generation:restartedWork.value.draft_generation};
+  const newCurrentThread=randomUUID();
+  assert.equal((await api('/api/native-conversations/prepare','POST',newCurrentArgs)).status,200);
+  assert.equal((await api('/api/native-conversations/bind','POST',{...newCurrentArgs,thread_id:newCurrentThread,checkpoint:'allocated'})).status,200);
+  assert.equal((await api('/api/native-conversations/bind','POST',{...newCurrentArgs,thread_id:newCurrentThread,checkpoint:'bound'})).status,200);
+  assert.equal((await api('/api/native-conversations/receipt','POST',{...newCurrentArgs,thread_id:newCurrentThread,status:'failed',error:'fixture sends no model turn'})).status,200);
+  const historyTarget={project_id:project.id,kind:'work',issue_id:ordinaryIssue.value.id,history_id:historicalWork.history_id};
+  const stateSnapshot=()=>{
+    const db=new DatabaseSync(dbFile,{readOnly:true});
+    try {return JSON.stringify(Object.fromEntries(['issues','issue_sessions','issue_native_ownership','native_conversation_bindings','native_conversation_history',
+      'native_conversation_scopes','native_conversation_operations','native_conversation_tool_calls','project_charter_revisions','project_planning_revisions','issue_runs','issue_replies','session_commands']
+      .map(name=>[name,db.prepare('SELECT * FROM '+name+' ORDER BY rowid').all()])));} finally {db.close();}
+  };
+  assert(dbFile,'fixture database must be available for mutation checks');
+  const historyBefore=stateSnapshot();
+  for (let i=0;i<3;i++) {
+    const historyRead=await api('/api/native-conversations/context?'+new URLSearchParams(historyTarget));
+    assert.equal(historyRead.status,200,JSON.stringify(historyRead.value));assert.equal(historyRead.value.thread_id,ordinaryThread);
+    assert.equal(historyRead.value.read_only,true);assert.equal(historyRead.value.mode,'thread');assert.equal(historyRead.value.target.history_id,historicalWork.history_id);
+    assert.equal(historyRead.value.context.task.status,beforeRestart.context.task.status);assert.equal(historyRead.value.context.task.agent_enabled,true);assert.deepEqual(historyRead.value.dynamic_tools,[]);
+  }
+  const mixedWork=(await api('/api/native-conversations/list?project_id='+project.id+'&kind=work')).value.conversations;
+  assert.equal(mixedWork.find(row=>row.issue_id===ordinaryIssue.value.id&&row.source==='current').thread_id,newCurrentThread);
+  assert.equal(mixedWork.find(row=>row.history_id===historicalWork.history_id).thread_id,ordinaryThread);
+  for (const endpoint of ['prepare','bind','receipt','restart','tool']) {
+    const rejected=await api('/api/native-conversations/'+endpoint,'POST',{...newCurrentArgs,...historyTarget,thread_id:newCurrentThread,checkpoint:'bound',status:'failed',explicit:true,
+      call_id:randomUUID(),name:'better_codex_project_context_read',arguments:{}});
+    assert.equal(rejected.status,403,JSON.stringify(rejected.value));assert.equal(rejected.value.error,'native_history_read_only');
+  }
+  const archivedTool=await api('/api/native-conversations/tool','POST',{relay_id:relayId,host_id:'local',thread_id:ordinaryThread,call_id:randomUUID(),name:'better_codex_project_charter_save',arguments:{}});
+  assert.equal(archivedTool.status,403);assert.equal(archivedTool.value.error,'native_history_read_only');
+  for (const endpoint of ['start','session-handoff','reply']) {
+    const rejected=await api('/api/issues/'+ordinaryIssue.value.id+'/'+endpoint,'POST',{...historyTarget,version:restartedWork.value.expected_revision,status:'todo',message:'must remain unsent'});
+    assert.equal(rejected.status,403,JSON.stringify(rejected.value));assert.equal(rejected.value.error,'native_history_read_only');
+  }
+  const wrongIssueHistory=await api('/api/native-conversations/context?'+new URLSearchParams({...historyTarget,issue_id:issue.value.id}));
+  assert.equal(wrongIssueHistory.status,409);assert.equal(wrongIssueHistory.value.error,'native_history_scope_mismatch');
+  const wrongProjectHistory=await api('/api/native-conversations/context?'+new URLSearchParams({...historyTarget,project_id:initial.value[0].id}));
+  assert.equal(wrongProjectHistory.status,409);assert.equal(wrongProjectHistory.value.error,'issue_project_mismatch');
+  const wrongKindHistory=await api('/api/native-conversations/context?'+new URLSearchParams({...historyTarget,kind:'charter'}));
+  assert.equal(wrongKindHistory.status,409);assert.equal(wrongKindHistory.value.error,'native_history_scope_mismatch');
+  assert.equal(stateSnapshot(),historyBefore,'real HTTP history/list routes and refused writes preserve records, bindings, ownership and versions');
+  const historyBootstrap=(await api('/api/bootstrap')).value.native_thread_bindings;
+  assert(!historyBootstrap.some(row=>row.thread_id===ordinaryThread),'read-only history is never enrolled as a current binding');
+  assert(historyBootstrap.some(row=>row.thread_id===newCurrentThread&&row.issue_id===ordinaryIssue.value.id));
   assert.equal((await api('/api/agents', 'POST', {})).status, 404);
   assert(!/codex_exec|planning_process_started|scheduler_started/.test(output), 'no model process may be started by the fixture');
   console.log('PASS: isolated real backend routes, read-only opening, first-send checkpoints, trusted native tools, confirmation events and explicit native-owned work queue without model execution');
