@@ -60631,7 +60631,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             const issue = this.getIssue(command2.issue_id);
             const recorded = this.db.prepare("SELECT project_id,kind,issue_id,host_id,archived_at FROM native_conversation_bindings WHERE thread_id=?").get(threadId);
             if (recorded && (recorded.project_id !== issue.project_id || recorded.kind !== "work" || recorded.issue_id !== issue.id || recorded.host_id !== command2.host_id || recorded.archived_at)) throw new Error("session_thread_mismatch");
-            if (this.db.prepare("SELECT 1 FROM project_native_sessions WHERE thread_id=?").get(threadId)) throw new Error("session_thread_mismatch");
+            if (this.db.prepare("SELECT 1 FROM project_native_sessions WHERE thread_id=? UNION ALL SELECT 1 FROM project_native_conversations WHERE thread_id=?").get(threadId,threadId)) throw new Error("session_thread_mismatch");
             this.db.prepare("INSERT OR IGNORE INTO native_conversation_bindings(thread_id,project_id,kind,issue_id,host_id,request_id,created_at) VALUES(?,?,'work',?,?,?,?)").run(threadId,issue.project_id,issue.id,command2.host_id,command2.request_id,timestamp);
           }
           this.db.prepare("UPDATE session_commands SET thread_id = ?, turn_id = ? WHERE id = ? AND status = 'claimed' AND relay_id = ?").run(threadId, turnId || null, commandId, relayId);
@@ -71214,7 +71214,7 @@ function errorCode4(error2) {
 }
 function errorStatus(code2) {
   if (["native_operation_not_found"].includes(code2)) return 404;
-  if (["native_operation_scope_mismatch", "native_operation_identity_mismatch", "native_host_mismatch", "native_binding_required", "native_operation_busy", "native_conversation_busy", "native_outcome_unknown", "native_operation_finished", "native_handoff_required", "native_tool_call_conflict", "native_tool_outcome_unknown", "native_allocation_checkpoint_required", "explicit_restart_required"].includes(code2)) return 409;
+  if (["native_operation_scope_mismatch", "native_operation_identity_mismatch", "native_host_mismatch", "native_binding_required", "native_operation_busy", "native_conversation_busy", "native_outcome_unknown", "native_operation_finished", "native_handoff_required", "native_tool_call_conflict", "native_tool_outcome_unknown", "native_allocation_checkpoint_required", "explicit_restart_required","conversation_project_mismatch","conversation_kind_mismatch","conversation_select_required"].includes(code2)) return 409;
   if (["confirmed_charter_required", "explicit_user_confirmation_required", "confirmation_message_mismatch", "session_thread_mismatch", "command_project_mismatch", "command_relay_mismatch", "command_turn_mismatch", "command_already_finished", "native_start_already_pending", "event_id_conflict", "item_charter_revision_mismatch", "item_not_converted", "issue_project_mismatch", "skill_name_conflict", "skill_slug_conflict", "skill_export_path_conflict", "builtin_skill_slug_locked"].includes(code2)) return 409;
   if (["external_skill_read_only", "builtin_skill_delete_forbidden"].includes(code2)) return 403;
   if (code2 === "project_backup_failed") return 503;
@@ -71498,7 +71498,7 @@ data: ${JSON.stringify({ revision })}
       if (url.pathname === "/api/projects/from-thread" && method === "GET") {
         const threadId = normalizeSessionId(cleanString(url.searchParams.get("thread_id"), 200));
         if (!threadId) throw new Error("session_required");
-        const binding = store.db.prepare("SELECT project_id,kind FROM project_native_sessions WHERE thread_id=?").get(threadId);
+        const binding = projectRuntime.planning.getSessionByThread(threadId);
         return binding ? sendJson(response, 200, binding) : sendJson(response, 404, { error: "project_session_not_found" });
       }
       if (path[0] === "api" && path[1] === "agents" && !["GET", "HEAD", "OPTIONS"].includes(method)) return sendJson(response, 404, { error: "not_found" });
@@ -72348,7 +72348,7 @@ data: ${JSON.stringify({ revision })}
             projectRuntime.conversations.recoverRelay(result2.previous_relay_id);
           }
           if (capability === "ready" && body.busy !== true && !result2.command) result2.command = projectRuntime.planning.claimCommand(relayId) || null;
-          const projectThreads = store.db.prepare("SELECT thread_id FROM project_native_sessions").all().map(row => row.thread_id);
+          const projectThreads = store.db.prepare("SELECT thread_id FROM project_native_sessions UNION SELECT thread_id FROM project_native_conversations WHERE thread_id IS NOT NULL").all().map(row => row.thread_id);
           result2.thread_ids = [...new Set([...(result2.thread_ids || []), ...projectThreads])];
           result2.active_turns = [...(result2.active_turns || []), ...(projectRuntime.activeTurns?.() || [])];
         }
@@ -72380,7 +72380,7 @@ data: ${JSON.stringify({ revision })}
         const eventMethod = cleanString(body.method, 100);
         const params = body.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {};
         const eventThreadId = normalizeSessionId(cleanString(params.threadId, 200));
-        const projectBinding = eventThreadId && store.db.prepare("SELECT 1 FROM project_native_sessions WHERE thread_id=?").get(eventThreadId);
+        const projectBinding = eventThreadId && projectRuntime.planning.getSessionByThread(eventThreadId);
         if (!relayId || !eventThreadId || (projectBinding ? !store.nativeSessionProxyIsLeader(relayId) : !store.sessionCommandRelayOwnsThread(relayId, eventThreadId))) throw new Error("session_relay_not_leader");
         if (!["thread/status/changed", "turn/started", "turn/completed", "error", "item/started", "item/completed"].includes(eventMethod)) throw new Error("session_event_invalid");
         return sendJson(response, 200, { accepted: projectBinding ? projectRuntime.handleProjectEvent(eventMethod, params) : worker.handleSessionEvent(eventMethod, params) });

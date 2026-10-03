@@ -38,12 +38,20 @@ async function main() {
   const premature = await api('/api/projects/' + project.id + '/native-session', 'POST', { kind: 'planning', request_id: randomUUID() }); assert([400,409].includes(premature.status)); assert.equal(premature.value.error,'confirmed_charter_required');
   const opened = await api('/api/projects/' + project.id + '/native-session', 'POST', { kind: 'charter', request_id: randomUUID() }); assert.equal(opened.status, 202, JSON.stringify(opened.value));
   assert.equal(opened.value.command,null); assert.equal(opened.value.session,null); assert.equal(opened.value.mode,'draft'); assert.equal(Object.hasOwn(opened.value,'prompt'),false);
+  const emptyConversations=await api('/api/native-conversations/list?project_id='+project.id);assert.equal(emptyConversations.status,200);assert.equal(emptyConversations.value.conversations.length,0);
+  const firstConversation=await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'charter',title:'需求总纲'});
+  const secondConversation=await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'charter',title:'架构核对'});
+  assert.equal(firstConversation.status,200);assert.equal(secondConversation.status,200);assert.equal(secondConversation.value.conversation.thread_id,null);
+  const conversationId=secondConversation.value.conversation.conversation_id;
+  const listConversations=await api('/api/native-conversations/list?project_id='+project.id);assert.equal(listConversations.value.conversations.length,2);assert.equal(listConversations.value.selected_conversation_id,conversationId);
   const relayId = randomUUID(), pollBody = { relay_id: relayId, app_session_id: 'isolated-fixture', owner: 'native', capability: 'ready' };
   let poll = await api('/api/session-relay/poll', 'POST', pollBody); assert.equal(poll.status, 200);
   assert.equal(poll.value.command,null,'opening must not queue native model requests');
-  const prepareArgs = {project_id:project.id,kind:'charter',relay_id:relayId,host_id:'local',request_id:randomUUID(),expected_revision:0};
+  const prepareArgs = {project_id:project.id,kind:'charter',conversation_id:conversationId,relay_id:relayId,host_id:'local',request_id:randomUUID(),expected_revision:0};
   const prepared = await api('/api/native-conversations/prepare','POST',prepareArgs); assert.equal(prepared.status,200,JSON.stringify(prepared.value));
   assert.equal(prepared.value.operation.status,'prepared'); assert.equal(prepared.value.dynamic_tools.length,5);
+  assert.equal(prepared.value.operation.conversation_id,conversationId);
+  const busySelect=await api('/api/native-conversations/select','POST',{project_id:project.id,conversation_id:firstConversation.value.conversation.conversation_id});assert.equal(busySelect.status,409);assert.equal(busySelect.value.error,'native_conversation_busy');
   assert.equal((await api('/api/session-relay/poll','POST',pollBody)).value.command,null,'inline operations are not consumed by the queue');
   const threadId = randomUUID();
   assert.equal((await api('/api/native-conversations/bind','POST',{...prepareArgs,thread_id:threadId,checkpoint:'allocated'})).status,200);
@@ -51,6 +59,10 @@ async function main() {
   const turnId = randomUUID();
   assert.equal((await api('/api/native-conversations/receipt','POST',{...prepareArgs,thread_id:threadId,turn_id:turnId,status:'accepted'})).status,200);
   assert.equal((await api('/api/session-relay/events','POST',{relay_id:relayId,method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}})).status,200);
+  assert.equal((await api('/api/native-conversations/select','POST',{project_id:project.id,conversation_id:firstConversation.value.conversation.conversation_id})).status,200);
+  const oldThreadContext=await api('/api/native-conversations/context?project_id='+project.id+'&conversation_id='+conversationId);
+  assert.equal(oldThreadContext.status,200);assert.equal(oldThreadContext.value.thread_id,threadId,'unselected conversation remains readable without creating another native thread');
+  assert.equal((await api('/api/native-conversations/select','POST',{project_id:project.id,conversation_id:conversationId})).status,200);
   const nativeContext = await api('/api/native-conversations/tool','POST',{relay_id:relayId,host_id:'local',thread_id:threadId,call_id:randomUUID(),name:'better_codex_project_context_read',arguments:{}});
   assert.equal(nativeContext.status,200,JSON.stringify(nativeContext.value));assert.equal(nativeContext.value.project.id,project.id);
   const draft = await api('/api/project-tools/project_charter_save', 'POST', { project_id: project.id, thread_id: threadId, expected_revision: 0, sections: [{ id: 'architecture', title: '架构', content: '共享接口由基础能力负责。' }], requirements: [{ id: 'REQ-1', content: '验收闭环' }] }); assert.equal(draft.status, 200, JSON.stringify(draft.value));
@@ -61,7 +73,7 @@ async function main() {
   assert.equal(ordinaryIssue.status,201);
   const workContext = await api('/api/native-conversations/context?project_id='+project.id+'&kind=work&issue_id='+ordinaryIssue.value.id);
   assert.equal(workContext.value.mode,'draft');
-  const ordinaryArgs = {...prepareArgs,kind:'work',issue_id:ordinaryIssue.value.id,request_id:randomUUID(),expected_revision:ordinaryIssue.value.version};
+  const ordinaryArgs = {...prepareArgs,kind:'work',issue_id:ordinaryIssue.value.id,request_id:randomUUID(),expected_revision:ordinaryIssue.value.version};delete ordinaryArgs.conversation_id;
   assert.equal((await api('/api/native-conversations/prepare','POST',ordinaryArgs)).status,200);
   const racedStart = await api('/api/issues/'+ordinaryIssue.value.id+'/start','POST',{version:ordinaryIssue.value.version,status:'todo'});
   assert.equal(racedStart.status,409,JSON.stringify(racedStart.value));assert.equal(racedStart.value.error,'issue_execution_running');
@@ -103,7 +115,7 @@ async function main() {
   assert.deepEqual(bindings.find(row=>row.thread_id===manualThread),{thread_id:manualThread,host_id:'local',project_id:project.id,kind:'work',issue_id:issue.value.id});
   assert.equal(bindings.find(row=>row.thread_id===threadId).kind,'charter');
   assert.equal(bindings.find(row=>row.thread_id===ordinaryThread).issue_id,ordinaryIssue.value.id);
-  assert(bindings.every(row=>Object.keys(row).sort().join(',')==='host_id,issue_id,kind,project_id,thread_id'),'bootstrap identity must not expose instructions or draft contents');
+  assert(bindings.every(row=>Object.keys(row).every(key=>['host_id','issue_id','kind','project_id','thread_id','conversation_id'].includes(key))),'bootstrap identity must not expose instructions or draft contents');
   // The native proxy only claims this fixture command; no app-server request is issued.
   const dbFile = (await api('/health')).value.database?.path || fs.readdirSync(home).map(name => path.join(home, name)).find(name => /\.sqlite$|\.db$/.test(name));
   if (dbFile) { const db = new DatabaseSync(dbFile, { readOnly: true }); try {

@@ -83,6 +83,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
       );
       CREATE INDEX IF NOT EXISTS project_native_confirmation_events ON project_native_session_events(project_id,thread_id,charter_revision,is_confirmation);
     `);
+    require('./native-conversation-runtime.cjs').ensurePlanningConversationTables(db);
   }
 
   function getSession(projectId, sessionKind) {
@@ -91,9 +92,14 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
   }
 
   function assertThread(projectId, sessionKind, threadId) {
-    const session = getSession(projectId, sessionKind);
-    if (!session || session.thread_id !== string(threadId, 'thread_id', true)) fail('session_thread_mismatch');
+    project(projectId);kind(sessionKind);
+    const session = getSessionByThread(string(threadId, 'thread_id', true));
+    if (!session || session.project_id!==projectId || session.kind!==sessionKind) fail('session_thread_mismatch');
     return session;
+  }
+  function getSessionByThread(threadId) {
+    return db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=?').get(threadId) ||
+      db.prepare('SELECT * FROM project_native_sessions WHERE thread_id=?').get(threadId) || null;
   }
 
   function bindSession(args) {
@@ -105,6 +111,8 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     if (current && current.thread_id !== threadId) fail('session_thread_mismatch');
     const elsewhere = db.prepare('SELECT project_id,kind FROM project_native_sessions WHERE thread_id=?').get(threadId);
     if (elsewhere && (elsewhere.project_id !== args.project_id || elsewhere.kind !== args.kind)) fail('session_thread_mismatch');
+    const historical=db.prepare('SELECT project_id,kind FROM project_native_conversations WHERE thread_id=?').get(threadId);
+    if (historical && (historical.project_id!==args.project_id || historical.kind!==args.kind)) fail('session_thread_mismatch');
     const status = args.status === undefined ? (current?.status || 'ready') : string(args.status, 'session_status', true);
     if (!['ready','idle','running','failed','interrupted','closed'].includes(status)) fail('invalid_session_status');
     const timestamp = now();
@@ -112,7 +120,16 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
       VALUES(?,?,?,'native',?,?,1,?,?) ON CONFLICT(project_id,kind) DO UPDATE SET
       status=excluded.status,last_error=excluded.last_error,revision=project_native_sessions.revision+1,updated_at=excluded.updated_at`)
       .run(args.project_id, args.kind, threadId, status, args.last_error == null ? null : string(args.last_error, 'last_error'), timestamp, timestamp);
-    return getSession(args.project_id, args.kind);
+    const saved=getSession(args.project_id,args.kind);
+    const metadata=db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=?').get(threadId);
+    if (metadata) db.prepare('UPDATE project_native_conversations SET status=?,last_error=?,revision=?,updated_at=? WHERE conversation_id=?').run(saved.status,saved.last_error,saved.revision,timestamp,metadata.conversation_id);
+    else {
+      const selected=!db.prepare('SELECT 1 FROM project_native_conversations WHERE project_id=? AND selected=1').get(args.project_id);
+      const count=db.prepare('SELECT COUNT(*) AS count FROM project_native_conversations WHERE project_id=? AND kind=?').get(args.project_id,args.kind).count;
+      db.prepare(`INSERT INTO project_native_conversations(conversation_id,project_id,kind,title,thread_id,status,last_error,revision,selected,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),args.project_id,args.kind,(args.kind==='charter'?'总纲会话':'任务规划')+' '+(count+1),threadId,saved.status,saved.last_error,saved.revision,Number(selected),saved.created_at,timestamp);
+    }
+    return saved;
   }
 
   function charterFromRow(row, options = {}) {
@@ -301,7 +318,8 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     const currentProject = project(projectId);
     const charterSession = getSession(projectId, 'charter');
     const planningSession = getSession(projectId, 'planning');
-    if (options.thread_id && options.thread_id !== charterSession?.thread_id && options.thread_id !== planningSession?.thread_id) fail('session_thread_mismatch');
+    const requested=options.thread_id?getSessionByThread(options.thread_id):null;
+    if (options.thread_id && (!requested || requested.project_id!==projectId)) fail('session_thread_mismatch');
     const plan = getPlan(projectId, options.plan_revision === undefined ? {} : { revision: options.plan_revision });
     const charterOptions = { section_ids: options.section_ids, section_id: options.section_id };
     if (options.charter_revision !== undefined) charterOptions.revision = options.charter_revision;
@@ -310,7 +328,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     return { project: { id: currentProject.id, name: currentProject.name, workspace_path: currentProject.workspace_path || '',
       root_paths: currentProject.root_paths || [], workspace_map: currentProject.workspace_map || currentProject.workspace_roots || {} },
       charter: getCharter(projectId, charterOptions), plan,
-      confirmation_candidates: options.thread_id && options.thread_id !== charterSession?.thread_id ? [] : getConfirmationCandidates(projectId, charterSession?.thread_id),
+      confirmation_candidates: options.thread_id ? requested?.kind==='charter'?getConfirmationCandidates(projectId,options.thread_id):[] : getConfirmationCandidates(projectId, charterSession?.thread_id),
       sessions: { charter: charterSession, planning: planningSession } };
   }
 
@@ -532,7 +550,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
   }
 
   return { migrate, getContext, getCharter, saveCharter, confirmCharter, getPlan, savePlan, validate, convertItems,
-    getSession, bindSession, recordSessionEvent, getConfirmationCandidates, enqueueCommand, getCommand, listPendingCommands, finishCommand,
+    getSession, getSessionByThread, assertThread, bindSession, recordSessionEvent, getConfirmationCandidates, enqueueCommand, getCommand, listPendingCommands, finishCommand,
     claimCommand, checkpointCommand, recoverCommands };
 }
 

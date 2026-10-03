@@ -14,6 +14,13 @@ const root=path.resolve(__dirname,'..'),lib=require('../integration/lib.cjs');
  const watcherSource=fs.readFileSync(path.join(root,'integration/watcher.cjs'),'utf8');let staged=0,stopped=0,phase='';
  const fake={hashes:()=>({sourceHash:'new',backendHash:'new'}),state:()=>({sourceHash:'old',backendHash:'old'}),validate:()=>{},api:async()=>({ready:false,blocking:{project_plannings:1}}),snapshot:()=>{staged++;},shutdown:()=>{stopped++;},status:s=>phase=s.phase,log:()=>{}};
  const wc={module:{exports:{}},require:name=>name==='./lib.cjs'?fake:require(name),setTimeout,clearInterval,process,console};vm.runInNewContext(watcherSource,wc);await wc.module.exports.reconcile();assert.equal(phase,'waiting_for_idle');assert.equal(staged,0);assert.equal(stopped,0);
+ // Readiness follows the saved conversation identity instead of hidden old tabs.
+ const restored=wc.module.exports.restoredViewMatches,saved={surface:'projects',open:true,nativeConversation:{target:{project_id:'p',kind:'charter',conversation_id:'c1'}}};
+ assert(restored(saved,{surface:'projects',open:true,nativeConversation:{target:{project_id:'p',kind:'charter',conversation_id:'c1'}}}));
+ assert(!restored(saved,{surface:'projects',open:true,nativeConversation:{target:{project_id:'p',kind:'charter',conversation_id:'c2'}}}));
+ assert(!restored(saved,{surface:'projects',open:true,nativeConversation:{target:{project_id:'other',kind:'charter',conversation_id:'c1'}}}));
+ assert(!restored(saved,{surface:'projects',open:true,nativeConversation:null}));
+ assert(restored({surface:'agents',open:true},{surface:'agents',open:true}));
  // Discovery accepts Unicode and spaces and recovers when the old CLI disappears.
  const core=fs.readFileSync(path.join(root,'src/backend/better-codex.cjs'),'utf8');const begin=core.indexOf('function createCodexExecutablePathResolver('),end=core.indexOf('function codexExecutablePath()',begin);
  const factory=vm.runInNewContext('('+core.slice(begin,end).trim()+')',{import_node_path13:path,process});let target='C:\\程序 空格\\旧版\\codex.exe';const available=new Set([target]);const resolve=factory(()=>target,p=>available.has(p),'win32');assert.equal(resolve(),target);available.clear();target='C:\\程序 空格\\新版\\codex.exe';available.add(target);assert.equal(resolve(),target);

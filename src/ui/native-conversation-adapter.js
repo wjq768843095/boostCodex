@@ -14,7 +14,10 @@
     "better_codex_project_plan_convert"
   ]);
   const normalizePath = value => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase();
-  const targetKey = context => [context.project_id, context.kind, context.issue_id || ""].join(":");
+  const conversationId = context => context.kind === "work" ? "" : context.conversation_id || "";
+  const conversationFields = context => conversationId(context) ? { conversation_id: conversationId(context) } : {};
+  const targetIdentity = context => ({ project_id: context.project_id, kind: context.kind, ...(context.issue_id ? { issue_id: context.issue_id } : {}), ...conversationFields(context) });
+  const targetKey = context => [context.project_id, context.kind, context.issue_id || ""].join(":") + (conversationId(context) ? ":conversation:" + encodeURIComponent(conversationId(context)) : "");
   const threadKey = (host, thread) => [host || LOCAL, thread].join(":");
   const requestKey = (host, id) => JSON.stringify([host || LOCAL, id]);
   const messageId = value => value?.message?.id ?? value?.response?.id;
@@ -28,12 +31,19 @@
     context.kind = context.kind || context.session_kind;
     context.project_id = context.project_id || context.binding?.project_id || context.project?.id;
     context.issue_id = context.issue_id || context.binding?.issue_id;
+    context.conversation_id = context.kind === "work" ? undefined : context.conversation_id || context.binding?.conversation_id || value?.target?.conversation_id || undefined;
     context.thread_id = context.thread_id || context.binding?.thread_id || "";
     context.host_id = context.host_id || LOCAL;
     context.cwd = context.cwd || context.workspace_path || "";
     context.root_paths = Array.isArray(context.root_paths) && context.root_paths.length ? context.root_paths : [context.cwd].filter(Boolean);
     context.mode = context.mode || (context.thread_id ? "thread" : "draft");
     return context;
+  }
+
+  function assertReturnedTarget(expected, returned) {
+    if (!returned) return;
+    for (const key of ["project_id", "kind", "issue_id", "host_id"]) if (returned[key] !== undefined && String(returned[key] || "") !== String(expected[key] || "")) throw Error("会话资料已更新，请重新打开会话");
+    if (conversationId(expected) && returned.conversation_id !== undefined && returned.conversation_id !== conversationId(expected)) throw Error("会话资料已更新，请重新打开会话");
   }
 
   function responseError(request, message, code = -32000) {
@@ -373,8 +383,7 @@
 
   function operationIdentity(scope) {
     return {
-      project_id: scope.context.project_id, kind: scope.context.kind,
-      ...(scope.context.issue_id ? { issue_id: scope.context.issue_id } : {}),
+      ...targetIdentity(scope.context),
       host_id: scope.context.host_id, request_id: scope.operation.request_id,
       expected_revision: scope.operation.expected_revision ?? scope.context.expected_revision
     };
@@ -397,20 +406,26 @@
         const target = scope.context;
         const query = new URLSearchParams({ project_id: target.project_id, kind: target.kind, relay_id: client.options.getRelayId?.() || target.relay_id, host_id: target.host_id });
         if (target.issue_id) query.set("issue_id", target.issue_id);
+        if (conversationId(target)) query.set("conversation_id", conversationId(target));
         const context = flattenContext({ ...target, ...await client.options.api(API_ROOT + "context?" + query) });
+        assertReturnedTarget(target, context);
+        if (conversationId(target) && conversationId(context) !== conversationId(target)) throw Error("会话资料已更新，请重新打开会话");
         if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
         scope.context = context;
         const prepared = await post(scope, "prepare", {
-          project_id: context.project_id, kind: context.kind,
-          ...(context.issue_id ? { issue_id: context.issue_id } : {}),
+          ...targetIdentity(context),
           host_id: context.host_id, request_id: uuid(), expected_revision: context.expected_revision,
           draft_generation: context.draft_generation
         });
         scope.operation = prepared.operation;
+        assertReturnedTarget(context, scope.operation);
+        assertReturnedTarget(context, prepared.target);
         if (scope.operation?.thread_id !== context.thread_id) throw Error("会话资料已更新，请重新打开会话");
         const identity = { ...operationIdentity(scope), thread_id: context.thread_id };
-        await post(scope, "bind", { ...identity, checkpoint: "allocated" });
-        await post(scope, "bind", { ...identity, checkpoint: "bound" });
+        const allocated = await post(scope, "bind", { ...identity, checkpoint: "allocated" });
+        assertReturnedTarget(context, allocated.binding); assertReturnedTarget(context, allocated.operation);
+        const bound = await post(scope, "bind", { ...identity, checkpoint: "bound" });
+        assertReturnedTarget(context, bound.binding); assertReturnedTarget(context, bound.operation);
       }
       threadScope.awaitingFirstTurn = false;
       pending.timer = root.setTimeout(() => {
@@ -522,7 +537,7 @@
         return host;
       },
       registerBindings(values) {
-        registry = (Array.isArray(values) ? values : []).filter(value => value && value.host_id === LOCAL && typeof value.project_id === "string" && value.project_id && typeof value.thread_id === "string" && value.thread_id && ["charter", "planning", "work"].includes(value.kind) && (value.kind !== "work" || typeof value.issue_id === "string" && value.issue_id)).map(value => ({ project_id: value.project_id, kind: value.kind, ...(value.issue_id ? { issue_id: value.issue_id } : {}), host_id: LOCAL, thread_id: value.thread_id, mode: "thread" }));
+        registry = (Array.isArray(values) ? values : []).filter(value => value && value.host_id === LOCAL && typeof value.project_id === "string" && value.project_id && typeof value.thread_id === "string" && value.thread_id && ["charter", "planning", "work"].includes(value.kind) && (value.kind !== "work" || typeof value.issue_id === "string" && value.issue_id) && (value.kind === "work" || !value.conversation_id || typeof value.conversation_id === "string")).map(value => ({ ...targetIdentity(value), host_id: LOCAL, thread_id: value.thread_id, mode: "thread" }));
         if (!hub || this.disposed) return { registered: 0 };
         const keys = new Set(registry.map(context => threadKey(context.host_id, context.thread_id)));
         for (const [key, scope] of hub.threads) {
@@ -607,6 +622,7 @@
         const generation = ++navigationGeneration;
         const context = flattenContext(value);
         if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id) throw Error("项目会话资料不完整");
+        if (context.conversation_id && typeof context.conversation_id !== "string") throw Error("项目会话资料不完整");
         const previous = this.current;
         if (previous?.mode === "draft" && previous.client_draft_id && this.ownsNativeDraft()) this.saveDraft(previous.client_draft_id, previous);
         this.current = context;
@@ -659,7 +675,7 @@
       },
       async beginThread(message) {
         const context = { ...this.current };
-        const scope = { hub, client: this, context, operation: null };
+        const scope = { hub, client: this, context, originTarget: { ...context }, operation: null };
         const nativeKey = requestKey(message.hostId, message.request.id);
         if (hub.requests.has(nativeKey)) return;
         const inProgress = [...hub.requests.values()].find(value => value.type === "start" && targetKey(value.scope.context) === targetKey(context));
@@ -671,15 +687,21 @@
         try {
           const requestId = uuid();
           const prepared = await post(scope, "prepare", {
-            project_id: context.project_id, kind: context.kind,
-            ...(context.issue_id ? { issue_id: context.issue_id } : {}),
+            ...targetIdentity(context),
             host_id: context.host_id, request_id: requestId, expected_revision: context.expected_revision,
             draft_generation: context.draft_generation
           });
           scope.operation = prepared.operation;
+          assertReturnedTarget(context, prepared.target); assertReturnedTarget(context, scope.operation);
           if (!scope.operation?.request_id || scope.operation.thread_id) throw Error("上次会话连接尚待核对，请恢复后再发送");
-          scope.context = { ...context, dynamic_tools: prepared.dynamic_tools || context.dynamic_tools };
           if (this.disposed || !this.current || targetKey(this.current) !== targetKey(context) || !this.ownsCurrentDraft()) throw Error("会话页面已切换，请回到原页面发送");
+          scope.context = flattenContext({ ...context, ...prepared.target, ...(!conversationId(context) && scope.operation.conversation_id ? { conversation_id: scope.operation.conversation_id } : {}), dynamic_tools: prepared.dynamic_tools || context.dynamic_tools });
+          if (conversationId(scope.context) && targetKey(scope.context) !== targetKey(context)) {
+            // The first authorized send can enroll a legacy unnamed draft. Keep
+            // its native document/nonce while assigning the new stable identity.
+            drafts[targetKey(scope.context) + ":" + (scope.context.draft_generation ?? "0")] = context.client_draft_id;
+            try { draftIdStorage?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* The native draft remains retained. */ }
+          }
           const params = { ...message.request.params, cwd: context.cwd, runtimeWorkspaceRoots: [...context.root_paths], dynamicTools: toolsForThread(scope.context, message.request.params?.dynamicTools) };
           const outgoing = { ...message, request: { ...message.request, params } };
           pending.timer = root.setTimeout(() => {
@@ -708,17 +730,20 @@
           if (!threadId) throw Error("原生会话未返回会话编号");
           scope.context.thread_id = threadId;
           const identity = { ...operationIdentity(scope), thread_id: threadId };
-          await post(scope, "bind", { ...identity, checkpoint: "allocated" });
+          const allocated = await post(scope, "bind", { ...identity, checkpoint: "allocated" });
+          assertReturnedTarget(scope.context, allocated.binding); assertReturnedTarget(scope.context, allocated.operation);
           const bound = await post(scope, "bind", { ...identity, checkpoint: "bound" });
+          assertReturnedTarget(scope.context, bound.binding); assertReturnedTarget(scope.context, bound.operation);
           scope.context = { ...scope.context, binding: bound.binding, mode: "thread" };
           scope.awaitingFirstTurn = true;
           hub.threads.set(threadKey(scope.context.host_id, threadId), scope);
-          if (!this.disposed && this.current && targetKey(this.current) === targetKey(scope.context)) {
+          const origin = scope.originTarget || scope.context;
+          if (!this.disposed && this.current && [targetKey(scope.context), targetKey(origin)].includes(targetKey(this.current))) {
             this.current = { ...this.current, ...scope.context };
           }
           const receiver = hub.latestClient() || this;
-          if (!receiver.disposed && receiver.current && targetKey(receiver.current) === targetKey(scope.context) && (receiver.current.draft_generation ?? 0) === (scope.context.draft_generation ?? 0) && (!receiver.current.thread_id || receiver.current.thread_id === threadId)) receiver.current = { ...receiver.current, ...scope.context };
-          receiver.options.onBound?.({ target: { ...scope.context }, context: { ...scope.context }, thread_id: threadId, binding: bound.binding, operation: bound.operation });
+          if (!receiver.disposed && receiver.current && [targetKey(scope.context), targetKey(origin)].includes(targetKey(receiver.current)) && (receiver.current.draft_generation ?? 0) === (scope.context.draft_generation ?? 0) && (!receiver.current.thread_id || receiver.current.thread_id === threadId)) receiver.current = { ...receiver.current, ...scope.context };
+          receiver.options.onBound?.({ target: { ...origin }, origin_target: { ...origin }, context: { ...scope.context }, thread_id: threadId, binding: bound.binding, operation: bound.operation });
           // Native's thread/start continuation sends the original rich input.
           // Delivering only after both checkpoints is the binding/send barrier.
           hub.deliver(message);
@@ -759,8 +784,7 @@
       },
       capture() {
         return this.current ? {
-          project_id: this.current.project_id, kind: this.current.kind,
-          ...(this.current.issue_id ? { issue_id: this.current.issue_id } : {}),
+          ...targetIdentity(this.current),
           thread_id: this.current.thread_id, client_draft_id: this.current.client_draft_id,
           native_home_draft_id: originalNativeDraft || undefined,
           draft_generation: this.current.draft_generation, route: this.route()

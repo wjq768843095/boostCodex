@@ -88,19 +88,21 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     if (workTask) value.confirmation_candidates = [];
     const project = store.getProject(projectId);
     const groups = skillList();
+    const planningLinks=store.db.prepare('SELECT item_id,issue_id,charter_revision,plan_revision FROM project_planning_issue_links WHERE project_id=?').all(projectId);
     return { ...value, project: { ...value.project, root_paths: project.root_paths || [] }, ...getWorkspaceContext(project, { workspaceMap: value.charter?.metadata?.workspace_map }),
-      tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version })),
+      tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version,...planningLinks.find(entry=>entry.issue_id===issue.id) })),
+      planning_links: planningLinks.map(entry=>{const issue=store.getIssue(entry.issue_id);return {...entry,status:issue?.status || 'missing',version:issue?.version || null,archived:Boolean(issue?.archived_at)};}),
       ...(workTask ? { task: { id: workTask.id, title: workTask.title, description: workTask.description, ...link } } : {}),
       skills: [...groups.managed, ...groups.external].map(({ id, name, slug, description, path, managed }) => ({ id, name, slug, description, path, managed })) };
   }
   function startSession(projectId, body) {
     // Compatibility entrypoint is now read-only: opening never manufactures a turn.
-    const value = conversations.readContext({ project_id: projectId, kind: body.kind });
+    const value = conversations.readContext({ project_id: projectId, kind: body.kind,...(body.conversation_id?{conversation_id:body.conversation_id}:{}) });
     if (body.kind === 'planning' && !value.planning_available) throw Error('confirmed_charter_required');
     return { ...value, session: value.binding, command: null };
   }
   function handleProjectEvent(method, params) {
-    const row = store.db.prepare('SELECT * FROM project_native_sessions WHERE thread_id=?').get(params.threadId);
+    const row = planning.getSessionByThread(params.threadId);
     if (!row) return false;
     const item = params.item;
     if (['item/started', 'item/completed'].includes(method) && item?.type === 'userMessage') {
@@ -118,6 +120,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
       }
       const status = method === 'turn/started' || params.status?.type === 'active' ? 'running' : method === 'turn/completed' && params.turn?.status === 'failed' ? 'failed' : 'ready';
       store.db.prepare('UPDATE project_native_sessions SET status=?,last_error=?,updated_at=? WHERE thread_id=?').run(status, params.turn?.error?.message || null, new Date().toISOString(), row.thread_id);
+      store.db.prepare('UPDATE project_native_conversations SET status=?,last_error=?,updated_at=? WHERE thread_id=?').run(status,params.turn?.error?.message || null,new Date().toISOString(),row.thread_id);
       publishChange();
     }
     return true;
@@ -178,8 +181,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     return false;
   }
   function convert(body) {
-    const bound = planning.getSession(body.project_id, 'planning');
-    if (!bound || bound.thread_id !== body.thread_id) throw Error('session_thread_mismatch');
+    planning.assertThread(body.project_id,'planning',body.thread_id);
     const plan = planning.getPlan(body.project_id);
     if (!plan || body.expected_revision !== plan.revision) throw Error('version_conflict');
     if (!Array.isArray(body.item_ids) || !body.item_ids.length || body.item_ids.some(id => !plan.items.some(item => item.id === id))) throw Error('invalid_item_ids');
@@ -217,7 +219,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     }
     return planning.finishCommand({ request_id: id, project_id: command.project_id, session_kind: command.session_kind, thread_id: command.thread_id, expected_revision: command.revision, relay_id: relayId, result, ...(action === 'fail' ? { status: 'failed', error: error || 'desktop_bridge_request_failed' } : {}) });
   }
-  const activeTurns = () => store.db.prepare("SELECT activity.thread_id,activity.turn_id FROM project_native_activity AS activity JOIN project_native_sessions AS sessions ON sessions.thread_id=activity.thread_id WHERE activity.status='running' AND sessions.status='running'").all();
+  const activeTurns = () => store.db.prepare("SELECT activity.thread_id,activity.turn_id FROM project_native_activity AS activity WHERE activity.status='running' AND (EXISTS(SELECT 1 FROM project_native_sessions AS sessions WHERE sessions.thread_id=activity.thread_id AND sessions.status='running') OR EXISTS(SELECT 1 FROM project_native_conversations AS conversations WHERE conversations.thread_id=activity.thread_id AND conversations.status='running'))").all();
   function invokeTool(name, body) {
     let value;
     if (name === 'project_context_read') return context(body.project_id, body);
