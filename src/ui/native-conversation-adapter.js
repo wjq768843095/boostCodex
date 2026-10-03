@@ -4,6 +4,7 @@
 (function installNativeConversationAdapter(root) {
   const HUB_KEY = "__betterCodexNativeConversationHub__";
   const DRAFT_KEY = "better-codex-native-drafts-v1";
+  const DRAFT_STATE_KEY = "__betterCodexNativeDraftState__";
   const PREFIX = "better_codex_";
   const API_ROOT = "/api/native-conversations/";
   const LOCAL = "local";
@@ -77,9 +78,9 @@
     return false;
   }
 
-  function findNativeScope(predicate) {
+  function findNativeValue(predicate, selector = '[contenteditable],[data-app-shell-main-content-layout]') {
     const seen = new Set();
-    for (const element of root.document.querySelectorAll('[contenteditable],[data-app-shell-main-content-layout]')) {
+    for (const element of root.document.querySelectorAll(selector)) {
       if (element.hasAttribute?.("contenteditable") && element.getBoundingClientRect?.().width === 0) continue;
       let parent = element;
       while (parent) {
@@ -87,11 +88,13 @@
         let fiber = key ? parent[key] : null;
         while (fiber && !seen.has(fiber)) {
           seen.add(fiber);
+          const props = fiber.memoizedProps;
+          for (const value of [props?.composerController, props?.homeComposerController, props?.controller]) if (value && predicate(value)) return value;
           let hook = fiber.memoizedState;
           let limit = 0;
           while (hook && typeof hook === "object" && limit++ < 128) {
             const scope = hook.memoizedState?.current;
-            if (scope?.scope && typeof scope.get === "function" && typeof scope.set === "function" && predicate(scope)) return scope;
+            if (scope && predicate(scope)) return scope;
             hook = hook.next;
           }
           fiber = fiber.return;
@@ -102,7 +105,9 @@
     return null;
   }
 
-  function nativeDraftAccess(namespace) {
+  const findNativeScope = (predicate, selector) => findNativeValue(value => value.scope && typeof value.get === "function" && typeof value.set === "function" && predicate(value), selector);
+
+  function nativeDraftAccess(namespace, composer) {
     // Source-managed capability profile for the installed native scope runtime.
     // Each role is verified; a changed host fails closed instead of navigating
     // to an unregistered worktree draft and leaving a permanently busy composer.
@@ -110,7 +115,7 @@
     const identity = namespace.Pyt;
     const location = namespace.hbt;
     const project = namespace.ZTt;
-    if (!descriptor?.__scopeBrand || identity?.scope !== descriptor || typeof location !== "function" || !project?.resolve) return null;
+    if (!descriptor?.__scopeBrand || identity?.scope !== descriptor || typeof location !== "function" || !project?.resolve || !composer?.VIn?.__scopeBrand || composer.KZt?.scope !== composer.VIn || composer.DQt?.scope !== composer.VIn || composer._Qt?.scope !== composer.VIn || !["XQt", "o$t", "ZQt", "FZt"].every(name => typeof composer[name] === "function")) return null;
     const draftLocation = location({ entrypoint: "home" });
     if (draftLocation !== "new-conversation") return null;
     const getScope = () => {
@@ -118,8 +123,19 @@
       if (!scope || !/^client-new-thread:[a-z0-9-]+$/i.test(scope.get(identity, draftLocation) || "")) throw Error("当前 Codex 暂时不支持页内会话");
       return scope;
     };
+    const getComposer = () => {
+      const scope = findNativeScope(scope => scope.scope === composer.VIn && scope.value?.kind === "new" && scope.value?.entrypoint === "home", '[contenteditable]');
+      if (!scope) throw Error("原生输入框尚未就绪，请重新打开会话");
+      return scope;
+    };
+    const getController = () => {
+      const controller = findNativeValue(value => typeof value.restoreDraft === "function" && value.view?.state?.schema && value.view.dom?.isConnected && value.view.dom.getBoundingClientRect().width > 0);
+      if (!controller) throw Error("原生输入框尚未就绪，请重新打开会话");
+      return controller;
+    };
     return {
       readDraft() { return getScope().get(identity, draftLocation); },
+      isHomeComposer() { try { return !!getComposer(); } catch { return false; } },
       async waitForProject(context, current) {
         for (let index = 0; index < 100; index++) {
           if (!current()) return false;
@@ -132,11 +148,31 @@
         if (!/^client-new-thread:[a-z0-9-]+$/i.test(id || "")) throw Error("会话草稿资料已更新");
         const scope = getScope();
         if (context && !findNativeScope(scope => scope.value?.routeKind === "home" && scope.value?.projectContext?.projectId === context.native_project_id)) throw Error("原生项目尚未就绪，请重新打开会话");
-        // This is the same native identity atom/setter used by new-chat. Native
-        // prompt documents, Skills, images and attachment order stay in native
-        // retained ComposerScopes and native persisted drafts, without copying.
         scope.set(identity, draftLocation, id);
         if (scope.get(identity, draftLocation) !== id) throw Error("会话草稿暂时无法恢复");
+      },
+      captureDraft() {
+        const scope = getComposer();
+        const controller = getController();
+        const { prompt, ...viewState } = scope.get(composer.DQt);
+        return { draft: scope.get(composer.KZt), view_state: viewState, document_json: controller.view.state.doc.toJSON(), plain_text_mode: controller.plainTextMode };
+      },
+      restoreDraft(snapshot) {
+        const scope = getComposer();
+        const controller = getController();
+        // Native setters preserve all business fields, Skill mentions, image
+        // order and attachment ownership. Native's own controller hydrates the
+        // original rich document; input is never read from or rebuilt via DOM.
+        if (snapshot) {
+          composer.XQt(scope, snapshot.draft, undefined, { discardRetainedDraft: true });
+          composer["o$t"](scope, value => Object.assign(value, snapshot.view_state));
+        } else composer.FZt(scope);
+        const retained = snapshot?.document_json ? { document: controller.view.state.schema.nodeFromJSON(snapshot.document_json), plainTextMode: snapshot.plain_text_mode } : undefined;
+        composer.ZQt(scope, retained);
+        controller.restoreDraft(scope.get(composer.DQt).prompt, retained);
+        // Native's change subscription may update its serialized prompt. Keep
+        // the retained rich document paired with that native representation.
+        composer.ZQt(scope, retained);
       }
     };
   }
@@ -153,13 +189,15 @@
       if (moduleUrl.origin !== entry.origin) continue;
       const sharedSource = await (await root.fetch(moduleUrl.href)).text();
       const namespace = await import(moduleUrl.href);
+      const initialName = /["'`]([^"'`]*app-initial-[^"'`]+\.js)["'`]/.exec(source)?.[1];
+      const composer = initialName ? await import(new URL(initialName, entry).href) : null;
       const values = Object.values(namespace);
       // RPC proxies fabricate methods on property access. Require real writable
       // own data properties instead of accidentally wrapping a remote stub.
       const sender = values.find(value => value && ownDataFunction(value, "postMessage") && ownDataFunction(value, "getState") && ownDataFunction(value, "setState"));
       const dispatcher = values.find(value => value && nativeDispatcher(value));
       if (!sender || !dispatcher) continue;
-      const draftAccess = nativeDraftAccess(namespace);
+      const draftAccess = nativeDraftAccess(namespace, composer);
       return {
         sender, dispatcher, moduleUrl: moduleUrl.href,
         dynamicTools: sharedSource.includes("dynamic-tool-call-requested"),
@@ -175,6 +213,48 @@
       const value = JSON.parse(storage?.getItem(DRAFT_KEY) || "{}");
       return value && typeof value === "object" && !Array.isArray(value) ? value : {};
     } catch { return {}; }
+  }
+
+  function nativeDraftStorage() {
+    const state = root[DRAFT_STATE_KEY] || (root[DRAFT_STATE_KEY] = { records: new Map(), pending: new Map(), database: null });
+    async function database() {
+      if (!root.indexedDB) throw Error("会话草稿暂时无法保存");
+      if (!state.database) state.database = new Promise((resolve, reject) => {
+        const request = root.indexedDB.open("better-codex-native-drafts", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("drafts");
+        request.onerror = () => reject(request.error || Error("会话草稿暂时无法保存"));
+        request.onsuccess = () => resolve(request.result);
+      }).catch(error => { state.database = null; throw error; });
+      return state.database;
+    }
+    async function transaction(id, value, write) {
+      const db = await database();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction("drafts", write ? "readwrite" : "readonly");
+        const request = write ? tx.objectStore("drafts").put(value, id) : tx.objectStore("drafts").get(id);
+        tx.oncomplete = () => resolve(request.result);
+        tx.onerror = tx.onabort = () => reject(tx.error || request.error || Error("会话草稿暂时无法保存"));
+      });
+    }
+    return {
+      async get(id) {
+        if (state.records.has(id)) return state.records.get(id);
+        const value = await transaction(id, undefined, false);
+        if (value !== undefined) state.records.set(id, value);
+        return value;
+      },
+      set(id, value) {
+        // IndexedDB's structured clone preserves native File/Blob attachments.
+        // Unsupported objects fail the transaction; the exact in-memory draft
+        // remains available and the caller reports persistence failure.
+        state.records.set(id, value);
+        const prior = state.pending.get(id) || Promise.resolve();
+        const work = prior.catch(() => {}).then(() => transaction(id, value, true));
+        state.pending.set(id, work);
+        work.finally(() => { if (state.pending.get(id) === work) state.pending.delete(id); }).catch(() => {});
+        return work;
+      }
+    };
   }
 
   function createHub(host) {
@@ -401,7 +481,10 @@
     let initialRoute = "";
     let currentRoute = "";
     let originalNativeDraft = "";
-    const drafts = readDraftIds(options.storage || root.sessionStorage);
+    const draftIdStorage = options.storage || root.localStorage || root.sessionStorage;
+    const drafts = { ...readDraftIds(root.sessionStorage), ...readDraftIds(draftIdStorage) };
+    try { if (Object.keys(drafts).length) draftIdStorage?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* Mounted drafts still retain their stable IDs. */ }
+    const draftStorage = options.draftStorage || nativeDraftStorage();
     const client = {
       options, disposed: false, current: null,
       report(error, origin = this.current) { options.onError?.(error instanceof Error ? error : Error(errorText(error)), origin ? { ...origin } : undefined); },
@@ -414,7 +497,7 @@
         if (this.disposed) throw Error("会话页面已关闭");
         if (!hostPromise) hostPromise = Promise.resolve(options.host || loadInstalledHost());
         host = await hostPromise;
-        if (!host.dynamicTools || !host.prewarm || !host.draftIdentity || typeof host.readDraft !== "function" || typeof host.selectDraft !== "function" || typeof host.sender?.postMessage !== "function" || typeof host.dispatcher?.deliverOrBufferMessage !== "function") throw Error("当前 Codex 暂时不支持页内会话");
+        if (!host.dynamicTools || !host.prewarm || !host.draftIdentity || typeof host.readDraft !== "function" || typeof host.selectDraft !== "function" || typeof host.captureDraft !== "function" || typeof host.restoreDraft !== "function" || typeof host.sender?.postMessage !== "function" || typeof host.dispatcher?.deliverOrBufferMessage !== "function") throw Error("当前 Codex 暂时不支持页内会话");
         host.readDraft();
         if (!hub) {
           const existing = root[HUB_KEY];
@@ -463,15 +546,23 @@
         if (typeof id !== "string" || !/^client-new-thread:[a-z0-9-]+$/i.test(id)) {
           id = "client-new-thread:" + uuid();
           drafts[key] = id;
-          try { (options.storage || root.sessionStorage)?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* Native draft still remains in this mounted adapter. */ }
+          try { draftIdStorage?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* Native draft still remains in this mounted adapter. */ }
         }
         return id;
+      },
+      saveDraft(id, origin) {
+        if (!host || !id) return;
+        try {
+          const snapshot = host.captureDraft();
+          Promise.resolve(draftStorage.set(id, snapshot)).catch(error => this.report(error, origin));
+        } catch (error) { this.report(error, origin); }
       },
       async open(value, restored) {
         const generation = ++navigationGeneration;
         const context = flattenContext(value);
         if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id) throw Error("项目会话资料不完整");
         const previous = this.current;
+        if (previous?.mode === "draft" && previous.client_draft_id && this.ownsNativeDraft()) this.saveDraft(previous.client_draft_id, previous);
         this.current = context;
         if (!initialRoute) initialRoute = this.route();
         if (context.mode === "legacy_busy" || context.mode === "handoff_required") return { mode: context.mode, context: { ...context }, capabilities: this.capabilities() };
@@ -495,11 +586,17 @@
             try {
               // Project selection supplies native projectId and prevents the
               // host from consuming a projectless warm reservation of this cwd.
-              await this.navigate(draftRoute);
+              await this.navigate(draftRoute, { focusComposerNonce: context.client_draft_id });
               if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
               if (host.waitForProject && !await host.waitForProject(context, () => generation === navigationGeneration && !this.disposed)) return { cancelled: true };
-              if (!originalNativeDraft) originalNativeDraft = host.readDraft();
+              if (!originalNativeDraft) {
+                originalNativeDraft = host.readDraft();
+                this.saveDraft(originalNativeDraft, context);
+              }
+              const snapshot = await draftStorage.get(context.client_draft_id);
+              if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
               host.selectDraft(context.client_draft_id, context);
+              host.restoreDraft(snapshot);
             } finally { internalNavigation--; }
           }
           return { mode: context.mode, context: { ...context }, capabilities: this.capabilities() };
@@ -581,7 +678,19 @@
       leave() {
         navigationGeneration++;
         if (host && originalNativeDraft && this.current?.client_draft_id) {
-          try { if (host.readDraft() === this.current.client_draft_id) host.selectDraft(originalNativeDraft); } catch { /* Native navigation may have already disposed its scope. */ }
+          const origin = { ...this.current };
+          const original = originalNativeDraft;
+          try {
+            if (host.readDraft() === this.current.client_draft_id && this.current.mode === "draft") {
+              this.saveDraft(this.current.client_draft_id, origin);
+              host.selectDraft(original);
+              // Restoring ordinary native home data does not navigate, send or
+              // operate on the composer of an already-bound task/thread.
+              Promise.resolve(draftStorage.get(original)).then(snapshot => {
+                if (host.readDraft() === original && !this.current && host.isHomeComposer?.() !== false) host.restoreDraft(snapshot);
+              }).catch(error => this.report(error, origin));
+            }
+          } catch { /* Native navigation may have already disposed its scope. */ }
         }
         this.current = null; currentRoute = ""; originalNativeDraft = "";
       },

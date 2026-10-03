@@ -15,31 +15,47 @@ function fixture(config = {}) {
   const operations = new Map();
   let sequence = 0, nativeRoute = '/index.html';
   let nativeDraft = 'client-new-thread:original-native-draft';
+  let richDraft = undefined, richState = { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }, nativeDocument = { type: 'doc', content: [] };
   const values = new Map();
+  const draftStates = config.draftStates || new Map();
   const sender = { getState: () => null, setState() {}, postMessage(message) { sent.push(message); } };
   const dispatcher = {
     handlers: new Map(), bufferedMessages: new Map(),
     deliverOrBufferMessage(message) { delivered.push(message); config.onDeliver?.(message, sender); },
-    dispatchHostMessage(message) { if (message.type === 'navigate-to-route') nativeRoute = message.path; this.deliverOrBufferMessage(message); }
+    dispatchHostMessage(message) { if (message.type === 'navigate-to-route') { nativeRoute = message.path; composerScope.value.focusComposerNonce = message.state?.focusComposerNonce; } this.deliverOrBufferMessage(message); }
   };
   const originalSend = sender.postMessage, originalDeliver = dispatcher.deliverOrBufferMessage;
   const draftDescriptor = { __scopeBrand: 'native-scope' }, draftAtom = { scope: draftDescriptor }, projectAtom = { resolve() {} };
   const nativeScope = { scope: draftDescriptor, get(atom) { return atom === draftAtom ? nativeDraft : { projectId: 'native-project' }; }, set(atom, key, id) { nativeDraft = id; } };
   const routeScope = { scope: {}, value: { routeKind: 'home', projectContext: { projectId: 'native-project' } }, get() {}, set() {} };
-  const nativeElement = { __reactFiber$fixture: { memoizedState: { memoizedState: { current: nativeScope }, next: { memoizedState: { current: routeScope } } } } };
-  const host = { sender, dispatcher, dynamicTools: true, prewarm: true, draftIdentity: true, readDraft: () => nativeDraft, selectDraft: id => { nativeDraft = id; } };
+  const composerDescriptor = { __scopeBrand: 'native-composer' }, promptAtom = { scope: composerDescriptor }, viewAtom = { scope: composerDescriptor }, documentAtom = { scope: composerDescriptor };
+  const docNode = value => ({ toJSON: () => value });
+  const controller = { restoreDraft(text, retained) { nativeDocument = retained?.document?.toJSON() || { type: 'doc', content: [] }; }, plainTextMode: false, view: { dom: { isConnected: true, getBoundingClientRect: () => ({ width: 500 }) }, state: { schema: { nodeFromJSON: docNode }, get doc() { return docNode(nativeDocument); } } } };
+  const composerScope = { scope: composerDescriptor, value: { kind: 'new', entrypoint: 'home' }, get(atom) { return atom === promptAtom ? richDraft : atom === viewAtom ? { ...richState, prompt: '' } : undefined; }, set() {} };
+  const nativeElement = { __reactFiber$fixture: { memoizedProps: { composerController: controller }, memoizedState: { memoizedState: { current: nativeScope }, next: { memoizedState: { current: routeScope }, next: { memoizedState: { current: composerScope } } } } } };
+  const host = { sender, dispatcher, dynamicTools: true, prewarm: true, draftIdentity: true, readDraft: () => nativeDraft, selectDraft: id => { nativeDraft = id; }, captureDraft: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument, plain_text_mode: false }), restoreDraft: snapshot => { richDraft = snapshot?.draft; richState = snapshot?.view_state || { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; nativeDocument = snapshot?.document_json || { type: 'doc', content: [] }; } };
   const root = {
     crypto: { randomUUID: () => `00000000-0000-0000-0000-${String(++sequence).padStart(12, '0')}` },
     sessionStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
+    localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
     location: { pathname: '/index.html', search: '', href: 'app://-/index.html', origin: new URL('app://-/index.html').origin },
     document: { querySelectorAll: selector => config.discovery ? (selector.includes('script') ? [{ src: 'app://-/assets/index-test.js' }] : [nativeElement]) : [] },
-    fetch: async url => ({ text: async () => url.includes('app-shared') ? 'dynamic-tool-call-requested thread-prewarm-start client-local-thread' : 'import "./app-shared-test.js"' }),
+    fetch: async url => ({ text: async () => url.includes('app-shared') ? 'dynamic-tool-call-requested thread-prewarm-start client-local-thread' : 'import "./app-shared-test.js"; import "./app-initial-test.js"' }),
     setTimeout, clearTimeout, URL, URLSearchParams
   };
+  if (config.indexedDB) {
+    const persisted = new Map();
+    const db = { createObjectStore() {}, transaction() {
+      const tx = { objectStore() { return { get(id) { const request = {}; setImmediate(() => { request.result = persisted.has(id) ? structuredClone(persisted.get(id)) : undefined; tx.oncomplete?.(); }); return request; }, put(value, id) { const stored = structuredClone(value), request = {}; setImmediate(() => { persisted.set(id, stored); tx.oncomplete?.(); }); return request; } }; } };
+      return tx;
+    } };
+    root.indexedDB = { open() { const request = {}; setImmediate(() => { request.result = db; request.onupgradeneeded?.(); request.onsuccess?.(); }); return request; } };
+  }
   if (config.discovery) {
     root.testNamespace = { rpc: new Proxy({}, { get: () => () => {}, set: () => { throw Error('Cannot assign properties on RPC stubs'); } }), sender, dispatcher, GJt: draftDescriptor, Pyt: draftAtom, hbt: () => 'new-conversation', ZTt: projectAtom };
+    root.testComposerNamespace = { VIn: composerDescriptor, KZt: promptAtom, DQt: viewAtom, _Qt: documentAtom, XQt(scope, draft) { richDraft = draft; }, 'o$t'(scope, fn) { fn(richState); }, ZQt() {}, FZt() { richDraft = undefined; richState = { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; } };
   }
-  vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
+  vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
   const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':');
   const context = (overrides = {}) => ({ project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides });
   const remember = value => { records.set(key(value), value); return value; };
@@ -74,6 +90,7 @@ function fixture(config = {}) {
   };
   const options = {
     host: config.discovery ? undefined : host, api, getRelayId: () => 'fixture-leader', getActiveRoute: () => config.memoryRouter ? '/index.html' : nativeRoute,
+    draftStorage: config.indexedDB ? undefined : { get: async id => draftStates.get(id), set: async (id, snapshot) => { draftStates.set(id, snapshot); } },
     isCurrentContext: () => true, afterNavigate: async () => {},
     onBound: value => bounds.push(plain(value)), onTurn: value => turns.push(plain(value)),
     onError: (error, origin) => errors.push({ error: error.message, origin: origin && plain(origin) }),
@@ -82,10 +99,32 @@ function fixture(config = {}) {
   const adapter = root.BetterCodexNativeConversation.create(options);
   const send = (method, params, id = 'native-' + ++sequence, rest = {}) => { const message = { type: 'mcp-request', hostId: 'local', request: { id, method, params }, ...rest }; sender.postMessage(message); return message; };
   const reply = (id, result, error) => dispatcher.deliverOrBufferMessage({ type: 'mcp-response', hostId: 'local', message: { id, ...(error ? { error } : { result }) } });
-  return { root, host, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, originalSend, originalDeliver, operations, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft };
+  return { root, host, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, originalSend, originalDeliver, operations, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
 }
 
 (async () => {
+  {
+    const f = fixture({ indexedDB: true });
+    const charter = f.remember(f.context());
+    const original = await f.adapter.open(charter);
+    const binary = new Blob(['native image bytes'], { type: 'image/png' });
+    const rich = { draft: { prompt: { document: { type: 'doc', content: [{ type: 'skill_mention', attrs: { path: 'C:\\Skills\\SKILL.md' } }] } }, pullRequestChecks: [] }, document_json: { type: 'doc', content: [{ type: 'skill_mention', attrs: { path: 'C:\\Skills\\SKILL.md' } }] }, view_state: { imageAttachments: [{ id: 'blob-image', file: binary }], attachmentOrder: ['image:blob-image'], fileAttachments: [] } };
+    f.setRich(rich);
+    await f.adapter.open(f.context({ kind: 'planning' }));
+    await settle(() => f.root.__betterCodexNativeDraftState__.pending.size === 0);
+    f.adapter.destroy();
+    await settle();
+    delete f.root.__betterCodexNativeDraftState__;
+    f.root.sessionStorage = { getItem: () => null, setItem() {} };
+    const restarted = f.root.BetterCodexNativeConversation.create(f.options);
+    const restored = await restarted.open(charter);
+    assert.equal(restored.context.client_draft_id, original.context.client_draft_id);
+    assert.deepEqual(f.rich().document_json, rich.document_json, 'native rich document persists independently of adapter memory');
+    assert.equal(await f.rich().view_state.imageAttachments[0].file.text(), 'native image bytes', 'structured clone preserves native binary attachment');
+    assert.equal(f.rich().view_state.imageAttachments[0].file.type, 'image/png');
+    assert.equal(f.sent.length, 0, 'binary draft persistence never sends a model request');
+    restarted.destroy();
+  }
   {
     const f = fixture();
     const charter = f.remember(f.context());
@@ -97,10 +136,16 @@ function fixture(config = {}) {
     assert.equal(f.nativeDraft(), first.context.client_draft_id, 'native identity setter selects a distinct retained composer draft');
     assert.equal(f.delivered.filter(x => x.type === 'navigate-to-route').length, 1);
     assert(!f.delivered.some(x => x.prefillPrompt || x.prompt), 'navigation must not prefill input');
+    const rich = { draft: { prompt: { document: { type: 'doc', content: [{ type: 'skill_mention', attrs: { name: 'project-skill', path: 'C:\\原生Skills\\SKILL.md' } }] }, plainTextMode: false }, pullRequestChecks: [] }, document_json: { type: 'doc', content: [{ type: 'skill_mention', attrs: { name: 'project-skill', path: 'C:\\原生Skills\\SKILL.md' } }, { type: 'paragraph', content: [{ type: 'text', text: 'Unsent native request' }] }] }, view_state: { imageAttachments: [{ id: 'native-image', nativeField: { path: 'D:\\图片.png' } }], attachmentOrder: ['image:native-image', 'file:native-file'], fileAttachments: [{ id: 'native-file', path: 'E:\\附件.pdf' }] } };
+    f.setRich(rich);
     const planning = await f.adapter.open(f.remember(f.context({ kind: 'planning' })));
     assert.notEqual(planning.context.client_draft_id, first.context.client_draft_id, 'stages must own different native draft keys');
+    assert.equal(f.rich().draft, undefined, 'home composer singleton must not leak another target input');
+    assert.equal(f.rich().view_state.imageAttachments.length, 0, 'home image/order singleton must not leak another target attachments');
     const same = await f.adapter.open(charter);
     assert.equal(same.context.client_draft_id, first.context.client_draft_id, 'a target restores its native draft');
+    assert.deepEqual(f.rich(), rich, 'raw native Skill document, file metadata and attachment order restore together');
+    assert.equal(f.delivered.filter(x => x.type === 'navigate-to-route').at(-1).state.focusComposerNonce, first.context.client_draft_id, 'target uses a stable genuine native ComposerScope');
     const saved = plain(f.adapter.capture());
     await f.adapter.restore(charter, saved);
     assert.equal(f.sent.length, 0, 'restore must never start or send');
@@ -108,10 +153,17 @@ function fixture(config = {}) {
     assert.notEqual(restart.context.client_draft_id, first.context.client_draft_id, 'explicit restart gets an empty native draft key');
     const fresh = await f.adapter.restore(f.context({ draft_generation: 1 }), saved);
     assert.equal(fresh.context.client_draft_id, restart.context.client_draft_id, 'a stale reload snapshot cannot restore the pre-restart draft');
+    assert.equal(f.rich().draft, undefined, 'explicit restart does not reuse the prior rich composer document');
     f.adapter.destroy();
     assert.equal(f.nativeDraft(), 'client-new-thread:original-native-draft', 'leaving restores the ordinary native home draft');
     assert.equal(f.sender.postMessage, f.originalSend, 'sender hook must unload');
     assert.equal(f.dispatcher.deliverOrBufferMessage, f.originalDeliver, 'dispatcher hook must unload');
+    f.root.sessionStorage = { getItem: () => null, setItem() {} };
+    const reinstalled = f.root.BetterCodexNativeConversation.create(f.options);
+    const afterRestart = await reinstalled.open(charter);
+    assert.equal(afterRestart.context.client_draft_id, first.context.client_draft_id, 'opaque target identity survives a cleared desktop session');
+    assert.deepEqual(f.rich(), rich, 'desktop restart loads native serialized draft fields without flattening Skills or attachments');
+    reinstalled.destroy();
   }
   {
     const f = fixture();
