@@ -72,18 +72,21 @@ function createFixture() {
     acceptance:['有权限可访问，无权限拒绝'],manual_steps:['打开入口，提交登录，验证结果'],unresolved_questions:[],skill_id:'better-codex-plan',...extra});
   async function startAndBind(projectId,kind,threadId) {
     const started = await api('/api/projects/'+projectId+'/native-session','POST',{kind,request_id:projectId+'-'+kind});
-    const command = runtime.planning.claimCommand('relay-leader');
-    assert.equal(command.id,started.value.command.id);
-    const checkpoint = await api('/api/projects/'+projectId+'/native-session/bind','POST',{kind,request_id:command.id,relay_id:'relay-leader',thread_id:threadId});
+    assert.equal(started.value.command,null); assert.equal(started.value.session,null);
+    assert.equal(runtime.planning.listPendingCommands().length,0,'opening is read-only');
+    const args = {project_id:projectId,kind,request_id:projectId+'-'+kind,relay_id:'relay-leader',host_id:'local',expected_revision:0};
+    const prepared = await api('/api/native-conversations/prepare','POST',args);
+    const command = {id:prepared.value.operation.request_id};
+    await api('/api/native-conversations/bind','POST',{...args,thread_id:threadId,checkpoint:'allocated'});
+    const checkpoint = await api('/api/native-conversations/bind','POST',{...args,thread_id:threadId,checkpoint:'bound'});
     const duringStart = await api('/api/projects/'+projectId+'/native-session','POST',{kind,request_id:'repeat-during-'+command.id});
-    assert.equal(duringStart.value.session,null);
-    assert.equal(duringStart.value.command.id,command.id);
-    assert.equal(duringStart.value.command.status,'claimed');
-    assert.equal(duringStart.value.command.thread_id,threadId);
-    runtime.commandReceipt(command.id,'relay-leader','checkpoint',{thread_id:threadId,turn_id:'turn-'+threadId});
+    assert.equal(duringStart.value.session.thread_id,threadId);
+    assert.equal(duringStart.value.command,null);
+    assert.equal(duringStart.value.pending_operation.request_id,command.id);
+    assert.equal(duringStart.value.pending_operation.status,'bound');
+    await api('/api/native-conversations/receipt','POST',{...args,thread_id:threadId,turn_id:'turn-'+threadId,status:'accepted'});
     assert.ok(runtime.activeTurns().some(turn=>turn.thread_id===threadId&&turn.turn_id==='turn-'+threadId));
-    runtime.commandReceipt(command.id,'relay-leader','complete',{thread_id:threadId,turn_id:'turn-'+threadId});
-    assert.equal(runtime.planning.getCommand(command.id).status,'completed');
+    assert.equal(runtime.conversations.operation(command.id).status,'accepted');
     // A command receipt acknowledges dispatch, not the end of its native turn.
     assert.ok(runtime.activeTurns().some(turn=>turn.thread_id===threadId&&turn.turn_id==='turn-'+threadId));
     runtime.handleProjectEvent('turn/completed',{threadId,turn:{id:'old-'+threadId,status:'completed'}});
@@ -115,10 +118,9 @@ async function run() {
     }
     await assert.rejects(api('/api/projects/p1/native-session','POST',{kind:'planning'}),/confirmed_charter_required/);
     const {started,command} = await f.startAndBind('p1','charter','charter-p1');
-    assert.equal(started.value.command.payload.native_defaults,true);
-    assert.deepEqual(started.value.command.payload.root_paths,f.roots);
-    assert.ok(started.value.prompt.includes('__BETTER_CODEX_THREAD_ID__'));
-    assert.ok(started.value.command.payload.input.some(entry=>entry.type==='skill'&&fs.existsSync(entry.path)));
+    assert.equal(Object.hasOwn(started.value,'prompt'),false);
+    assert.deepEqual(started.value.root_paths,f.roots);
+    assert.equal(started.value.mode,'draft');
     const repeat = await api('/api/projects/p1/native-session','POST',{kind:'charter'});
     assert.equal(repeat.value.command,null);assert.equal(repeat.value.session.thread_id,'charter-p1');
     await f.startAndBind('p2','charter','charter-p2');
@@ -135,11 +137,10 @@ async function run() {
     const confirmed = await api('/api/project-tools/project_charter_confirm','POST',{project_id:'p1',thread_id:'charter-p1',expected_revision:1,message_id:'real-user'});
     assert.equal(confirmed.value.revision,2);
     const planningStart = await f.startAndBind('p1','planning','planning-p1');
-    assert.ok(planningStart.started.value.prompt.includes('Web前端'));
-    assert.ok(planningStart.started.value.prompt.includes('本地源码'));
-    assert.ok(planningStart.started.value.prompt.includes('待核对'));
-    assert.ok(!planningStart.started.value.prompt.includes('外部目录'));
-    assert.deepEqual(planningStart.started.value.command.payload.root_paths,f.roots);
+    assert.equal(planningStart.started.value.context.workspaces[0].role,'Web前端');
+    assert.equal(planningStart.started.value.context.workspaces[0].source_of_truth,'本地源码');
+    assert.equal(planningStart.started.value.context.workspaces[2].availability,'missing');
+    assert.deepEqual(planningStart.started.value.root_paths,f.roots);
     assert.equal(runtime.context('p1',{thread_id:'planning-p1'}).confirmation_candidates.length,0);
     const context = runtime.context('p1');
     assert.deepEqual(context.root_paths,f.roots);assert.equal(context.workspaces[2].availability,'missing');
@@ -220,7 +221,7 @@ async function run() {
     assert.equal(fs.readFileSync(f.externalPath,'utf8'),f.externalText);
     await api('/api/skills/'+skillId,'DELETE',{version:2});assert.equal(runtime.skills.get(skillId),null);
     await assert.rejects(api('/api/projects/p1/native-session/bind','POST',{kind:'charter',request_id:command.id,relay_id:'foreign-relay',thread_id:'attacker'}),/session_relay_not_leader/);
-    const pendingStart = runtime.startSession('p3',{kind:'charter',request_id:'recovery-checkpoint'}).command;
+    const pendingStart = runtime.planning.enqueueCommand({project_id:'p3',session_kind:'charter',kind:'start',expected_revision:0,request_id:'recovery-checkpoint',payload:{message:'legacy queued explicit send'}});
     runtime.planning.claimCommand('relay-leader');
     runtime.commandReceipt(pendingStart.id,'relay-leader','checkpoint',{thread_id:'recovered-thread',turn_id:'recovered-turn'});
     runtime.planning.enqueueCommand({project_id:'p2',session_kind:'charter',kind:'turn',thread_id:'charter-p2',expected_revision:1,
@@ -242,21 +243,20 @@ async function run() {
     // Finish the unrelated safely requeued command before claiming this start.
     const requeued = restarted.planning.claimCommand('relay-leader');
     restarted.commandReceipt(requeued.id,'relay-leader','complete',{thread_id:'charter-p2'});
-    const threadOnlyStart = restarted.startSession('p4',{kind:'charter',request_id:'recovery-thread-only'}).command;
+    const threadOnlyStart = restarted.planning.enqueueCommand({project_id:'p4',session_kind:'charter',kind:'start',expected_revision:0,request_id:'recovery-thread-only',payload:{message:'legacy queued explicit send'}});
     const threadOnlyClaim = restarted.planning.claimCommand('relay-leader');
     assert.equal(threadOnlyClaim.id,threadOnlyStart.id);
     restarted.commandReceipt(threadOnlyStart.id,'relay-leader','checkpoint',{thread_id:'thread-without-first-turn'});
     const secondRestart = createNativeProjectRuntime({store,worker:{wake(){throw Error('unexpected restart wake');}},
       home:f.home,userHome:f.userHome,codexHome:f.codexHome});
     const unresolved = secondRestart.startSession('p4',{kind:'charter',request_id:'must-not-create-another-thread'});
-    assert.equal(unresolved.session,null);
-    assert.equal(unresolved.command.id,threadOnlyStart.id);
-    assert.equal(unresolved.command.status,'outcome_unknown');
-    assert.equal(unresolved.command.turn_id,null);
+    assert.equal(unresolved.session.thread_id,'thread-without-first-turn');
+    assert.equal(unresolved.command,null);
+    assert.equal(secondRestart.planning.getCommand(threadOnlyStart.id).status,'outcome_unknown');
     assert.equal(secondRestart.planning.getSession('p4','charter').thread_id,'thread-without-first-turn');
     assert.equal(secondRestart.planning.listPendingCommands().some(entry=>entry.project_id==='p4'),false);
     const again = secondRestart.startSession('p4',{kind:'charter'});
-    assert.equal(again.session,null);assert.equal(again.command.id,threadOnlyStart.id);
+    assert.equal(again.session.thread_id,'thread-without-first-turn');assert.equal(again.command,null);
     assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM project_native_commands WHERE project_id=?').get('p4').count,1);
     assert.equal(state.dispatch,0);assert.equal(state.wake,0);
     console.log('PASS: native project runtime lifecycle, confirmation evidence, safe backlog conversion, pinned work payload and Skill API');

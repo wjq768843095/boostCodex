@@ -9,7 +9,7 @@ async function refresh(savedView){
   const saved=${JSON.stringify(saved)},sleep=ms=>new Promise(r=>setTimeout(r,ms));
   if(window.__betterCodexInjection__?.restoreReloadState)await window.__betterCodexInjection__.restoreReloadState(saved);else window.__betterCodexInjection__?.open(saved.surface,{projectId:saved.project});
   for(let i=0;i<50;i++){if(window.__betterCodexInjection__?.ready?.()&&(saved.surface!=='projects'||document.querySelector('.bc-project-row.is-active')?.dataset.projectId===saved.project)&&(!(saved.surface==='projects'&&saved.tab)||document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view="'+saved.tab+'"]')))break;await sleep(100);}
-  if(saved.surface==='projects'&&saved.tab){document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view="'+saved.tab+'"]')?.click();for(let i=0;i<20;i++){if(document.querySelector('.better-codex-project-dashboard-tabs-desktop [aria-current="page"]')?.dataset.projectDashboardView===saved.tab)break;await sleep(100);}}
+  if(saved.surface==='projects'&&saved.tab&&!saved.nativeConversation){document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view="'+saved.tab+'"]')?.click();for(let i=0;i<20;i++){if(document.querySelector('.better-codex-project-dashboard-tabs-desktop [aria-current="page"]')?.dataset.projectDashboardView===saved.tab)break;await sleep(100);}}
   await sleep(100);
   for(const f of saved.fields){const e=[...document.querySelectorAll('#better-codex-panel textarea,#better-codex-panel input')].find(e=>(e.getAttribute('name')||e.id||e.getAttribute('placeholder'))===f.key);if(!e)continue;e.value=f.value;e.dispatchEvent(new Event('input',{bubbles:true}));if(f.focus){e.focus();if(typeof e.setSelectionRange==='function')e.setSelectionRange(f.start,f.end);}}
   for(const s of saved.scroll){const e=[...document.querySelectorAll('#better-codex-panel [class]')].find(e=>e.className===s.cls);if(e)e.scrollTop=s.top;}
@@ -22,19 +22,19 @@ async function reconcile(){
  try{
   const hash=lib.hashes(),old=lib.state();if(hash.sourceHash===old.sourceHash&&!force)return;if(hash.sourceHash===rejected&&!force)return;force=false;
   try{lib.validate();}catch(e){rejected=hash.sourceHash;pending=false;lib.status({phase:'invalid',error:e.message,acceptedRevision:old.sourceHash});lib.log('validation_failed',{error:e.message});return;}
+  const live=await lib.api('/api/dev/status','GET',{},true);if(!live?.ready){pending=true;lib.status({phase:'waiting_for_idle',pendingRevision:hash.sourceHash,blocking:live?.blocking||null});return;}
   if(hash.backendHash===old.backendHash){
-   const previous=fs.readFileSync(lib.LIVE);lib.atomic(lib.LIVE,fs.readFileSync(path.join(lib.ROOT,'src/ui/better-codex-ui.js')));
+   const previous=fs.readFileSync(lib.LIVE);lib.atomic(lib.LIVE,lib.uiBundle());
    try{await refresh();lib.save(path.join(lib.DEV,'state.json'),{...old,...hash});lib.status({phase:'ready',error:null,revision:hash.sourceHash});lib.log('ui_applied',{revision:hash.sourceHash});pending=false;rejected=null;}
    catch(e){lib.atomic(lib.LIVE,previous);try{await refresh();}catch{}rejected=hash.sourceHash;lib.status({phase:'rolled_back',error:e.message});lib.log('ui_rollback',{error:e.message});}return;
   }
-  const live=await lib.api('/api/dev/status','GET',{},true);if(!live?.ready){pending=true;lib.status({phase:'waiting_for_idle',pendingRevision:hash.sourceHash,blocking:live?.blocking||null});return;}
   const build=lib.snapshot(hash);let view;try{view=await cdp(preserveExpression());}catch{}
  lib.runCore(['dev-stop-injector','--json'],{build:old.current});
   try{await lib.api('/api/dev/drain','POST');}catch(e){await refresh(view);if(e.httpStatus===409){pending=true;lib.status({phase:'waiting_for_idle',pendingRevision:hash.sourceHash});return;}throw e;}
   lib.status({phase:'reloading',pendingRevision:hash.sourceHash});
   const priorUi=fs.readFileSync(lib.LIVE);let stopped=false;
   try{
-   await lib.shutdown();stopped=true;lib.save(path.join(lib.DEV,'state.json'),{current:build,previous:old.current,...hash});lib.atomic(lib.LIVE,fs.readFileSync(path.join(build,'src/ui/better-codex-ui.js')));
+   await lib.shutdown();stopped=true;lib.save(path.join(lib.DEV,'state.json'),{current:build,previous:old.current,...hash});lib.atomic(lib.LIVE,lib.uiBundle(build));
    await lib.waitReady(lib.spawnCore(['runtime'],build));await refresh(view);lib.atomic(lib.ENTRY,fs.readFileSync(path.join(build,'integration/entry.cjs')));
    lib.status({phase:'ready',error:null,revision:hash.sourceHash});lib.log('backend_applied',{revision:hash.sourceHash});pending=false;rejected=null;
    // Restart the accepted supervisor so changes to its own source also become active.

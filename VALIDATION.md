@@ -39,6 +39,7 @@ UI 和后台语法检查通过。七组新增 fixture 已通过：
 - 原生宿主实际列出了 `board` 和五项项目工具；总纲写入定义包含 `metadata`、`facts`。两个内置 Skill 及一个旧角色迁移 Skill 均启用且解析成功。
 - 实际桌面检查通过：规划页提供总纲及任务规划入口，自绘聊天输入框已移除；托管 Skill 排在外部 Skill 前，外部详情只读，无模型/权限配置及远程入口。
 - 打开外部 Skill 详情后重新注入，仍恢复同一只读详情，页面就绪且无重连错误。已修复 Skill 桥接路由遗漏、异步复制按钮引用失效以及 `display: contents` 导致的页面状态误判。
+- 左侧“项目管理”“任务看板”“Skill 管理”改由注入层优先处理点击，避免原生侧栏先接管事件。实际桌面连续切换 5 轮、共 15 次真实鼠标点击全部打开正确页面。
 - 真实用户消息、原生审批/问答和业务会话重启恢复：未发起自动业务测试，由用户按以下路径人工验收。
 
 本轮已成功通过原生 MCP 重载刷新工具，无需重启。桌面结果保存在 `.dev/native-planning-acceptance.json`，核对命令为 `node tests/installed-native.cjs --refresh-mcp --check-reload`。先查看 `npm run status` 及 `.dev/status.json`，不要编辑 `.dev/` 生成文件。

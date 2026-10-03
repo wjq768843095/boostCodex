@@ -13,10 +13,15 @@ function readFunction(name) {
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 const requests = [], http = [], opened = [], events = [];
+const entry = {}, agentsEntry = {}, projectsEntry = {};
+const routed = [];
 const state = { agentView: 'all', agentSearch: '', agentPane: 'preview', nativePlanningEnabled: true };
 const container = { innerHTML: '' };
 const context = vm.createContext({
   state, panel: { dataset: {}, querySelector: () => container },
+  SELECTORS: { threadRow: '[data-thread-row]' },
+  entry, agentsEntry, projectsEntry, moreEntry: null, profileEntry: null, usageEntry: null, themeEntry: null,
+  active: false, suppressAgentOutside: false, closeAuxiliaryMenu() {}, openRoute: surface => routed.push(surface),
   t: value => String(value), te: value => String(value),
   escapeHtml2: value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]),
   icon: name => `<i data-icon="${name}"></i>`,
@@ -35,8 +40,31 @@ const context = vm.createContext({
   },
   api: async (url, options) => { http.push({ url, body: JSON.parse(options.body) }); return {}; }
 });
-for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePersistedThread', 'semanticInput', 'turnStartParams', 'executeSessionCommand', 'nativeUserMessage', 'appServerEnvelope', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'projectPlanningMarkup', 'renderAgents']) vm.runInContext(readFunction(name), context);
+for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePersistedThread', 'semanticInput', 'turnStartParams', 'executeSessionCommand', 'nativeUserMessage', 'appServerEnvelope', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'projectPlanningMarkup', 'renderAgents', 'onClick', 'placeRailSequence']) vm.runInContext(readFunction(name), context);
 (async () => {
+  const rail = { children: [], moves: 0, insertBefore(node, cursor) {
+    this.moves++;
+    const old = this.children.indexOf(node);
+    if (old >= 0) this.children.splice(old, 1);
+    const next = cursor ? this.children.indexOf(cursor) : this.children.length;
+    this.children.splice(next, 0, node);
+  } };
+  const railNode = name => ({ name, get parentElement() { return rail.children.includes(this) ? rail : null; }, get nextSibling() { return rail.children[rail.children.indexOf(this) + 1] || null; } });
+  const [home, board, skills, projects, back] = ['home', 'board', 'skills', 'projects', 'back'].map(railNode);
+  rail.children = [home, board, skills, projects, back];
+  context.placeRailSequence([board, skills, projects], rail, null);
+  assert.equal(rail.moves, 0, 'stable rail must not move on refresh');
+  rail.children = [home, board, projects, skills, back];
+  context.placeRailSequence([board, skills, projects], rail, null);
+  assert.deepEqual(rail.children.map(item => item.name), ['home', 'board', 'skills', 'projects', 'back']);
+  const movesAfterRepair = rail.moves;
+  context.placeRailSequence([board, skills, projects], rail, null);
+  assert.equal(rail.moves, movesAfterRepair, 'repaired rail must stay stable');
+  for (const [target, surface] of [[entry, 'issues'], [agentsEntry, 'agents'], [projectsEntry, 'projects']]) {
+    let prevented = 0, stopped = 0;
+    context.onClick({ target: { closest: () => target }, preventDefault: () => prevented++, stopImmediatePropagation: () => stopped++ });
+    assert.equal(routed.pop(), surface); assert.equal(prevented, 1); assert.equal(stopped, 1);
+  }
   const injected = { native_defaults: true, workspace_path: 'D:\\workspace', root_paths: ['D:\\workspace', 'E:\\backend'], model: 'profile-model', effort: 'high', approval_policy: 'on-request', approvals_reviewer: 'auto_review', sandbox_mode: 'workspace-write', developer_instructions: 'profile instructions' };
   assert.deepEqual(plain(context.nativeExplicitParams(injected)), { cwd: 'D:\\workspace', runtimeWorkspaceRoots: ['D:\\workspace', 'E:\\backend'] });
   assert.deepEqual(plain(context.nativeExplicitParams({})), {});

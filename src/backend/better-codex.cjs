@@ -16745,7 +16745,12 @@ var init_injected_ui = __esm({
     "use strict";
     injectedUiBundleSchemaVersion = 1;
     injectedUiBundleChecksum = "c768474315755789a7d8c96f003b2a4d9285845a139b22e683d3a9f1ac6c2bb9";
-    injectedUiBundle = require('node:fs').readFileSync(process.env.BC_UI_FILE || require('node:path').join(__dirname,'../ui/better-codex-ui.js'),'utf8');
+    const uiFs = require('node:fs'), uiPath = require('node:path');
+    if (process.env.BC_UI_FILE && uiFs.existsSync(process.env.BC_UI_FILE)) injectedUiBundle = uiFs.readFileSync(process.env.BC_UI_FILE,'utf8');
+    else {
+      const adapterPath = uiPath.join(__dirname,'../ui/native-conversation-adapter.js');
+      injectedUiBundle = (uiFs.existsSync(adapterPath) ? uiFs.readFileSync(adapterPath,'utf8') + '\n;\n' : '') + uiFs.readFileSync(uiPath.join(__dirname,'../ui/better-codex-ui.js'),'utf8');
+    }
     injectedUiBundleChecksum = require('node:crypto').createHash('sha256').update(injectedUiBundle).digest('hex');
   }
 });
@@ -58350,7 +58355,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
       }
       isDispatchable(issue) {
         return Boolean(
-          !this.isTitleRegenerationPending(issue) && issue.needs_attention && issue.pending_actor === "agent" && issue.agent_enabled && !issue.archived_at && issue.status !== "backlog" && issue.status !== "done"
+          !this.isTitleRegenerationPending(issue) && issue.needs_attention && issue.pending_actor === "agent" && issue.agent_enabled && !issue.archived_at && issue.status !== "backlog" && issue.status !== "done" && !this.db.prepare("SELECT 1 FROM native_conversation_operations WHERE issue_id=? AND status IN ('prepared','allocated','bound','outcome_unknown')").get(issue.id)
         );
       }
       isEnrichmentPending(issue) {
@@ -59333,6 +59338,9 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
           ${issueId ? "AND issues.id = ?" : ""}
           AND issues.archived_at IS NULL
           AND issues.status NOT IN ('backlog', 'done')
+          AND NOT EXISTS (SELECT 1 FROM native_conversation_operations WHERE native_conversation_operations.issue_id=issues.id AND status IN ('prepared','allocated','bound','outcome_unknown'))
+          AND NOT EXISTS (SELECT 1 FROM issue_replies WHERE issue_replies.issue_id=issues.id AND status='running')
+          AND NOT EXISTS (SELECT 1 FROM issue_sessions WHERE issue_sessions.issue_id=issues.id AND active_turn_id IS NOT NULL)
           AND (
             NOT EXISTS (
               SELECT 1 FROM session_commands
@@ -59518,7 +59526,8 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         if (!issue.run_thread_id || issue.run_thread_id !== threadId) throw new Error("issue_session_mismatch");
         const session = this.db.prepare("SELECT status, active_turn_id FROM issue_sessions WHERE issue_id = ? AND thread_id = ?").get(issueId, threadId);
         const command2 = this.db.prepare("SELECT 1 AS value FROM session_commands WHERE issue_id = ? AND status IN ('pending', 'claimed') LIMIT 1").get(issueId);
-        if (session?.active_turn_id || session && ["starting", "active", "stopping", "waiting_on_approval", "waiting_on_user"].includes(session.status) || command2) throw new Error("thread_handoff_busy");
+        const reserved = this.db.prepare("SELECT 1 FROM native_conversation_operations WHERE issue_id=? AND status IN ('prepared','allocated','bound','outcome_unknown')").get(issueId);
+        if (issue.active_run_status || this.db.prepare("SELECT 1 FROM issue_runs WHERE issue_id=? AND status IN ('claimed','running','scheduling')").get(issueId) || this.getIssueReplyState(issueId).status === "running" || reserved || session?.active_turn_id || session && ["starting", "active", "stopping", "waiting_on_approval", "waiting_on_user"].includes(session.status) || command2) throw new Error("thread_handoff_busy");
         return issue;
       }
       handoffIssueSession(issueId, threadId) {
@@ -62474,6 +62483,7 @@ var init_worker = __esm({
           project_overviews: this.projectOverviews.size,
           project_plannings: this.projectPlannings.size
         };
+        if (this.store.nativeProjectRuntime?.conversations) Object.assign(blocking,this.store.nativeProjectRuntime.conversations.blockingStatus());
         return { ready: Object.values(blocking).every((value) => value === 0), blocking, active_issue_ids: this.store.listActiveIssueIds() };
       }
       async waitForUpdateDrain(timeout = 15 * 60 * 1e3) {
@@ -71195,6 +71205,8 @@ function errorCode4(error2) {
   return message;
 }
 function errorStatus(code2) {
+  if (["native_operation_not_found"].includes(code2)) return 404;
+  if (["native_operation_scope_mismatch", "native_operation_identity_mismatch", "native_host_mismatch", "native_binding_required", "native_operation_busy", "native_conversation_busy", "native_outcome_unknown", "native_operation_finished", "native_handoff_required", "native_tool_call_conflict", "native_tool_outcome_unknown", "native_allocation_checkpoint_required", "explicit_restart_required"].includes(code2)) return 409;
   if (["confirmed_charter_required", "explicit_user_confirmation_required", "confirmation_message_mismatch", "session_thread_mismatch", "command_project_mismatch", "command_relay_mismatch", "command_turn_mismatch", "command_already_finished", "native_start_already_pending", "event_id_conflict", "item_charter_revision_mismatch", "item_not_converted", "issue_project_mismatch", "skill_name_conflict", "skill_slug_conflict", "skill_export_path_conflict", "builtin_skill_slug_locked"].includes(code2)) return 409;
   if (["external_skill_read_only", "builtin_skill_delete_forbidden"].includes(code2)) return 403;
   if (code2 === "project_backup_failed") return 503;
@@ -72323,7 +72335,10 @@ data: ${JSON.stringify({ revision })}
         if (!relayId || !appSessionId) throw new Error("session_relay_identity_required");
         const result2 = body.owner === "native" ? worker.pollNativeSessionProxy(relayId, appSessionId, capability, cleanString(body.capability_error, 2e3), body.busy === true) : worker.pollSessionRelay(relayId, appSessionId, capability, cleanString(body.capability_error, 2e3), body.busy === true);
         if (body.owner === "native" && result2.leader) {
-          if (result2.acquired && result2.previous_relay_id && result2.previous_relay_id !== relayId) projectRuntime.planning.recoverCommands(result2.previous_relay_id);
+          if (result2.acquired && result2.previous_relay_id && result2.previous_relay_id !== relayId) {
+            projectRuntime.planning.recoverCommands(result2.previous_relay_id);
+            projectRuntime.conversations.recoverRelay(result2.previous_relay_id);
+          }
           if (capability === "ready" && body.busy !== true && !result2.command) result2.command = projectRuntime.planning.claimCommand(relayId) || null;
           const projectThreads = store.db.prepare("SELECT thread_id FROM project_native_sessions").all().map(row => row.thread_id);
           result2.thread_ids = [...new Set([...(result2.thread_ids || []), ...projectThreads])];
@@ -72545,6 +72560,7 @@ data: ${JSON.stringify({ revision })}
           const nextStatus = patch.status || issue.status;
           if (["backlog", "done"].includes(String(nextStatus))) throw new Error("issue_not_startable");
           if (issue.active_run_status || issue.session_active_turn_id || store.getIssueReplyState(issue.id).status === "running") throw new Error("issue_execution_running");
+          if (projectRuntime.conversations.busyIssue(issue)) throw new Error("issue_execution_running");
           const nextProject = store.getProject(String(patch.project_id || issue.project_id));
           const nextWorkspace = String(patch.workspace_path || issue.workspace_path || nextProject?.workspace_path || "");
           if (!nextWorkspace) throw new Error("workspace_required");

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const properties = {
   project_id: { type: 'string', description: 'Better Codex project ID.' },
-  thread_id: { type: 'string', description: 'The bound native conversation ID supplied in its opening message.' },
+  thread_id: { type: 'string', description: 'The bound native conversation ID.' },
   expected_revision: { type: 'integer', minimum: 0 },
   revision: { type: 'integer', minimum: 1 },
   section_ids: { type: 'array', items: { type: 'string' } },
@@ -55,4 +55,11 @@ async function call(name, args, options = {}) {
   if (!response.ok) throw new Error(value.error || 'project_tool_failed');
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value };
 }
-module.exports = { tools, call };
+// Native tools carry their trusted project/thread identity outside model arguments.
+const nativeTools = tools.map(tool => ({
+  name: 'better_codex_' + tool.name, description: tool.description,
+  inputSchema: { ...tool.inputSchema,
+    required: tool.inputSchema.required.filter(key => !['project_id', 'thread_id'].includes(key)),
+    properties: Object.fromEntries(Object.entries(tool.inputSchema.properties).filter(([key]) => !['project_id', 'thread_id'].includes(key))) }
+}));
+module.exports = { tools, nativeTools, call };
