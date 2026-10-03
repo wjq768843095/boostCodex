@@ -43,13 +43,23 @@ async function main() {
     ui = await cdp(`(async()=>{
       const api=window.__betterCodexInjection__,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
       const wait=async check=>{for(let i=0;i<70;i++){if(check())return;await sleep(100);}throw Error('installed view did not render');};
+      const rect=element=>{if(!element)return null;const bounds=element.getBoundingClientRect(),style=getComputedStyle(element);return {x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,display:style.display,visibility:style.visibility,hidden:element.hidden};};
+      const visible=element=>{if(!element)return false;for(let node=element;node;node=node.parentElement){const style=getComputedStyle(node);if(node.hidden||node.inert||style.display==='none'||style.visibility==='hidden')return false;}const bounds=element.getBoundingClientRect();return bounds.width>0&&bounds.height>0;};
+      const nativeLayout=()=>[...document.querySelectorAll('[data-better-codex-inline-content]')].find(visible);
       api.open('projects',{projectId:${JSON.stringify(project.id)}});
       await sleep(150);
       await wait(()=>{if(api.captureReloadState().nativeConversation?.adapterSnapshot?.project_id===${JSON.stringify(project.id)})return true;const button=document.querySelector('[data-project-dashboard-view="planning"]');if(button)button.click();return false;});
       await wait(()=>api.captureReloadState().nativeConversation?.adapterSnapshot?.project_id===${JSON.stringify(project.id)}&&!document.querySelector('.better-codex-inline-status')?.textContent);
       const inline=document.querySelector('#better-codex-native-conversation');
       if(inline.querySelector('.better-codex-inline-details').hidden)inline.querySelector('[data-inline-details]').click();
-      const planning={charter:!!inline.querySelector('[data-inline-stage="charter"]'),planning:!!inline.querySelector('[data-inline-stage="planning"]'),customChat:!!document.querySelector('[data-project-planning-form] textarea'),nativeComposer:!!document.querySelector('[data-better-codex-inline-content] .ProseMirror[contenteditable="true"]'),nativeLayout:!!document.querySelector('[data-better-codex-inline-content]'),details:!inline.querySelector('.better-codex-inline-details').hidden};
+      const center=nativeLayout(),editor=center?.querySelector('.ProseMirror[contenteditable="true"]'),detail=inline.querySelector('.better-codex-inline-details');
+      const columns=[rect(inline.querySelector('.bc-planning-projects')),rect(inline.querySelector('.bc-planning-conversations')),rect(center),rect(detail)];
+      const editorBounds=rect(editor),compact=matchMedia('(max-width:980px)').matches;
+      const planning={charter:!!inline.querySelector('[data-inline-stage="charter"],[data-planning-create="charter"]'),planning:!!inline.querySelector('[data-inline-stage="planning"],[data-planning-create="planning"]'),customChat:!!document.querySelector('[data-project-planning-form] textarea'),nativeComposer:visible(editor),nativeLayout:visible(center),details:!detail.hidden,shellVisible:visible(document.querySelector('#better-codex-panel')),columns,columnsVisible:columns.every(column=>column&&column.width>0&&column.height>0&&!column.hidden),ordered:columns.slice(0,compact?2:3).every((column,index)=>column.x+column.width<=columns[index+1].x+2),composerInThirdColumn:!!editorBounds&&editorBounds.x>=columns[2].x-2&&editorBounds.x+editorBounds.width<=columns[2].x+columns[2].width+2,nativeSidebarHidden:[...document.querySelectorAll('.app-shell-left-panel .sidebar-navigation')].every(sidebar=>!visible(sidebar)),compact};
+      inline.querySelector('[data-inline-details]').click();
+      planning.collapsed={hidden:detail.hidden,chatWidthBefore:columns[2].width,chatWidthAfter:rect(nativeLayout())?.width,snapshotDetailsOpen:api.captureReloadState().nativeConversation?.detailsOpen};
+      window.__bcAcceptancePlanningView=api.captureReloadState();
+      inline.querySelector('[data-inline-details]').click();
       api.open('agents');await sleep(350);await wait(()=>document.querySelector('#better-codex-panel [data-skill-key="better-codex-charter"]'));
       const panel=document.querySelector('#better-codex-panel');
       const keys=[...panel.querySelectorAll('[data-skill-key]')].map(row=>row.dataset.skillKey);
@@ -59,7 +69,6 @@ async function main() {
       let externalReadonly=false;
       if(external){external.click();await wait(()=>panel.querySelector('[data-skill-form]'));externalReadonly=!!panel.querySelector('[data-skill-form] textarea[readonly]')&&!panel.querySelector('[data-skill-form] button[type="submit"]');}
       for(let i=0;i<25&&!api.ready();i++)await sleep(100);
-      const rect=element=>{if(!element)return null;const bounds=element.getBoundingClientRect(),style=getComputedStyle(element);return {x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,display:style.display,visibility:style.visibility,hidden:element.hidden};};
       return {ready:api.ready(),error:api.bootstrapError(),planning,managedFirst,externalReadonly,remoteEntry:!!document.querySelector('[data-help-view="remote"]'),modelControls:!!panel.querySelector('[name="model"],[name="reasoning_effort"],[name="sandbox_mode"]'),layout:{surface:panel.dataset.surface,panel:rect(panel),skills:rect(panel.querySelector('#better-codex-agents')),toolbar:!!panel.querySelector('.better-codex-toolbar button')}};
     })()`);
     if (process.argv.includes('--check-reload')) {
@@ -69,12 +78,22 @@ async function main() {
       assert.equal(ui.reload.error,null,'no reconnect error after refresh');
       assert.equal(ui.reload.surface,'agents','Skill view restored');
       assert.equal(ui.reload.externalReadonly,true,'external Skill detail restored');
+      await cdp('(async()=>{window.__bcAcceptanceSkillView=window.__betterCodexInjection__.captureReloadState();await window.__betterCodexInjection__.restoreReloadState(window.__bcAcceptancePlanningView);return true;})()');
+      await require('../integration/watcher.cjs').refresh();
+      ui.planningReload=await cdp(`(async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));for(let i=0;i<70;i++){const root=document.querySelector('#better-codex-native-conversation');if(window.__betterCodexInjection__?.ready?.()&&root&&!root.querySelector('.better-codex-inline-status')?.textContent)break;await sleep(100);}const api=window.__betterCodexInjection__,root=document.querySelector('#better-codex-native-conversation'),saved=window.__bcAcceptancePlanningView,current=api.captureReloadState(),panel=document.querySelector('#better-codex-panel');const result={ready:api.ready(),error:api.bootstrapError(),collapsed:!!root?.querySelector('.better-codex-inline-details')?.hidden,identityMatches:JSON.stringify(current.nativeConversation?.target)===JSON.stringify(saved.nativeConversation?.target),shellVisible:!!panel&&!panel.hidden&&panel.getBoundingClientRect().width>0,nativeComposerVisible:[...document.querySelectorAll('[data-better-codex-inline-content] .ProseMirror[contenteditable="true"]')].some(editor=>editor.getBoundingClientRect().width>0&&!editor.closest('[inert]'))};await api.restoreReloadState(window.__bcAcceptanceSkillView);return result;})()`);
+      assert.equal(ui.planningReload.ready,true,'planning workspace ready after refresh');
+      assert.equal(ui.planningReload.error,null,'planning workspace restore has no error');
+      assert.equal(ui.planningReload.collapsed,true,'collapsed documents stay collapsed after reload');
+      assert.equal(ui.planningReload.identityMatches,true,'conversation identity stays in the same project workspace');
+      assert.equal(ui.planningReload.shellVisible,true,'Better Codex project shell remains visible after reload');
+      assert.equal(ui.planningReload.nativeComposerVisible,true,'real native composer remains visible after reload');
     }
   } finally {
-    await cdp('(async()=>{const saved=window.__bcAcceptanceSavedView;delete window.__bcAcceptanceSavedView;if(saved)await window.__betterCodexInjection__.restoreReloadState(saved);return true;})()');
+    await cdp('(async()=>{const saved=window.__bcAcceptanceSavedView;delete window.__bcAcceptanceSavedView;delete window.__bcAcceptancePlanningView;delete window.__bcAcceptanceSkillView;if(saved)await window.__betterCodexInjection__.restoreReloadState(saved);return true;})()');
   }
   assert.equal(ui.ready,true,'UI ready: '+JSON.stringify({error:ui.error,layout:ui.layout}));assert.equal(ui.error,null,'UI bootstrap');
   assert.equal(ui.planning.charter,true,'charter entry');assert.equal(ui.planning.planning,true,'planning entry');assert.equal(ui.planning.customChat,false,'custom chat removed');assert.equal(ui.planning.nativeComposer,true,'real native composer');assert.equal(ui.planning.nativeLayout,true,'native layout retained');assert.equal(ui.planning.details,true,'project documents beside native chat');
+  assert.equal(ui.planning.shellVisible,true,'project page shell remains visible');assert.equal(ui.planning.columnsVisible,true,'all four columns are visible');assert.equal(ui.planning.ordered,true,'project, planning conversation, native chat and documents have ordered boundaries');assert.equal(ui.planning.composerInThirdColumn,true,'real composer is contained in the third column');assert.equal(ui.planning.nativeSidebarHidden,true,'unrelated global native chat list is hidden');assert.equal(ui.planning.collapsed.hidden,true,'documents can be collapsed');assert.ok(ui.planning.collapsed.chatWidthAfter>=ui.planning.collapsed.chatWidthBefore,'collapsing documents never narrows native chat');
   assert.equal(ui.managedFirst,true,'managed Skills first');assert.equal(ui.externalReadonly,true,'external Skills read only');assert.equal(ui.remoteEntry,false,'remote entry removed');assert.equal(ui.modelControls,false,'model controls removed');
   const status = await lib.api('/api/dev/status'), ready = await lib.api('/readyz'), hashes = lib.hashes();
   assert.equal(lib.state().sourceHash,hashes.sourceHash);assert.equal(status.revision,hashes.backendHash);assert.equal(ready.session_host.connected,true);

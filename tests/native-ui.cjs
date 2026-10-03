@@ -18,7 +18,7 @@ const routed = [];
 const state = { agentView: 'all', agentSearch: '', agentPane: 'preview', nativePlanningEnabled: true };
 const container = { innerHTML: '' };
 const context = vm.createContext({
-  state, panel: { dataset: {}, querySelector: () => container },
+  state, panel: { dataset: {}, querySelector: () => container }, statusLabels: { backlog: '待规划', in_progress: '进行中', done: '已完成' },
   SELECTORS: { threadRow: '[data-thread-row]' },
   entry, agentsEntry, projectsEntry, moreEntry: null, profileEntry: null, usageEntry: null, themeEntry: null,
   active: false, suppressAgentOutside: false, closeAuxiliaryMenu() {}, openRoute: surface => routed.push(surface),
@@ -97,11 +97,18 @@ for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePers
   state.planningContexts = { p: { charter: { revision: 2, status: 'confirmed', sections: [{ id: 'scope', title: '范围', content: 'Scope <content>' }, { id: 'architecture', title: '系统架构', content: 'Architecture details' }] }, plan: { revision: 3, items: [{ id: 'one', title: 'Task one', goal: 'Goal', acceptance: ['Acceptance detail'], directories: ['src'], dependencies: ['two'] }, { id: 'two', title: 'Task two' }], issue_links: [{ item_id: 'two', issue_id: 'issue-two' }], validation: { warnings: [{ code: 'unmapped_requirement', requirement_id: 'REQ-1' }] } } } };
   state.planSelections = { p: ['one'] };
   const markup = context.projectPlanningMarkup({ id: 'p' });
-  for (const text of ['Scope &lt;content&gt;', 'Architecture details', 'Acceptance detail', 'data-project-native-session="charter"', 'data-project-native-session="planning"', 'data-plan-convert="p"', '已加入待规划', '该需求尚未安排任务']) assert(markup.includes(text), text);
+  for (const text of ['Scope &lt;content&gt;', 'Architecture details', 'Acceptance detail', 'data-project-native-session="charter"', 'data-project-native-session="planning"', 'data-plan-convert="p"', '已关联开发任务', '该需求尚未安排任务']) assert(markup.includes(text), text);
   assert(!markup.includes('unmapped_requirement'));
   assert(!markup.includes('<textarea'));
   assert(!markup.includes('data-project-planning-form'));
   assert.match(markup, /data-plan-item="two"[^>]* disabled/);
+  state.planningContexts.p.tasks = [{ id: 'issue-two', status: 'in_progress' }];
+  const runningMarkup = context.projectPlanningMarkup({ id: 'p' }, { inline: true });
+  assert(runningMarkup.includes('开发任务 · 进行中'));
+  assert(runningMarkup.includes('data-plan-convert-item="one"'));
+  assert(runningMarkup.includes('待转开发'));
+  state.planningContexts.p.tasks[0].status = 'done';
+  assert(context.projectPlanningMarkup({ id: 'p' }).includes('开发任务 · 已完成'));
   state.skillsManaged = [{ id: 'managed', name: 'Managed skill', instructions: 'Skill body', description: 'Description', version: 1 }];
   state.skillsExternal = [{ id: 'external:one', name: 'External skill', instructions: 'Read only body', path: 'C:\\skills\\one' }];
   context.renderAgents();

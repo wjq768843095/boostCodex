@@ -22,7 +22,7 @@ function fixture(config = {}) {
   const dispatcher = {
     handlers: new Map(), bufferedMessages: new Map(),
     deliverOrBufferMessage(message) { delivered.push(message); config.onDeliver?.(message, sender); },
-    dispatchHostMessage(message) { if (message.type === 'navigate-to-route') { nativeRoute = message.path; composerScope.value.focusComposerNonce = message.state?.focusComposerNonce; } this.deliverOrBufferMessage(message); }
+    dispatchHostMessage(message) { if (message.type === 'navigate-to-route') { nativeRoute = message.path; composerScope.value.focusComposerNonce = message.state?.focusComposerNonce; const url = new URL(message.path, 'https://codex.local'); routeScope.value = url.pathname === '/projects' ? { routeKind: 'home', projectContext: { projectId: url.searchParams.get('projectId') } } : { routeKind: 'local-thread', conversationId: decodeURIComponent(url.pathname.split('/').at(-1)) }; } this.deliverOrBufferMessage(message); }
   };
   const originalSend = sender.postMessage, originalDeliver = dispatcher.deliverOrBufferMessage;
   const draftDescriptor = { __scopeBrand: 'native-scope' }, draftAtom = { scope: draftDescriptor }, projectAtom = { resolve() {} };
@@ -32,7 +32,8 @@ function fixture(config = {}) {
   const docNode = value => ({ toJSON: () => value });
   const controller = { restoreDraft(text, retained) { nativeDocument = retained?.document?.toJSON() || { type: 'doc', content: [] }; }, plainTextMode: false, view: { dom: { isConnected: true, getBoundingClientRect: () => ({ width: 500 }) }, state: { schema: { nodeFromJSON: docNode }, get doc() { return docNode(nativeDocument); } } } };
   const composerScope = { scope: composerDescriptor, value: { kind: 'new', entrypoint: 'home' }, get(atom) { return atom === promptAtom ? richDraft : atom === viewAtom ? { ...richState, prompt: '' } : undefined; }, set() {} };
-  const nativeElement = { __reactFiber$fixture: { memoizedProps: { composerController: controller }, memoizedState: { memoizedState: { current: nativeScope }, next: { memoizedState: { current: routeScope }, next: { memoizedState: { current: composerScope } } } } } };
+  const nativeElement = { isConnected: true, getBoundingClientRect: () => ({ width: 500 }), __reactFiber$fixture: { memoizedProps: { composerController: controller }, memoizedState: { memoizedState: { current: nativeScope }, next: { memoizedState: { current: routeScope }, next: { memoizedState: { current: composerScope } } } } } };
+  controller.view.dom = nativeElement;
   const host = { sender, dispatcher, dynamicTools: true, prewarm: true, draftIdentity: true, readDraft: () => nativeDraft, selectDraft: id => { nativeDraft = id; }, isSelectedDraft: (id, context) => nativeDraft === id && composerScope.value.focusComposerNonce === id && nativeRoute === '/projects?projectId=' + context.native_project_id, captureDraft: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument, plain_text_mode: false }), restoreDraft: snapshot => { richDraft = snapshot?.draft; richState = snapshot?.view_state || { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; nativeDocument = snapshot?.document_json || { type: 'doc', content: [] }; } };
   const root = {
     crypto: { randomUUID: () => `00000000-0000-0000-0000-${String(++sequence).padStart(12, '0')}` },
@@ -57,7 +58,7 @@ function fixture(config = {}) {
   }
   const reloadSource = () => vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
   reloadSource();
-  const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':');
+  const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':') + (context.kind !== 'work' && context.conversation_id ? ':conversation:' + encodeURIComponent(context.conversation_id) : '');
   const context = (overrides = {}) => ({ project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides });
   const remember = value => { records.set(key(value), value); return value; };
   const api = async (url, options) => {
@@ -66,19 +67,21 @@ function fixture(config = {}) {
     if (config.api) { const answer = await config.api(url, body); if (answer !== undefined) return answer; }
     if (url.includes('/context?')) {
       const query = new URL(url, 'http://fixture.invalid').searchParams;
-      return records.get([query.get('project_id'), query.get('kind'), query.get('issue_id') || ''].join(':'));
+      return records.get(key({ project_id: query.get('project_id'), kind: query.get('kind'), issue_id: query.get('issue_id'), conversation_id: query.get('conversation_id') }));
     }
     if (url.endsWith('/prepare')) {
       const known = records.get(key(body));
-      const operation = { request_id: body.request_id, status: 'prepared', thread_id: known?.thread_id || null, expected_revision: body.expected_revision };
+      const target = { project_id: body.project_id, kind: body.kind, issue_id: body.issue_id || null, host_id: body.host_id, ...(body.conversation_id ? { conversation_id: body.conversation_id } : {}) };
+      if (config.enrollLegacy && body.kind !== 'work' && !body.conversation_id) { target.conversation_id = config.enrollLegacy; records.set(key(target), { ...known, ...target }); }
+      const operation = { ...target, request_id: body.request_id, status: 'prepared', thread_id: known?.thread_id || null, expected_revision: body.expected_revision };
       operations.set(body.request_id, operation);
-      return { operation, dynamic_tools: tools };
+      return { target, operation, dynamic_tools: tools };
     }
     if (url.endsWith('/bind')) {
       const operation = operations.get(body.request_id);
       operation.thread_id = body.thread_id;
       operation.status = body.checkpoint;
-      const binding = { project_id: body.project_id, kind: body.kind, issue_id: body.issue_id, thread_id: body.thread_id };
+      const binding = { project_id: body.project_id, kind: body.kind, issue_id: body.issue_id, host_id: body.host_id, thread_id: body.thread_id, ...(body.conversation_id ? { conversation_id: body.conversation_id } : {}) };
       if (body.checkpoint === 'bound') {
         const known = records.get(key(body));
         records.set(key(body), { ...known, binding, mode: 'thread', thread_id: body.thread_id });
@@ -100,10 +103,119 @@ function fixture(config = {}) {
   const adapter = root.BetterCodexNativeConversation.create(options);
   const send = (method, params, id = 'native-' + ++sequence, rest = {}) => { const message = { type: 'mcp-request', hostId: 'local', request: { id, method, params }, ...rest }; sender.postMessage(message); return message; };
   const reply = (id, result, error) => dispatcher.deliverOrBufferMessage({ type: 'mcp-response', hostId: 'local', message: { id, ...(error ? { error } : { result }) } });
-  return { root, host, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, originalSend, originalDeliver, operations, reloadSource, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
+  return { root, host, nativeElement, controller, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, originalSend, originalDeliver, operations, reloadSource, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
 }
 
 (async () => {
+  {
+    const f = fixture();
+    const a = f.remember(f.context({ conversation_id: 'charter-a' }));
+    const b = f.remember(f.context({ conversation_id: 'charter-b' }));
+    const openedA = await f.adapter.open({ ...a, conversation_id: undefined, target: { conversation_id: a.conversation_id } });
+    const richA = { draft: { prompt: { plainTextMode: false, document: { type: 'doc', content: [{ type: 'skill_mention', attrs: { name: 'architecture', path: 'C:\\Skills\\SKILL.md' } }] } }, pullRequestChecks: [] }, view_state: { imageAttachments: [{ id: 'image-a', nativeField: { path: 'D:\\图片.png' } }], fileAttachments: [{ id: 'file-a', path: 'E:\\需求.pdf' }], attachmentOrder: ['file:file-a', 'image:image-a'] }, document_json: { type: 'doc', content: [{ type: 'skill_mention', attrs: { name: 'architecture', path: 'C:\\Skills\\SKILL.md' } }, { type: 'paragraph', content: [{ type: 'text', text: 'Conversation A unsent request' }] }] } };
+    f.setRich(richA); const snapshotA = f.adapter.capture();
+    assert.equal(snapshotA.conversation_id, a.conversation_id, 'target-only metadata must normalize to the stable conversation identity');
+    const openedB = await f.adapter.open(b);
+    assert.notEqual(openedB.context.client_draft_id, openedA.context.client_draft_id, 'same project and stage conversations require distinct native scopes');
+    assert.equal(f.rich().draft, undefined); assert.equal(f.rich().view_state.fileAttachments.length, 0);
+    const richB = { draft: { prompt: 'Conversation B unsent request', pullRequestChecks: [] }, view_state: { imageAttachments: [], fileAttachments: [], attachmentOrder: [] }, document_json: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Conversation B unsent request' }] }] } };
+    f.setRich(richB); const snapshotB = f.adapter.capture();
+    await f.adapter.restore(a, snapshotA);
+    assert.deepEqual(f.rich(), richA, 'Skill node and raw attachment fields remain owned by conversation A');
+    const incompatibleSnapshot = await f.adapter.restore(b, snapshotA);
+    assert.equal(incompatibleSnapshot.context.client_draft_id, openedB.context.client_draft_id, 'snapshot from another conversation cannot replace the target native scope');
+    assert.deepEqual(f.rich(), richB);
+    const hub = f.root.__betterCodexNativeConversationHub__;
+    f.adapter.destroy(); f.reloadSource();
+    const replacement = f.root.BetterCodexNativeConversation.create(f.options);
+    const nativeEvents = f.delivered.length;
+    await replacement.restore(b, snapshotB);
+    assert.equal(f.delivered.length, nativeEvents, 'source reload retains the selected native conversation without navigation');
+    assert.deepEqual(f.rich(), richB); assert.equal(replacement.capture().conversation_id, b.conversation_id);
+    await replacement.restore(a, snapshotA); assert.deepEqual(f.rich(), richA);
+    assert.equal(f.sent.length, 0); assert.equal(f.http.length, 0, 'open/switch/restore never allocate, prepare, or send');
+    assert.equal(hub.originalSend, f.originalSend);
+    replacement.destroy();
+    console.log('PASS: same-stage conversation A/B native rich drafts, opaque identity persistence and source reload isolation');
+  }
+  {
+    let releaseBind; const barrier = new Promise(resolve => { releaseBind = resolve; });
+    const f = fixture({ api: async (url, body) => { if (url.endsWith('/bind') && body.checkpoint === 'allocated') await barrier; } });
+    const a = f.remember(f.context({ conversation_id: 'pending-a' }));
+    const b = f.remember(f.context({ conversation_id: 'pending-b' }));
+    await f.adapter.open(a);
+    f.send('thread/start', { cwd: a.cwd }, 'conversation-pending-a'); await settle(() => f.sent.length === 1);
+    f.reply('conversation-pending-a', { thread: { id: 'conversation-thread-a' } }); await tick();
+    await f.adapter.open(b); releaseBind(); await settle(() => f.bounds.length === 1);
+    assert.equal(f.bounds[0].target.conversation_id, a.conversation_id); assert.equal(f.bounds[0].context.conversation_id, a.conversation_id);
+    assert.equal(f.adapter.getCurrentContext().conversation_id, b.conversation_id); assert.equal(f.adapter.getCurrentContext().thread_id, '', 'A binding cannot overwrite visible B even within one project/stage');
+    const raw = [{ type: 'skill', name: 'architecture', path: 'C:\\Skills\\SKILL.md' }, { type: 'text', text: 'Original native input' }, { type: 'localImage', path: 'D:\\图片.png' }];
+    const first = f.send('turn/start', { threadId: 'conversation-thread-a', input: raw }, 'conversation-first-a');
+    await settle(() => f.sent.length === 2); assert.equal(f.sent.at(-1), first);
+    f.reply('conversation-first-a', { turn: { id: 'conversation-turn-a' } }); await settle(() => f.turns.length === 1);
+    const second = f.send('turn/start', { threadId: 'conversation-thread-a', input: raw }, 'conversation-followup-a');
+    await settle(() => f.sent.length === 3); assert.equal(f.sent.at(-1), second);
+    assert.equal(new URL(f.http.find(x => x.url.includes('/context?')).url, 'https://fixture.invalid').searchParams.get('conversation_id'), a.conversation_id, 'inactive bound thread refreshes its own exact conversation');
+    f.reply('conversation-followup-a', { turn: { id: 'conversation-followup-turn-a' } }); await settle(() => f.turns.length === 2);
+    for (const request of f.http.filter(x => /\/(prepare|bind|receipt)$/.test(x.url))) assert.equal(request.body.conversation_id, a.conversation_id);
+    assert.equal(f.adapter.capture().conversation_id, b.conversation_id); assert.equal(f.sent.filter(x => x.request?.method === 'thread/start').length, 1);
+    f.adapter.destroy(); console.log('PASS: same-stage binding switch, originating callbacks and exact-conversation follow-up reservation');
+  }
+  {
+    let releaseBind; const barrier = new Promise(resolve => { releaseBind = resolve; });
+    const f = fixture({ api: async (url, body) => { if (url.endsWith('/bind') && body.checkpoint === 'allocated') await barrier; } });
+    const a = f.remember(f.context({ conversation_id: 'reload-a' }));
+    await f.adapter.open(a); const snapshot = f.adapter.capture();
+    f.send('thread/start', { cwd: a.cwd }, 'conversation-reload-a'); await settle(() => f.sent.length === 1);
+    f.reply('conversation-reload-a', { thread: { id: 'conversation-reload-thread' } }); await tick();
+    const hub = f.root.__betterCodexNativeConversationHub__;
+    f.adapter.destroy(); f.reloadSource();
+    const replacement = f.root.BetterCodexNativeConversation.create(f.options); await replacement.restore(a, snapshot);
+    assert.equal(f.root.__betterCodexNativeConversationHub__, hub); assert.equal(hub.originalSend, f.originalSend);
+    releaseBind(); await settle(() => f.bounds.length === 1);
+    assert.equal(replacement.getCurrentContext().conversation_id, a.conversation_id); assert.equal(replacement.getCurrentContext().thread_id, 'conversation-reload-thread');
+    assert.equal(f.delivered.filter(x => x.message?.id === 'conversation-reload-a').length, 1);
+    f.send('turn/start', { threadId: 'conversation-reload-thread', input: [] }, 'conversation-reload-first-turn'); await settle(() => f.sent.length === 2);
+    f.reply('conversation-reload-first-turn', { turn: { id: 'conversation-reload-turn' } }); await settle(() => f.turns.length === 1);
+    assert.equal(f.http.filter(x => x.url.endsWith('/prepare')).length, 1, 'source reload preserves the pending first-send slot');
+    assert.equal(f.sent.filter(x => x.request?.method === 'thread/start').length, 1);
+    replacement.destroy(); assert.equal(f.sender.postMessage, f.originalSend);
+    console.log('PASS: conversation-aware in-flight source upgrade without stacked hooks, duplicate allocation or duplicate delivery');
+  }
+  {
+    const f = fixture({ enrollLegacy: 'enrolled-legacy' });
+    const legacy = f.remember(f.context()); await f.adapter.open(legacy); const originalId = f.nativeDraft();
+    f.send('thread/start', { cwd: legacy.cwd }, 'enroll-legacy'); await settle(() => f.sent.length === 1);
+    f.reply('enroll-legacy', { thread: { id: 'enrolled-thread' } }); await settle(() => f.bounds.length === 1);
+    assert.equal(f.bounds[0].target.conversation_id, undefined, 'callback preserves the original legacy sending identity');
+    assert.equal(f.bounds[0].context.conversation_id, 'enrolled-legacy'); assert.equal(f.adapter.capture().conversation_id, 'enrolled-legacy');
+    assert.equal(f.nativeDraft(), originalId, 'legacy enrollment keeps the original native rich draft scope');
+    f.send('turn/start', { threadId: 'enrolled-thread', input: [] }, 'enrolled-first-turn'); await settle(() => f.sent.length === 2);
+    f.reply('enrolled-first-turn', { turn: { id: 'enrolled-turn' } }); await settle(() => f.turns.length === 1);
+    assert(f.http.filter(x => /\/(bind|receipt)$/.test(x.url)).every(x => x.body.conversation_id === 'enrolled-legacy'));
+    await f.adapter.open(f.context({ conversation_id: 'enrolled-legacy' })); assert.equal(f.nativeDraft(), originalId, 'canonical identity aliases the persisted legacy draft key');
+    const work = await f.adapter.open(f.context({ kind: 'work', issue_id: 'compat-work', conversation_id: 'ignored-work-id' }));
+    assert.equal(work.context.conversation_id, undefined, 'work keeps its stable task identity');
+    f.adapter.destroy();
+  }
+  {
+    const f = fixture({ discovery: true }); await f.adapter.open(f.context({ conversation_id: 'layout-conversation' }));
+    assert.deepEqual(plain(f.adapter.inspectLayout()), { available: true, composer_visible: true, ancestry_consistent: true, route_kind: 'home', context_matches: true }, 'four-column layout retains all native providers under the same editor');
+    f.nativeElement.parentElement = { inert: true, hasAttribute: name => name === 'data-better-codex-inline-blocked' };
+    assert.equal(f.adapter.inspectLayout().available, true, 'owned loading protection permits read-only native scope inspection');
+    f.nativeElement.parentElement = { hidden: true }; assert.equal(f.adapter.inspectLayout().available, false, 'hidden retained page cannot be used as active scope');
+    f.nativeElement.parentElement = { inert: true }; assert.equal(f.adapter.inspectLayout().available, false, 'native inert cache is not the active composer');
+    f.nativeElement.parentElement = undefined; f.adapter.destroy();
+  }
+  {
+    const f = fixture(); await f.adapter.connect(); f.host.restoreDraft = () => { throw Error('Native composer not ready'); };
+    const result = await f.adapter.open(f.context({ conversation_id: 'failed-view' })); assert.equal(result.mode, 'unavailable');
+    f.send('thread/start', { cwd: f.context().cwd }, 'failed-page-send'); assert.equal(f.sent.length, 0); assert.equal(f.http.length, 0);
+    f.send('turn/start', { threadId: 'ordinary-old-thread', input: [] }, 'failed-page-old-turn'); assert.equal(f.sent.length, 0, 'failed owned viewport cannot send through its stale native editor');
+    f.dispatcher.dispatchHostMessage({ type: 'navigate-to-route', path: '/settings' });
+    const ordinary = f.send('thread/start', { cwd: f.context().cwd }, 'ordinary-after-failed-page'); assert.equal(f.sent.at(-1), ordinary, 'leaving restores normal native interaction');
+    f.adapter.destroy();
+  }
   {
     const f = fixture();
     await f.adapter.open(f.remember(f.context()));

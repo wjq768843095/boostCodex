@@ -42,7 +42,7 @@
 
   function assertReturnedTarget(expected, returned) {
     if (!returned) return;
-    for (const key of ["project_id", "kind", "issue_id", "host_id"]) if (returned[key] !== undefined && String(returned[key] || "") !== String(expected[key] || "")) throw Error("会话资料已更新，请重新打开会话");
+    for (const key of ["project_id", "kind", "issue_id", "host_id", ...(expected.thread_id ? ["thread_id"] : [])]) if (returned[key] !== undefined && String(returned[key] || "") !== String(expected[key] || "")) throw Error("会话资料已更新，请重新打开会话");
     if (conversationId(expected) && returned.conversation_id !== undefined && returned.conversation_id !== conversationId(expected)) throw Error("会话资料已更新，请重新打开会话");
   }
 
@@ -88,10 +88,20 @@
     return false;
   }
 
-  function findNativeValue(predicate, selector = '[contenteditable],[data-app-shell-main-content-layout]') {
+  function visibleNativeElement(element) {
+    if (!element?.isConnected || !(element.getBoundingClientRect?.().width > 0)) return false;
+    for (let parent = element; parent; parent = parent.parentElement) {
+      if (parent.hidden || parent.getAttribute?.("aria-hidden") === "true" || parent.inert && !parent.hasAttribute?.("data-better-codex-inline-blocked")) return false;
+      const style = root.getComputedStyle?.(parent);
+      if (style?.display === "none" || style?.visibility === "hidden" || style?.visibility === "collapse") return false;
+    }
+    return true;
+  }
+
+  function findNativeValue(predicate, selector = '[contenteditable]', anchor) {
     const seen = new Set();
-    for (const element of root.document.querySelectorAll(selector)) {
-      if (element.hasAttribute?.("contenteditable") && element.getBoundingClientRect?.().width === 0) continue;
+    for (const element of anchor ? [anchor] : root.document.querySelectorAll(selector)) {
+      if (!visibleNativeElement(element)) continue;
       let parent = element;
       while (parent) {
         const key = Object.keys(parent).find(name => name.startsWith("__reactFiber$"));
@@ -99,7 +109,7 @@
         while (fiber && !seen.has(fiber)) {
           seen.add(fiber);
           const props = fiber.memoizedProps;
-          for (const value of [props?.composerController, props?.homeComposerController, props?.controller]) if (value && predicate(value)) return value;
+          for (const value of [props?.composerController, props?.homeComposerController, props?.controller, props?.value]) if (value && predicate(value)) return value;
           let hook = fiber.memoizedState;
           let limit = 0;
           while (hook && typeof hook === "object" && limit++ < 128) {
@@ -115,7 +125,7 @@
     return null;
   }
 
-  const findNativeScope = (predicate, selector) => findNativeValue(value => value.scope && typeof value.get === "function" && typeof value.set === "function" && predicate(value), selector);
+  const findNativeScope = (predicate, selector, anchor) => findNativeValue(value => value.scope && typeof value.get === "function" && typeof value.set === "function" && predicate(value), selector, anchor);
 
   function nativeDraftAccess(namespace, composer) {
     // Source-managed capability profile for the installed native scope runtime.
@@ -128,52 +138,75 @@
     if (!descriptor?.__scopeBrand || identity?.scope !== descriptor || typeof location !== "function" || !project?.resolve || !composer?.VIn?.__scopeBrand || composer.KZt?.scope !== composer.VIn || composer.DQt?.scope !== composer.VIn || composer._Qt?.scope !== composer.VIn || !["XQt", "o$t", "ZQt", "FZt"].every(name => typeof composer[name] === "function")) return null;
     const draftLocation = location({ entrypoint: "home" });
     if (draftLocation !== "new-conversation") return null;
+    const getParts = () => {
+      for (const editor of root.document.querySelectorAll('[contenteditable]')) {
+        if (!visibleNativeElement(editor)) continue;
+        const controller = findNativeValue(value => {
+          const view = Object.getOwnPropertyDescriptor(value, "view")?.value;
+          return view?.dom === editor && !!view.state?.schema && typeof value.restoreDraft === "function";
+        }, undefined, editor);
+        if (!controller) continue;
+        const nativeRoot = findNativeScope(scope => scope.scope === descriptor, undefined, editor);
+        const route = findNativeScope(scope => typeof scope.value?.routeKind === "string", undefined, editor);
+        const nativeComposer = findNativeScope(scope => scope.scope === composer.VIn, undefined, editor);
+        if (nativeRoot && route && nativeComposer) return { editor, controller, nativeRoot, route, nativeComposer };
+      }
+      return null;
+    };
     const getScope = () => {
-      const scope = findNativeScope(scope => scope.scope === descriptor);
+      const scope = getParts()?.nativeRoot;
       if (!scope || !/^client-new-thread:[a-z0-9-]+$/i.test(scope.get(identity, draftLocation) || "")) throw Error("当前 Codex 暂时不支持页内会话");
       return scope;
     };
-    const getComposer = () => {
-      const scope = findNativeScope(scope => scope.scope === composer.VIn && scope.value?.kind === "new" && scope.value?.entrypoint === "home", '[contenteditable]');
-      if (!scope) throw Error("原生输入框尚未就绪，请重新打开会话");
-      return scope;
-    };
-    const getController = () => {
-      const controller = findNativeValue(value => typeof value.restoreDraft === "function" && value.view?.state?.schema && value.view.dom?.isConnected && value.view.dom.getBoundingClientRect().width > 0);
-      if (!controller) throw Error("原生输入框尚未就绪，请重新打开会话");
-      return controller;
+    const getHomeParts = () => {
+      const parts = getParts();
+      if (!parts || parts.nativeComposer.value?.kind !== "new" || parts.nativeComposer.value?.entrypoint !== "home") throw Error("原生输入框尚未就绪，请重新打开会话");
+      return parts;
     };
     return {
+      inspectLayout(context) {
+        const parts = getParts();
+        if (parts) {
+          // These are all discovered from the same native editor ancestry. A
+          // layout can hide navigation/header siblings while retaining the
+          // native providers and controller in their original React subtree.
+          const { nativeRoot, route, nativeComposer } = parts;
+          const consistent = true;
+          const matches = consistent && (!context ? true : context.thread_id ? route.value.routeKind === "local-thread" && route.value.conversationId === context.thread_id : route.value.routeKind === "home" && route.value.projectContext?.projectId === context.native_project_id && nativeRoot.get(identity, draftLocation) === context.client_draft_id && nativeComposer.value.focusComposerNonce === context.client_draft_id);
+          return { available: consistent, composer_visible: true, ancestry_consistent: consistent, route_kind: route?.value.routeKind || null, context_matches: matches };
+        }
+        return { available: false, composer_visible: [...root.document.querySelectorAll('[contenteditable]')].some(visibleNativeElement), ancestry_consistent: false, route_kind: null, context_matches: false };
+      },
       readDraft() { return getScope().get(identity, draftLocation); },
-      isHomeComposer() { try { return !!getComposer(); } catch { return false; } },
+      isHomeComposer() { try { return !!getHomeParts(); } catch { return false; } },
       isSelectedDraft(id, context) {
-        try { return getScope().get(identity, draftLocation) === id && getComposer().value.focusComposerNonce === id && !!findNativeScope(scope => scope.value?.routeKind === "home" && scope.value.projectContext?.projectId === context.native_project_id, '[contenteditable]'); }
+        try { const parts = getHomeParts(); return parts.nativeRoot.get(identity, draftLocation) === id && parts.nativeComposer.value.focusComposerNonce === id && parts.route.value?.routeKind === "home" && parts.route.value.projectContext?.projectId === context.native_project_id; }
         catch { return false; }
       },
       async waitForProject(context, current) {
         for (let index = 0; index < 100; index++) {
           if (!current()) return false;
-          if (findNativeScope(scope => scope.value?.routeKind === "home" && scope.value?.projectContext?.projectId === context.native_project_id)) return true;
+          const route = getParts()?.route;
+          if (route?.value?.routeKind === "home" && route.value.projectContext?.projectId === context.native_project_id) return true;
           await new Promise(resolve => root.setTimeout(resolve, 30));
         }
         throw Error("原生项目尚未就绪，请重新打开会话");
       },
       selectDraft(id, context) {
         if (!/^client-new-thread:[a-z0-9-]+$/i.test(id || "")) throw Error("会话草稿资料已更新");
+        const parts = getParts();
         const scope = getScope();
-        if (context && !findNativeScope(scope => scope.value?.routeKind === "home" && scope.value?.projectContext?.projectId === context.native_project_id)) throw Error("原生项目尚未就绪，请重新打开会话");
+        if (context && (parts?.route.value?.routeKind !== "home" || parts.route.value.projectContext?.projectId !== context.native_project_id)) throw Error("原生项目尚未就绪，请重新打开会话");
         scope.set(identity, draftLocation, id);
         if (scope.get(identity, draftLocation) !== id) throw Error("会话草稿暂时无法恢复");
       },
       captureDraft() {
-        const scope = getComposer();
-        const controller = getController();
+        const { nativeComposer: scope, controller } = getHomeParts();
         const { prompt, ...viewState } = scope.get(composer.DQt);
         return { draft: scope.get(composer.KZt), view_state: viewState, document_json: controller.view.state.doc.toJSON(), plain_text_mode: controller.plainTextMode };
       },
       restoreDraft(snapshot) {
-        const scope = getComposer();
-        const controller = getController();
+        const { nativeComposer: scope, controller } = getHomeParts();
         // Native setters preserve all business fields, Skill mentions, image
         // order and attachment ownership. Native's own controller hydrates the
         // original rich document; input is never read from or rebuilt via DOM.
@@ -302,6 +335,11 @@
       const client = hub.activeClient();
       const request = message?.request;
       const method = request?.method;
+      const blocked = hub.latestClient();
+      if (message.source !== "better-codex" && message?.type === "mcp-request" && ["thread/start", "turn/start"].includes(method) && blocked?.blocksNativeInput() && (message.hostId || LOCAL) === blocked.current.host_id && !hub.threads.get(threadKey(message.hostId, request.params?.threadId))?.awaitingFirstTurn) {
+        hub.deliver(responseError(message, "当前项目会话尚未就绪，请重新打开会话"));
+        return;
+      }
       if (client && message.source !== "better-codex" && message?.type === "thread-prewarm-start" && request?.method === "thread/start" && (message.hostId || LOCAL) === client.current.host_id && (client.isNavigating() || client.ownsNativeDraft() && client.matchesWorkspace(message))) {
         // Native prewarming catches this error and drops only this reservation.
         // Existing warm threads and other native projects remain untouched.
@@ -407,7 +445,9 @@
         const query = new URLSearchParams({ project_id: target.project_id, kind: target.kind, relay_id: client.options.getRelayId?.() || target.relay_id, host_id: target.host_id });
         if (target.issue_id) query.set("issue_id", target.issue_id);
         if (conversationId(target)) query.set("conversation_id", conversationId(target));
-        const context = flattenContext({ ...target, ...await client.options.api(API_ROOT + "context?" + query) });
+        const latest = await client.options.api(API_ROOT + "context?" + query);
+        assertReturnedTarget(target, latest); assertReturnedTarget(target, latest?.target);
+        const context = flattenContext({ ...target, ...latest });
         assertReturnedTarget(target, context);
         if (conversationId(target) && conversationId(context) !== conversationId(target)) throw Error("会话资料已更新，请重新打开会话");
         if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
@@ -567,6 +607,7 @@
         if (options.isCurrentContext && !options.isCurrentContext(this.current)) return false;
         return internalNavigation > 0 || this.ownsRoute(this.route());
       },
+      blocksNativeInput() { return !this.disposed && this.current?.native_open_state === "failed" && options.isCurrentContext?.(this.current) !== false; },
       ownsRoute(route) {
         if (!this.current) return false;
         const supplied = String(route || "");
@@ -626,6 +667,7 @@
         const previous = this.current;
         if (previous?.mode === "draft" && previous.client_draft_id && this.ownsNativeDraft()) this.saveDraft(previous.client_draft_id, previous);
         this.current = context;
+        context.native_open_state = "loading";
         if (!initialRoute) initialRoute = this.route();
         if (context.mode === "legacy_busy" || context.mode === "handoff_required") return { mode: context.mode, context: { ...context }, capabilities: this.capabilities() };
         try {
@@ -650,9 +692,10 @@
               currentRoute = draftRoute;
               this.rememberOrdinaryDraft(context, restored);
               this.saveDraft(context.client_draft_id, context);
+              context.native_open_state = "ready";
               return { mode: "draft", context: { ...context }, capabilities: this.capabilities() };
             }
-            if (previous?.client_draft_id === context.client_draft_id && this.route() === draftRoute && host.readDraft() === context.client_draft_id) return { mode: "draft", context: { ...context }, capabilities: this.capabilities() };
+            if (previous?.client_draft_id === context.client_draft_id && this.route() === draftRoute && host.readDraft() === context.client_draft_id) { context.native_open_state = "ready"; return { mode: "draft", context: { ...context }, capabilities: this.capabilities() }; }
             internalNavigation++;
             try {
               // Project selection supplies native projectId and prevents the
@@ -667,8 +710,10 @@
               host.restoreDraft(snapshot);
             } finally { internalNavigation--; }
           }
+          context.native_open_state = "ready";
           return { mode: context.mode, context: { ...context }, capabilities: this.capabilities() };
         } catch (error) {
+          context.native_open_state = "failed";
           this.report(error, context);
           return { mode: "unavailable", context: { ...context }, error: errorText(error), capabilities: this.capabilities() };
         }
@@ -695,7 +740,8 @@
           assertReturnedTarget(context, prepared.target); assertReturnedTarget(context, scope.operation);
           if (!scope.operation?.request_id || scope.operation.thread_id) throw Error("上次会话连接尚待核对，请恢复后再发送");
           if (this.disposed || !this.current || targetKey(this.current) !== targetKey(context) || !this.ownsCurrentDraft()) throw Error("会话页面已切换，请回到原页面发送");
-          scope.context = flattenContext({ ...context, ...prepared.target, ...(!conversationId(context) && scope.operation.conversation_id ? { conversation_id: scope.operation.conversation_id } : {}), dynamic_tools: prepared.dynamic_tools || context.dynamic_tools });
+          scope.context = flattenContext({ ...context, ...prepared.target, ...(!conversationId(context) && !prepared.target?.conversation_id && scope.operation.conversation_id ? { conversation_id: scope.operation.conversation_id } : {}), dynamic_tools: prepared.dynamic_tools || context.dynamic_tools });
+          assertReturnedTarget(scope.context, prepared.target); assertReturnedTarget(scope.context, scope.operation);
           if (conversationId(scope.context) && targetKey(scope.context) !== targetKey(context)) {
             // The first authorized send can enroll a legacy unnamed draft. Keep
             // its native document/nonce while assigning the new stable identity.
@@ -792,6 +838,7 @@
       },
       restore(value, snapshot) { return this.open(value, snapshot); },
       getCurrentContext() { return this.current ? { ...this.current } : null; },
+      inspectLayout() { return host?.inspectLayout?.(this.current) || { available: false, composer_visible: false, ancestry_consistent: false, route_kind: null, context_matches: false }; },
       capabilities() {
         return {
           available: !!host && host.dynamicTools === true && host.prewarm === true && host.draftIdentity === true,
@@ -807,6 +854,7 @@
       leave: () => client.leave(), destroy: client.destroy.bind(client),
       capture: client.capture.bind(client), restore: client.restore.bind(client),
       capabilities: client.capabilities.bind(client), ownsRoute: client.ownsRoute.bind(client),
+      inspectLayout: client.inspectLayout.bind(client),
       getCurrentContext: client.getCurrentContext.bind(client)
     };
   }
