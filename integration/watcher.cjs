@@ -5,7 +5,7 @@ function restoredViewMatches(saved,current){
  if(!current||current.surface!==saved.surface||!current.open)return false;
  if(saved.nativeConversation){
   const expected=saved.nativeConversation.target,actual=current.nativeConversation?.target;
-  return !!expected&&!!actual&&['project_id','kind','issue_id','conversation_id','history_id'].every(key=>expected[key]===undefined||expected[key]===actual[key]);
+  return !!expected&&!!actual&&['project_id','kind','issue_id','conversation_id'].every(key=>expected[key]===undefined||expected[key]===actual[key])&&String(expected.history_id||'')===String(actual.history_id||'');
  }
  return (!saved.project||saved.project===current.project)&&(!saved.tab||saved.tab===current.tab);
 }

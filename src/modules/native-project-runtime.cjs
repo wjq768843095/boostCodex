@@ -93,7 +93,8 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
       tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version,archived_at:issue.archived_at || null,...planningLinks.find(entry=>entry.issue_id===issue.id) })),
       planning_links: planningLinks.map(entry=>{const issue=store.getIssue(entry.issue_id);return {...entry,status:issue?.status || 'missing',version:issue?.version || null,archived:Boolean(issue?.archived_at)};}),
       ...(workTask ? { task: { id: workTask.id, title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),
-        active_run_status:workTask.active_run_status || null,archived_at:workTask.archived_at || null, ...link } } : {}),
+        active_run_status:workTask.active_run_status || null,session_status:workTask.session_status || null,session_active_turn_id:workTask.session_active_turn_id || null,
+        reply_status:workTask.reply_status || store.getIssueReplyState?.(workTask.id)?.status || 'idle',archived_at:workTask.archived_at || null, ...link } } : {}),
       skills: [...groups.managed, ...groups.external].map(({ id, name, slug, description, path, managed }) => ({ id, name, slug, description, path, managed })) };
   }
   function startSession(projectId, body) {

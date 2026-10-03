@@ -207,7 +207,8 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
         source:'current',read_only:false,thread_id:owned?binding?.thread_id || null:null,host_id:hostId,
         binding:binding?{issue_id:issue.id,thread_id:binding.thread_id,host_id:hostId,status:binding.status}:null,
         mode:!owned?(busyIssue(issue)?'legacy_busy':'handoff_required'):binding?'thread':'draft',
-        created_at:binding?.created_at || issue.created_at || null,updated_at:binding?.updated_at || issue.updated_at || null,session_status:binding?.status || null});
+        created_at:binding?.created_at || issue.created_at || null,updated_at:binding?.updated_at || issue.updated_at || null,session_status:binding?.status || null,
+        session_active_turn_id:binding?.active_turn_id || null});
       for (const row of db.prepare("SELECT * FROM native_conversation_history WHERE project_id=? AND kind='work' AND issue_id=? ORDER BY archived_at DESC,id").all(project.id,issue.id)) {
         try {conversations.push(workHistory(row,issue));} catch(error) {if (error.code!=='native_history_scope_mismatch') throw error;}
       }
@@ -274,6 +275,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const metadata = binding?.thread_id && db.prepare('SELECT * FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL').get(binding.thread_id);
     const details = context(value.project.id, { ...(binding?.thread_id ? { thread_id: binding.thread_id } : {}), ...(value.issue ? { issue_id: value.issue.id } : {}) });
     if (value.issue && !details.task) details.task = { ...value.issue };
+    if (value.issue && binding) details.task={...details.task,session_status:binding.status || null,session_active_turn_id:binding.active_turn_id || null};
     const draftGeneration = value.conversation?.generation ?? db.prepare('SELECT generation FROM native_conversation_scopes WHERE scope_key=?').get(value.scope_key)?.generation ?? 0;
     const scopeTarget={project_id:value.project.id,kind:value.kind,...(value.issue?{issue_id:value.issue.id}:{}),...(value.conversation?{conversation_id:value.conversation.conversation_id}:{})};
     return { context: details, target:scopeTarget, ...scopeTarget, ...(value.issue?{read_only:false,source:'current'}:{}), conversation:display(value.conversation), binding, pending_operation: currentOperation, expected_revision: expectedRevision, draft_generation: draftGeneration,

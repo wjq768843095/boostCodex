@@ -2,8 +2,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const {createFixture} = require('./native-project-runtime.cjs');
 const {ensureConversationTables} = require('../src/modules/native-conversation-runtime.cjs');
+const executionHelper=fs.readFileSync(path.join(__dirname,'../src/ui/better-codex-ui.js'),'utf8').match(/function issueExecutionRunning\(issue\) \{[\s\S]*?\n    \}/);
+assert(executionHelper,'UI execution state helper must be available for the runtime contract');
+const issueExecutionRunning=vm.runInNewContext('('+executionHelper[0]+')');
 
 async function run() {
   const f = createFixture(), {runtime,store,api} = f;
@@ -21,6 +25,7 @@ async function run() {
       store.db.prepare("UPDATE issue_sessions SET active_turn_id=?,status='active' WHERE thread_id=?").run(turnId,threadId);
       store.db.prepare("INSERT INTO issue_replies(issue_id,status) VALUES(?,'running') ON CONFLICT(issue_id) DO UPDATE SET status='running'").run(session.issue_id);
     };
+    store.getIssueReplyState=issueId=>store.db.prepare('SELECT status FROM issue_replies WHERE issue_id=?').get(issueId) || {status:'idle'};
     const issue = store.createIssue({id:'work-1',projectId:'p1',title:'人工验收闭环',description:'交付需求和验收步骤',status:'backlog',agentEnabled:true});
     for (const [kind,issueId] of [['charter'],['planning'],['work',issue.id]]) {
       const opened = (await get('p1',kind,issueId)).value;
@@ -91,11 +96,17 @@ async function run() {
     assert.equal(runtime.conversations.listBindings().some(binding=>binding.thread_id==='work-native'),false,'executor-owned legacy sessions must remain ordinary native chats until handoff');
     store.db.prepare("INSERT INTO issue_native_ownership(issue_id,owner,created_at) VALUES(?,'native',?)").run(issue.id,new Date().toISOString());
     await post('receipt',{...work,thread_id:'work-native',turn_id:'ordinary-turn',status:'accepted'});
+    const activeWork=(await get('p1','work',issue.id)).value.context.task;
+    assert.equal(activeWork.session_status,'active');assert.equal(activeWork.session_active_turn_id,'ordinary-turn');assert.equal(activeWork.reply_status,'running');
+    assert.equal(issueExecutionRunning(activeWork),true,'current native turn data must suppress execution controls through the real UI helper');
+    const activeList=(await api('/api/native-conversations/list?project_id=p1&kind=work')).value.conversations.find(row=>row.issue_id===issue.id&&row.source==='current');
+    assert.equal(activeList.session_active_turn_id,'ordinary-turn');assert.equal(issueExecutionRunning(activeList),true,'current work list shows the active native turn');
     assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM issue_runs').get().count,0,'ordinary chat must not create execution runs');
     assert.equal(runtime.conversations.busyIssue(store.getIssue(issue.id)),true,'accepted first send remains reserved by active native turn/reply');
     await assert.rejects(post('prepare',request('p1','work','while-active',{issue_id:issue.id,expected_revision:1})),/issue_execution_running/);
     store.db.prepare("UPDATE issue_sessions SET status='idle',active_turn_id=NULL WHERE issue_id=?").run(issue.id);
     store.db.prepare("UPDATE issue_replies SET status='succeeded' WHERE issue_id=?").run(issue.id);
+    assert.equal(issueExecutionRunning((await get('p1','work',issue.id)).value.context.task),false,'completed direct chat restores execution affordance data without starting a task');
     await post('prepare',request('p1','work','disconnect',{issue_id:issue.id,expected_revision:1}));
     runtime.conversations.recoverRelay('relay-leader');
     assert.equal(runtime.conversations.operation('disconnect').status,'outcome_unknown');

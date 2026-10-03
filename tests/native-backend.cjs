@@ -81,6 +81,8 @@ async function main() {
   assert.equal((await api('/api/native-conversations/bind','POST',{...ordinaryArgs,thread_id:ordinaryThread,checkpoint:'allocated'})).status,200);
   assert.equal((await api('/api/native-conversations/bind','POST',{...ordinaryArgs,thread_id:ordinaryThread,checkpoint:'bound'})).status,200);
   assert.equal((await api('/api/native-conversations/receipt','POST',{...ordinaryArgs,thread_id:ordinaryThread,turn_id:ordinaryTurn,status:'accepted'})).status,200);
+  const activeNativeTask=(await api('/api/native-conversations/context?project_id='+project.id+'&kind=work&issue_id='+ordinaryIssue.value.id)).value.context.task;
+  assert.equal(activeNativeTask.session_status,'active');assert.equal(activeNativeTask.session_active_turn_id,ordinaryTurn);assert.equal(activeNativeTask.reply_status,'running');
   const activeOrdinary = await api('/api/issues/'+ordinaryIssue.value.id);
   const whileReply = await api('/api/issues/'+ordinaryIssue.value.id+'/start','POST',{version:activeOrdinary.value.version,status:'todo'});
   assert.equal(whileReply.status,409,JSON.stringify(whileReply.value));assert.equal(whileReply.value.error,'issue_execution_running');
