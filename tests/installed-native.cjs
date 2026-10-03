@@ -44,12 +44,14 @@ async function main() {
       const api=window.__betterCodexInjection__,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
       const wait=async check=>{for(let i=0;i<70;i++){if(check())return;await sleep(100);}throw Error('installed view did not render');};
       api.open('projects',{projectId:${JSON.stringify(project.id)}});
-      await wait(()=>document.querySelector('.bc-project-row.is-active')?.dataset.projectId===${JSON.stringify(project.id)});
-      document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view="planning"]').click();
-      await wait(()=>document.querySelector('[data-project-native-session="charter"]'));
+      await sleep(150);
+      await wait(()=>{if(api.captureReloadState().nativeConversation?.adapterSnapshot?.project_id===${JSON.stringify(project.id)})return true;const button=document.querySelector('[data-project-dashboard-view="planning"]');if(button)button.click();return false;});
+      await wait(()=>api.captureReloadState().nativeConversation?.adapterSnapshot?.project_id===${JSON.stringify(project.id)}&&!document.querySelector('.better-codex-inline-status')?.textContent);
+      const inline=document.querySelector('#better-codex-native-conversation');
+      if(inline.querySelector('.better-codex-inline-details').hidden)inline.querySelector('[data-inline-details]').click();
+      const planning={charter:!!inline.querySelector('[data-inline-stage="charter"]'),planning:!!inline.querySelector('[data-inline-stage="planning"]'),customChat:!!document.querySelector('[data-project-planning-form] textarea'),nativeComposer:!!document.querySelector('[data-better-codex-inline-content] .ProseMirror[contenteditable="true"]'),nativeLayout:!!document.querySelector('[data-better-codex-inline-content]'),details:!inline.querySelector('.better-codex-inline-details').hidden};
+      api.open('agents');await sleep(350);await wait(()=>document.querySelector('#better-codex-panel [data-skill-key="better-codex-charter"]'));
       const panel=document.querySelector('#better-codex-panel');
-      const planning={charter:!!panel.querySelector('[data-project-native-session="charter"]'),planning:!!panel.querySelector('[data-project-native-session="planning"]'),customChat:!!panel.querySelector('[data-project-planning-form] textarea')};
-      api.open('agents');await wait(()=>panel.querySelector('[data-skill-key="better-codex-charter"]'));
       const keys=[...panel.querySelectorAll('[data-skill-key]')].map(row=>row.dataset.skillKey);
       const firstExternal=keys.findIndex(key=>key.startsWith('external:'));
       const managedFirst=keys.length>0&&!keys[0].startsWith('external:')&&(firstExternal<0||keys.slice(firstExternal).every(key=>key.startsWith('external:')));
@@ -62,7 +64,7 @@ async function main() {
     })()`);
     if (process.argv.includes('--check-reload')) {
       await require('../integration/watcher.cjs').refresh();
-      ui.reload = await cdp(`({ready:window.__betterCodexInjection__?.ready?.(),error:window.__betterCodexInjection__?.bootstrapError?.(),surface:document.querySelector('#better-codex-panel')?.dataset.surface,externalReadonly:!!document.querySelector('[data-skill-form] textarea[readonly]')})`);
+      ui.reload = await cdp(`(async()=>{for(let i=0;i<70&&!window.__betterCodexInjection__?.ready?.();i++)await new Promise(resolve=>setTimeout(resolve,100));return {ready:window.__betterCodexInjection__?.ready?.(),error:window.__betterCodexInjection__?.bootstrapError?.(),surface:document.querySelector('#better-codex-panel')?.dataset.surface,externalReadonly:!!document.querySelector('[data-skill-form] textarea[readonly]')};})()`);
       assert.equal(ui.reload.ready,true,'ready after native injection refresh');
       assert.equal(ui.reload.error,null,'no reconnect error after refresh');
       assert.equal(ui.reload.surface,'agents','Skill view restored');
@@ -71,8 +73,8 @@ async function main() {
   } finally {
     await cdp('(async()=>{const saved=window.__bcAcceptanceSavedView;delete window.__bcAcceptanceSavedView;if(saved)await window.__betterCodexInjection__.restoreReloadState(saved);return true;})()');
   }
-  assert.equal(ui.ready,true,'UI ready');assert.equal(ui.error,null,'UI bootstrap');
-  assert.equal(ui.planning.charter,true,'charter entry');assert.equal(ui.planning.planning,true,'planning entry');assert.equal(ui.planning.customChat,false,'custom chat removed');
+  assert.equal(ui.ready,true,'UI ready: '+JSON.stringify({error:ui.error,layout:ui.layout}));assert.equal(ui.error,null,'UI bootstrap');
+  assert.equal(ui.planning.charter,true,'charter entry');assert.equal(ui.planning.planning,true,'planning entry');assert.equal(ui.planning.customChat,false,'custom chat removed');assert.equal(ui.planning.nativeComposer,true,'real native composer');assert.equal(ui.planning.nativeLayout,true,'native layout retained');assert.equal(ui.planning.details,true,'project documents beside native chat');
   assert.equal(ui.managedFirst,true,'managed Skills first');assert.equal(ui.externalReadonly,true,'external Skills read only');assert.equal(ui.remoteEntry,false,'remote entry removed');assert.equal(ui.modelControls,false,'model controls removed');
   const status = await lib.api('/api/dev/status'), ready = await lib.api('/readyz'), hashes = lib.hashes();
   assert.equal(lib.state().sourceHash,hashes.sourceHash);assert.equal(status.revision,hashes.backendHash);assert.equal(ready.session_host.connected,true);

@@ -12,13 +12,14 @@ function readFunction(name) {
   return source.slice(match.index, match.index + match[0].length + next.index);
 }
 const plain = value => JSON.parse(JSON.stringify(value));
-const http = [], hostActions = [], acceptedRoutes = new Set();
+const http = [], hostActions = [], registeredBindings = [], acceptedRoutes = new Set();
 let hooks, desiredMode = 'draft', confirmed = true, binding = null;
 const adapter = {
   open: async response => { hostActions.push({ action: 'open', target: plain(response.target) }); const route = response.binding ? '/local/' + response.binding.thread_id : '/local/client-new-thread:' + response.target.project_id + ':' + response.target.kind + ':' + (response.target.issue_id || ''); acceptedRoutes.clear(); acceptedRoutes.add(route); ctx.location.pathname = route; ctx.location.search = ''; return { mode: response.mode }; },
   leave: () => { hostActions.push({ action: 'leave' }); acceptedRoutes.clear(); },
   restore: async (response, saved) => { hostActions.push({ action: 'restore', target: plain(response.target), saved }); acceptedRoutes.clear(); acceptedRoutes.add(ctx.location.pathname + ctx.location.search); return { mode: response.mode }; },
   ownsRoute: route => acceptedRoutes.has(route),
+  registerBindings: bindings => registeredBindings.push(plain(bindings)),
   capture: () => ({ opaque: 'native-draft-state' })
 };
 const ctx = vm.createContext({
@@ -47,7 +48,7 @@ const ctx = vm.createContext({
   isNativeRailDestination: () => false, isSidebarNavigationTarget: () => false,
   closeAuxiliaryMenu() {}, openRoute() {}, close() {}
 });
-for (const name of ['inlineConversationKey', 'inlineConversationTarget', 'inlineConversationRouteAllowed', 'nativeInlineErrorLabel', 'ensureInlineConversationAdapter', 'inlineConversationQuery', 'reloadInlineConversationContext', 'openInlineConversation', 'openIssueNativeConversation', 'openProjectNativeSession', 'captureReloadState', 'restoreReloadState', 'isManagedNativeThread', 'onClick']) vm.runInContext(readFunction(name), ctx);
+for (const name of ['inlineConversationKey', 'inlineConversationTarget', 'inlineConversationRouteAllowed', 'nativeInlineErrorLabel', 'ensureInlineConversationAdapter', 'registerInlineConversationBindings', 'inlineConversationQuery', 'reloadInlineConversationContext', 'openInlineConversation', 'openIssueNativeConversation', 'openProjectNativeSession', 'captureReloadState', 'restoreReloadState', 'isManagedNativeThread', 'onClick']) vm.runInContext(readFunction(name), ctx);
 
 class NodeFixture {
   constructor(name) { this.name = name; this.children = []; this.attrs = new Map(); this.style = { setProperty() {} }; this.listeners = {}; this.parentElement = null; this.appendCount = 0; this.innerHTML = ''; }
@@ -76,6 +77,7 @@ class NodeFixture {
   hooks.onBound({ target: charter, thread_id: 'old-project-thread' });
   assert.equal(ctx.inlineConversation.binding, null, 'a previous project bind response must not update current project');
   assert(ctx.relayThreads.has('old-project-thread'), 'old thread still forwards its real confirmation events');
+  assert.equal(ctx.state.nativeThreadLinks['old-project-thread'].project_id, 'p1', 'an offscreen binding is cached only under its own trusted project');
   hooks.onError(new Error('native_binding_conflict'), charter);
   assert.equal(ctx.inlineConversationError, '', 'previous project error must not cover current composer');
   hooks.onBound({ target: { project_id: 'p2', kind: 'charter' }, thread_id: 'current-project-thread' });
@@ -145,6 +147,20 @@ class NodeFixture {
   let sidebarCloses = 0; ctx.close = () => sidebarCloses++;
   assert.deepEqual(sidebarClick(unknownRow), { prevented: 0, stopped: 0 });
   assert.equal(sidebarCloses, 1, 'native sidebar exits the project shell without relying on location.pathname');
+  ctx.state.nativeThreadLinks = {
+    current: { project_id: 'p1', kind: 'work', host_id: 'local', thread_id: 'current', issue_id: 'work', document: 'Must not register full project material' },
+    foreign: { project_id: 'p1', kind: 'charter', host_id: 'remote', thread_id: 'foreign' },
+    archived: { project_id: 'p1', kind: 'charter', host_id: 'local', thread_id: 'archived', archived_at: '2026-10-03' },
+    invalid: { project_id: 'p1', kind: 'work', host_id: 'local', thread_id: 'invalid' }
+  };
+  const beforeRegistryHost = hostActions.length, beforeRegistryHttp = http.length;
+  ctx.registerInlineConversationBindings();
+  assert.deepEqual(registeredBindings.at(-1), [{ project_id: 'p1', kind: 'work', host_id: 'local', thread_id: 'current', issue_id: 'work' }]);
+  delete ctx.state.nativeThreadLinks.current;
+  ctx.registerInlineConversationBindings();
+  assert.deepEqual(registeredBindings.at(-1), [], 'restarting a conversation removes its old active scope registration');
+  assert.equal(hostActions.length, beforeRegistryHost, 'registering cold-start trusted bindings never navigates or opens a composer');
+  assert.equal(http.length, beforeRegistryHttp, 'registering bindings has no API or model side effects');
 
   const native = new NodeFixture('native');
   const surface = new NodeFixture('surface'); surface.appendChild(native); const originalAppends = surface.appendCount;
@@ -163,6 +179,35 @@ class NodeFixture {
   assert.equal(native.hasAttribute('data-better-codex-native-hidden'), false);
   assert.equal(native.hasAttribute('data-better-codex-inline-content'), true);
   assert.equal(layoutCtx.panel.hidden, true);
+
+  class LifecycleNode {
+    constructor(name) { this.name = name; this.children = []; this.dataset = {}; this.parentElement = null; this.isConnected = false; }
+    appendChild(child) { child.remove(); this.children.push(child); child.parentElement = this; }
+    contains(child) { return child === this || this.children.some(node => node.contains(child)); }
+    querySelectorAll() { return this.children.flatMap(child => [...(child.dataset.bcComponent ? [child] : []), ...child.querySelectorAll()]); }
+    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
+  }
+  const componentCtx = vm.createContext({ HTMLElement: LifecycleNode, AbortController, activeComponents: new Set(), ownedComponents: new WeakMap(), componentFailure: (_, phase) => new Error(phase) });
+  for (const name of ['createComponentLifecycle', 'registerOwnedComponent', 'destroyOwnedComponents', 'destroyRemovedComponents']) vm.runInContext(readFunction(name), componentCtx);
+  const oldNativeSurface = new LifecycleNode('old-native-surface'), cachedPanel = new LifecycleNode('cached-panel'), cachedToolbar = new LifecycleNode('cached-toolbar'), cachedAction = new LifecycleNode('cached-action');
+  cachedToolbar.appendChild(cachedAction); cachedPanel.appendChild(cachedToolbar); oldNativeSurface.appendChild(cachedPanel);
+  const toolbarLifecycle = componentCtx.createComponentLifecycle('toolbar', { mountId: 'cached' }, cachedToolbar, {}, () => {});
+  componentCtx.registerOwnedComponent(cachedToolbar, toolbarLifecycle.handle);
+  componentCtx.destroyRemovedComponents([{ removedNodes: [oldNativeSurface] }], [cachedPanel]);
+  assert(cachedPanel.contains(cachedToolbar), 'native React surface replacement preserves the cached panel toolbar');
+  assert.equal(toolbarLifecycle.signal.aborted, false, 'retained toolbar keeps its click handlers after a temporary native unmount');
+  const newNativeSurface = new LifecycleNode('new-native-surface'); newNativeSurface.appendChild(cachedPanel);
+  assert(cachedPanel.contains(cachedAction), 'remounting a cached panel keeps the real controls needed for UI readiness');
+  const replacedField = new LifecycleNode('replaced-field'); cachedPanel.appendChild(replacedField);
+  const replacedLifecycle = componentCtx.createComponentLifecycle('field', { mountId: 'replaced' }, replacedField, {}, () => {});
+  componentCtx.registerOwnedComponent(replacedField, replacedLifecycle.handle);
+  replacedField.remove();
+  componentCtx.destroyRemovedComponents([{ removedNodes: [replacedField] }], [cachedPanel]);
+  assert.equal(replacedLifecycle.signal.aborted, true, 'a genuinely removed child still releases its listeners');
+  componentCtx.destroyOwnedComponents(cachedPanel);
+  assert.equal(toolbarLifecycle.signal.aborted, true, 'final teardown releases the preserved panel controls');
+  assert.equal(componentCtx.activeComponents.size, 0);
+  assert(source.includes('destroyRemovedComponents(records, [panel, inlineConversationRoot].filter(Boolean))'), 'observer preserves only current reusable shells');
   let missingRailMounts = 0, missingRailCloses = 0;
   const routeCtx = vm.createContext({ HOST_KIND: 'codex', location: { pathname: '/index.html' }, state: {},
     active: true, inlineConversation: { target: charter }, inlineConversationLoading: false,
@@ -176,6 +221,28 @@ class NodeFixture {
   routeCtx.refresh();
   assert.equal(missingRailCloses, 1, 'unrelated navigation still exits the composition');
   assert(!readFunction('refresh').includes('syncSessionHandoffFromHost()'), 'refresh cannot transfer old task ownership');
+  let listResult = [{ id: 'legacy-work', active_run_status: 'running', reply_status: 'idle', updated_at: '2026-10-03T11:00:00Z' }];
+  const listReads = [], listNotices = [], dialogUpdates = [];
+  let listRenders = 0;
+  const listCtx = vm.createContext({ URLSearchParams, draggingIssueId: null, sessionDragPointer: null, state: { search: '', issues: [], issuesLoaded: false, surface: 'projects', agentPane: 'preview' },
+    pendingIssueRemovals: new Map(), pendingIssueReplies: new Map(), pendingIssueCreates: new Map(), issueSessionSnapshot: new Map(),
+    requestList: async (url, resource, options) => { listReads.push({ url, resource, options: plain(options) }); return plain(listResult); },
+    document: { getElementById: () => ({ dataset: { issueId: 'legacy-work' }, __betterCodexSyncIssue: issue => dialogUpdates.push(plain(issue)) }) },
+    render: () => listRenders++, renderSessionEndNotice: issue => listNotices.push(plain(issue)),
+    api: () => { throw new Error('List refresh must never write or transfer a thread'); } });
+  vm.runInContext(readFunction('loadIssues'), listCtx);
+  await listCtx.loadIssues();
+  assert.equal(listCtx.state.issuesLoaded, true);
+  assert.equal(listCtx.state.issues[0].active_run_status, 'running');
+  assert.equal(listRenders, 1, 'foreground list load renders without a removed handoff helper');
+  await listCtx.loadIssues({ background: true });
+  assert.equal(listRenders, 1, 'unchanged background list load retains the current page');
+  listResult = [{ id: 'legacy-work', active_run_status: '', reply_status: 'idle', last_activity_finished_at: '2026-10-03T11:05:00Z', updated_at: '2026-10-03T11:05:00Z' }];
+  await listCtx.loadIssues({ background: true });
+  assert.equal(listRenders, 2);
+  assert.equal(listNotices.length, 1, 'legacy task completion still updates its notice while waiting for explicit handoff');
+  assert.equal(dialogUpdates.at(-1).active_run_status, '');
+  assert(listReads.every(read => read.url === '/api/issues' && read.resource === 'issues'), 'all list refresh paths are read-only');
   assert(!readFunction('openProjectNativeSession').includes('native-session'), 'opening cannot queue the previous injected first prompt');
   console.log('PASS: inline empty native drafts, scoped routes, stage isolation, stale callbacks, reload reattachment, legacy writer preservation and stable native DOM fixtures');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -33,7 +33,7 @@ function fixture(config = {}) {
   const controller = { restoreDraft(text, retained) { nativeDocument = retained?.document?.toJSON() || { type: 'doc', content: [] }; }, plainTextMode: false, view: { dom: { isConnected: true, getBoundingClientRect: () => ({ width: 500 }) }, state: { schema: { nodeFromJSON: docNode }, get doc() { return docNode(nativeDocument); } } } };
   const composerScope = { scope: composerDescriptor, value: { kind: 'new', entrypoint: 'home' }, get(atom) { return atom === promptAtom ? richDraft : atom === viewAtom ? { ...richState, prompt: '' } : undefined; }, set() {} };
   const nativeElement = { __reactFiber$fixture: { memoizedProps: { composerController: controller }, memoizedState: { memoizedState: { current: nativeScope }, next: { memoizedState: { current: routeScope }, next: { memoizedState: { current: composerScope } } } } } };
-  const host = { sender, dispatcher, dynamicTools: true, prewarm: true, draftIdentity: true, readDraft: () => nativeDraft, selectDraft: id => { nativeDraft = id; }, captureDraft: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument, plain_text_mode: false }), restoreDraft: snapshot => { richDraft = snapshot?.draft; richState = snapshot?.view_state || { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; nativeDocument = snapshot?.document_json || { type: 'doc', content: [] }; } };
+  const host = { sender, dispatcher, dynamicTools: true, prewarm: true, draftIdentity: true, readDraft: () => nativeDraft, selectDraft: id => { nativeDraft = id; }, isSelectedDraft: (id, context) => nativeDraft === id && composerScope.value.focusComposerNonce === id && nativeRoute === '/projects?projectId=' + context.native_project_id, captureDraft: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument, plain_text_mode: false }), restoreDraft: snapshot => { richDraft = snapshot?.draft; richState = snapshot?.view_state || { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; nativeDocument = snapshot?.document_json || { type: 'doc', content: [] }; } };
   const root = {
     crypto: { randomUUID: () => `00000000-0000-0000-0000-${String(++sequence).padStart(12, '0')}` },
     sessionStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
@@ -55,7 +55,8 @@ function fixture(config = {}) {
     root.testNamespace = { rpc: new Proxy({}, { get: () => () => {}, set: () => { throw Error('Cannot assign properties on RPC stubs'); } }), sender, dispatcher, GJt: draftDescriptor, Pyt: draftAtom, hbt: () => 'new-conversation', ZTt: projectAtom };
     root.testComposerNamespace = { VIn: composerDescriptor, KZt: promptAtom, DQt: viewAtom, _Qt: documentAtom, XQt(scope, draft) { richDraft = draft; }, 'o$t'(scope, fn) { fn(richState); }, ZQt() {}, FZt() { richDraft = undefined; richState = { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; } };
   }
-  vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
+  const reloadSource = () => vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
+  reloadSource();
   const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':');
   const context = (overrides = {}) => ({ project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides });
   const remember = value => { records.set(key(value), value); return value; };
@@ -90,7 +91,7 @@ function fixture(config = {}) {
   };
   const options = {
     host: config.discovery ? undefined : host, api, getRelayId: () => 'fixture-leader', getActiveRoute: () => config.memoryRouter ? '/index.html' : nativeRoute,
-    draftStorage: config.indexedDB ? undefined : { get: async id => draftStates.get(id), set: async (id, snapshot) => { draftStates.set(id, snapshot); } },
+    draftStorage: config.draftStorage || (config.indexedDB ? undefined : { get: async id => draftStates.get(id), set: async (id, snapshot) => { draftStates.set(id, snapshot); } }),
     isCurrentContext: () => true, afterNavigate: async () => {},
     onBound: value => bounds.push(plain(value)), onTurn: value => turns.push(plain(value)),
     onError: (error, origin) => errors.push({ error: error.message, origin: origin && plain(origin) }),
@@ -99,10 +100,83 @@ function fixture(config = {}) {
   const adapter = root.BetterCodexNativeConversation.create(options);
   const send = (method, params, id = 'native-' + ++sequence, rest = {}) => { const message = { type: 'mcp-request', hostId: 'local', request: { id, method, params }, ...rest }; sender.postMessage(message); return message; };
   const reply = (id, result, error) => dispatcher.deliverOrBufferMessage({ type: 'mcp-response', hostId: 'local', message: { id, ...(error ? { error } : { result }) } });
-  return { root, host, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, originalSend, originalDeliver, operations, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
+  return { root, host, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, originalSend, originalDeliver, operations, reloadSource, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
 }
 
 (async () => {
+  {
+    const f = fixture();
+    await f.adapter.open(f.remember(f.context()));
+    const oldHub = f.root.__betterCodexNativeConversationHub__;
+    const oldHook = f.sender.postMessage;
+    f.reloadSource();
+    const newProfile = { ...f.host, profileVersion: 'upgraded-source' };
+    const replacement = f.root.BetterCodexNativeConversation.create({ ...f.options, host: newProfile });
+    await replacement.connect();
+    assert.equal(f.root.__betterCodexNativeConversationHub__, oldHub, 'source upgrade retains shared IPC request ownership');
+    assert.equal(oldHub.host.profileVersion, 'upgraded-source');
+    assert.notEqual(f.sender.postMessage, oldHook, 'new source upgrades handler function bodies');
+    assert.equal(oldHub.originalSend, f.originalSend, 'an upgrade never wraps another wrapper');
+    assert.equal(oldHub.originalDeliver, f.originalDeliver);
+    assert.equal(f.sent.length, 0); assert.equal(f.http.length, 0);
+    replacement.destroy(); f.adapter.destroy();
+    assert.equal(f.sender.postMessage, f.originalSend);
+  }
+  {
+    const f = fixture();
+    const context = f.context();
+    await f.adapter.open(context);
+    const snapshot = f.adapter.capture();
+    f.adapter.destroy();
+    const afterSnapshot = { draft: { prompt: 'Input continued after source snapshot', pullRequestChecks: [] }, view_state: { imageAttachments: [], fileAttachments: [], attachmentOrder: [] }, document_json: { type: 'doc', content: [{ type: 'text', text: 'Input continued after source snapshot' }] } };
+    f.setRich(afterSnapshot);
+    const events = f.delivered.length;
+    const replacement = f.root.BetterCodexNativeConversation.create(f.options);
+    await replacement.restore(context, snapshot);
+    assert.equal(f.delivered.length, events, 'same genuine native scope is reused without even navigation on reload');
+    assert.deepEqual(f.rich(), afterSnapshot, 'a reload must not overwrite input entered after its captured snapshot');
+    assert.equal(f.sent.length, 0); assert.equal(f.http.length, 0);
+    replacement.destroy();
+  }
+  {
+    const stored = new Map();
+    let finishOrdinaryRestore;
+    const f = fixture({ draftStorage: { set: async (id, value) => stored.set(id, value), get: async id => id === 'client-new-thread:original-native-draft' ? new Promise(resolve => { finishOrdinaryRestore = resolve; }) : stored.get(id) } });
+    await f.adapter.open(f.context());
+    f.adapter.leave();
+    assert.equal(f.nativeDraft(), 'client-new-thread:original-native-draft', 'explicit leave restores ordinary home identity');
+    const replacement = f.root.BetterCodexNativeConversation.create(f.options);
+    await replacement.connect();
+    const freshNative = { draft: { prompt: 'New native owner', pullRequestChecks: [] }, view_state: { imageAttachments: [], fileAttachments: [], attachmentOrder: [] }, document_json: { type: 'doc', content: [{ type: 'text', text: 'New native owner' }] } };
+    f.setRich(freshNative);
+    finishOrdinaryRestore(stored.get('client-new-thread:original-native-draft'));
+    await settle();
+    assert.deepEqual(f.rich(), freshNative, 'late leave must not write into the replacement native controller');
+    replacement.destroy(); f.adapter.destroy();
+  }
+  {
+    const f = fixture();
+    const work = f.remember(f.context({ kind: 'work', issue_id: 'existing-native-work', thread_id: 'already-open-native-thread', mode: 'thread', expected_revision: 9 }));
+    const registered = f.adapter.registerBindings([{ project_id: work.project_id, kind: work.kind, issue_id: work.issue_id, thread_id: work.thread_id, host_id: 'local' }, { ...work, host_id: 'foreign' }, { ...work, issue_id: undefined }]);
+    assert.equal(registered.registered, 0, 'startup registry waits for connection without installing or navigating');
+    await f.adapter.connect();
+    assert.equal(f.sent.length, 0); assert.equal(f.delivered.length, 0); assert.equal(f.http.length, 0, 'trusted startup registry does not open any conversation');
+    const original = f.send('turn/start', { threadId: work.thread_id, input: [{ type: 'text', text: 'Real native follow-up' }] }, 'startup-followup');
+    assert.equal(f.sent.length, 0, 'already-open native bound work task must get execution gate even without Better open');
+    await settle(() => f.sent.length === 1);
+    assert.equal(f.sent[0], original);
+    assert.equal(f.http.filter(x => x.url.endsWith('/prepare')).length, 1);
+    assert.equal(f.http.find(x => x.url.endsWith('/prepare')).body.expected_revision, 9, 'minimal startup registry refreshes authoritative task version before sending');
+    f.adapter.registerBindings([]);
+    assert(f.root.__betterCodexNativeConversationHub__.threads.has('local:' + work.thread_id), 'registry replacement must keep an in-flight receipt scope');
+    f.reply('startup-followup', { turn: { id: 'startup-native-turn' } });
+    await settle(() => f.turns.length === 1);
+    assert(!f.root.__betterCodexNativeConversationHub__.threads.has('local:' + work.thread_id), 'retired binding unlinks after the in-flight reply completes');
+    const archived = f.send('turn/start', { threadId: work.thread_id, input: [] }, 'ordinary-archived-native');
+    assert.equal(f.sent.at(-1), archived, 'archived/unlinked thread resumes ordinary native routing');
+    assert.equal(f.http.filter(x => x.url.endsWith('/prepare')).length, 1);
+    f.adapter.destroy();
+  }
   {
     const f = fixture({ indexedDB: true });
     const charter = f.remember(f.context());
@@ -155,7 +229,7 @@ function fixture(config = {}) {
     assert.equal(fresh.context.client_draft_id, restart.context.client_draft_id, 'a stale reload snapshot cannot restore the pre-restart draft');
     assert.equal(f.rich().draft, undefined, 'explicit restart does not reuse the prior rich composer document');
     f.adapter.destroy();
-    assert.equal(f.nativeDraft(), 'client-new-thread:original-native-draft', 'leaving restores the ordinary native home draft');
+    assert.equal(f.nativeDraft(), restart.context.client_draft_id, 'source destroy preserves selected native draft identity');
     assert.equal(f.sender.postMessage, f.originalSend, 'sender hook must unload');
     assert.equal(f.dispatcher.deliverOrBufferMessage, f.originalDeliver, 'dispatcher hook must unload');
     f.root.sessionStorage = { getItem: () => null, setItem() {} };
@@ -258,6 +332,36 @@ function fixture(config = {}) {
     f.reply('memory-route', { thread: { id: 'memory-thread' } }); await settle(() => f.bounds.length === 1);
     f.dispatcher.dispatchHostMessage({ type: 'navigate-to-route', path: '/settings' });
     assert.equal(f.adapter.getCurrentContext(), null, 'native navigation releases Better ownership'); f.adapter.destroy();
+  }
+  {
+    let finishBind;
+    const barrier = new Promise(resolve => { finishBind = resolve; });
+    const f = fixture({ api: async (url, body) => { if (url.endsWith('/bind') && body.checkpoint === 'allocated') await barrier; } });
+    const context = f.remember(f.context());
+    await f.adapter.open(context);
+    const snapshot = f.adapter.capture();
+    f.send('thread/start', { cwd: context.cwd }, 'source-upgrade-pending');
+    await settle(() => f.sent.length === 1);
+    f.reply('source-upgrade-pending', { thread: { id: 'source-upgrade-thread' } });
+    await tick();
+    const originalHub = f.root.__betterCodexNativeConversationHub__;
+    f.adapter.destroy(); f.reloadSource();
+    const replacement = f.root.BetterCodexNativeConversation.create(f.options);
+    await replacement.restore(context, snapshot);
+    assert.equal(f.root.__betterCodexNativeConversationHub__, originalHub);
+    assert.equal(originalHub.originalSend, f.originalSend);
+    finishBind(); await settle(() => f.bounds.length === 1);
+    assert.equal(replacement.getCurrentContext().thread_id, 'source-upgrade-thread', 'late binding transfers ownership into matching replacement client before native delivery');
+    assert.equal(replacement.getCurrentContext().mode, 'thread');
+    assert.equal(f.delivered.filter(x => x.message?.id === 'source-upgrade-pending').length, 1, 'upgraded source delivers native held reply once');
+    assert.equal(f.sent.length, 1, 'source upgrade never repeats thread allocation');
+    const request = f.send('turn/start', { threadId: 'source-upgrade-thread', input: [{ type: 'text', text: 'Original native first input' }] }, 'source-upgrade-first-turn');
+    await settle(() => f.sent.length === 2);
+    assert.equal(f.sent[1], request);
+    assert.equal(f.http.filter(x => x.url.endsWith('/prepare')).length, 1, 'upgrade preserves first-turn execution reservation');
+    f.reply('source-upgrade-first-turn', { turn: { id: 'source-upgrade-turn' } });
+    await settle(() => f.turns.length === 1);
+    replacement.destroy(); assert.equal(f.sender.postMessage, f.originalSend);
   }
   {
     let releaseBind; const barrier = new Promise(resolve => { releaseBind = resolve; });

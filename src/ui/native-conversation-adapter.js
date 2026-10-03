@@ -136,6 +136,10 @@
     return {
       readDraft() { return getScope().get(identity, draftLocation); },
       isHomeComposer() { try { return !!getComposer(); } catch { return false; } },
+      isSelectedDraft(id, context) {
+        try { return getScope().get(identity, draftLocation) === id && getComposer().value.focusComposerNonce === id && !!findNativeScope(scope => scope.value?.routeKind === "home" && scope.value.projectContext?.projectId === context.native_project_id, '[contenteditable]'); }
+        catch { return false; }
+      },
       async waitForProject(context, current) {
         for (let index = 0; index < 100; index++) {
           if (!current()) return false;
@@ -257,8 +261,8 @@
     };
   }
 
-  function createHub(host) {
-    const hub = {
+  function createHub(host, previous) {
+    const hub = previous || {
       host, clients: new Set(), threads: new Map(), requests: new Map(), calls: new Map(), pending: 0,
       originalSend: host.sender.postMessage, originalDeliver: host.dispatcher.deliverOrBufferMessage,
       released: false,
@@ -278,6 +282,11 @@
         Promise.resolve(promise).catch(error => this.latestClient()?.report(error)).finally(() => { this.pending--; this.release(); });
       }
     };
+    // Reload upgrades the function bodies in place, keeping the original native
+    // methods and shared request/promise ownership. Never wrap an older wrapper
+    // as if it were the original host sender.
+    hub.host = host;
+    hub.factory = createHub;
 
     hub.sendWrapper = function wrappedNativeSend(message) {
       const client = hub.activeClient();
@@ -429,6 +438,10 @@
     // The native UI owns delivery semantics. A receipt failure must not hide a
     // turn which the server has already accepted, or trigger an automatic retry.
     hub.deliver(message);
+    for (const [key, registered] of hub.threads) {
+      if (!registered.registryRetired || registered.awaitingFirstTurn) continue;
+      if (![...hub.requests.values()].some(request => request.scope?.context?.thread_id === registered.context.thread_id && request.scope.context.host_id === registered.context.host_id)) hub.threads.delete(key);
+    }
     if (!body?.error) {
       const client = hub.latestClient() || scope.client;
       client.options.onTurn?.({ target: { ...scope.context }, context: { ...scope.context }, thread_id: scope.context.thread_id, turn_id: turnId });
@@ -481,6 +494,7 @@
     let initialRoute = "";
     let currentRoute = "";
     let originalNativeDraft = "";
+    let registry = null;
     const draftIdStorage = options.storage || root.localStorage || root.sessionStorage;
     const drafts = { ...readDraftIds(root.sessionStorage), ...readDraftIds(draftIdStorage) };
     try { if (Object.keys(drafts).length) draftIdStorage?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* Mounted drafts still retain their stable IDs. */ }
@@ -501,10 +515,32 @@
         host.readDraft();
         if (!hub) {
           const existing = root[HUB_KEY];
-          hub = existing && !existing.released && existing.host.sender === host.sender && existing.host.dispatcher === host.dispatcher ? existing : createHub(host);
+          hub = existing && !existing.released && existing.host.sender === host.sender && existing.host.dispatcher === host.dispatcher ? existing.factory === createHub ? existing : createHub(host, existing) : createHub(host);
           hub.clients.add(this);
+          if (registry) this.registerBindings(registry);
         }
         return host;
+      },
+      registerBindings(values) {
+        registry = (Array.isArray(values) ? values : []).filter(value => value && value.host_id === LOCAL && typeof value.project_id === "string" && value.project_id && typeof value.thread_id === "string" && value.thread_id && ["charter", "planning", "work"].includes(value.kind) && (value.kind !== "work" || typeof value.issue_id === "string" && value.issue_id)).map(value => ({ project_id: value.project_id, kind: value.kind, ...(value.issue_id ? { issue_id: value.issue_id } : {}), host_id: LOCAL, thread_id: value.thread_id, mode: "thread" }));
+        if (!hub || this.disposed) return { registered: 0 };
+        const keys = new Set(registry.map(context => threadKey(context.host_id, context.thread_id)));
+        for (const [key, scope] of hub.threads) {
+          if (keys.has(key) || scope.client !== this && scope.registryClient !== this) continue;
+          const pending = [...hub.requests.values()].some(request => request.scope?.context?.thread_id === scope.context.thread_id && request.scope.context.host_id === scope.context.host_id);
+          if (!pending && !scope.awaitingFirstTurn) hub.threads.delete(key);
+          else scope.registryRetired = true;
+        }
+        for (const context of registry) {
+          const key = threadKey(context.host_id, context.thread_id);
+          const existing = hub.threads.get(key);
+          if (existing) {
+            existing.context = { ...existing.context, ...context };
+            existing.registryClient = this;
+            existing.registryRetired = false;
+          } else hub.threads.set(key, { hub, client: this, registryClient: this, context, operation: null });
+        }
+        return { registered: registry.length };
       },
       route() {
         const actual = options.getActiveRoute?.() || (root.location.pathname + root.location.search);
@@ -557,6 +593,16 @@
           Promise.resolve(draftStorage.set(id, snapshot)).catch(error => this.report(error, origin));
         } catch (error) { this.report(error, origin); }
       },
+      rememberOrdinaryDraft(context, restored) {
+        if (originalNativeDraft) return;
+        const nativeId = host.readDraft();
+        const restoredOriginal = restored?.native_home_draft_id || drafts.__ordinary_home__;
+        const managed = Object.entries(drafts).some(([key, id]) => key !== "__ordinary_home__" && id === nativeId);
+        originalNativeDraft = managed && /^client-new-thread:[a-z0-9-]+$/i.test(restoredOriginal || "") ? restoredOriginal : nativeId;
+        drafts.__ordinary_home__ = originalNativeDraft;
+        try { draftIdStorage?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* The mounted adapter still retains native ownership. */ }
+        if (nativeId === originalNativeDraft) this.saveDraft(originalNativeDraft, context);
+      },
       async open(value, restored) {
         const generation = ++navigationGeneration;
         const context = flattenContext(value);
@@ -581,6 +627,15 @@
             context.client_draft_id = restoreDraft ? restored.client_draft_id : this.draftId(context);
             if (!context.native_project_id) throw Error("该项目尚未关联到 Codex 项目");
             const draftRoute = "/projects?projectId=" + encodeURIComponent(context.native_project_id);
+            if (host.isSelectedDraft?.(context.client_draft_id, context)) {
+              // A source reload does not unmount the native editor. Its current
+              // document can contain input entered after the previous snapshot;
+              // preserve the genuine scope, caret and undo state exactly.
+              currentRoute = draftRoute;
+              this.rememberOrdinaryDraft(context, restored);
+              this.saveDraft(context.client_draft_id, context);
+              return { mode: "draft", context: { ...context }, capabilities: this.capabilities() };
+            }
             if (previous?.client_draft_id === context.client_draft_id && this.route() === draftRoute && host.readDraft() === context.client_draft_id) return { mode: "draft", context: { ...context }, capabilities: this.capabilities() };
             internalNavigation++;
             try {
@@ -589,10 +644,7 @@
               await this.navigate(draftRoute, { focusComposerNonce: context.client_draft_id });
               if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
               if (host.waitForProject && !await host.waitForProject(context, () => generation === navigationGeneration && !this.disposed)) return { cancelled: true };
-              if (!originalNativeDraft) {
-                originalNativeDraft = host.readDraft();
-                this.saveDraft(originalNativeDraft, context);
-              }
+              this.rememberOrdinaryDraft(context, restored);
               const snapshot = await draftStorage.get(context.client_draft_id);
               if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
               host.selectDraft(context.client_draft_id, context);
@@ -665,6 +717,7 @@
             this.current = { ...this.current, ...scope.context };
           }
           const receiver = hub.latestClient() || this;
+          if (!receiver.disposed && receiver.current && targetKey(receiver.current) === targetKey(scope.context) && (receiver.current.draft_generation ?? 0) === (scope.context.draft_generation ?? 0) && (!receiver.current.thread_id || receiver.current.thread_id === threadId)) receiver.current = { ...receiver.current, ...scope.context };
           receiver.options.onBound?.({ target: { ...scope.context }, context: { ...scope.context }, thread_id: threadId, binding: bound.binding, operation: bound.operation });
           // Native's thread/start continuation sends the original rich input.
           // Delivering only after both checkpoints is the binding/send barrier.
@@ -675,20 +728,22 @@
           this.report(error, scope.context);
         }
       },
-      leave() {
-        navigationGeneration++;
+      leave(preserveNative = false) {
+        const generation = ++navigationGeneration;
         if (host && originalNativeDraft && this.current?.client_draft_id) {
           const origin = { ...this.current };
           const original = originalNativeDraft;
           try {
             if (host.readDraft() === this.current.client_draft_id && this.current.mode === "draft") {
               this.saveDraft(this.current.client_draft_id, origin);
-              host.selectDraft(original);
+              if (!preserveNative) host.selectDraft(original);
               // Restoring ordinary native home data does not navigate, send or
               // operate on the composer of an already-bound task/thread.
-              Promise.resolve(draftStorage.get(original)).then(snapshot => {
-                if (host.readDraft() === original && !this.current && host.isHomeComposer?.() !== false) host.restoreDraft(snapshot);
-              }).catch(error => this.report(error, origin));
+              if (!preserveNative) Promise.resolve(draftStorage.get(original)).then(snapshot => {
+                const currentHub = root[HUB_KEY];
+                const replaced = currentHub && [...currentHub.clients].some(client => client !== this && !client.disposed);
+                if (!this.disposed && generation === navigationGeneration && !replaced && host.readDraft() === original && !this.current && host.isHomeComposer?.() !== false) host.restoreDraft(snapshot);
+              }).catch(error => { if (!this.disposed && generation === navigationGeneration) this.report(error, origin); });
             }
           } catch { /* Native navigation may have already disposed its scope. */ }
         }
@@ -696,7 +751,10 @@
       },
       destroy() {
         if (this.disposed) return;
-        this.leave(); this.disposed = true;
+        // Hot reload disposes the source controller while native React stays
+        // mounted. Save its draft, but never restore another home identity or
+        // enqueue a late native editor write into the replacement controller.
+        this.leave(true); this.disposed = true;
         if (hub) { hub.clients.delete(this); hub.release(); }
       },
       capture() {
@@ -704,6 +762,7 @@
           project_id: this.current.project_id, kind: this.current.kind,
           ...(this.current.issue_id ? { issue_id: this.current.issue_id } : {}),
           thread_id: this.current.thread_id, client_draft_id: this.current.client_draft_id,
+          native_home_draft_id: originalNativeDraft || undefined,
           draft_generation: this.current.draft_generation, route: this.route()
         } : null;
       },
@@ -719,8 +778,9 @@
     };
     return {
       connect: client.ensureHost.bind(client),
+      registerBindings: client.registerBindings.bind(client),
       mount: client.open.bind(client), open: client.open.bind(client),
-      leave: client.leave.bind(client), destroy: client.destroy.bind(client),
+      leave: () => client.leave(), destroy: client.destroy.bind(client),
       capture: client.capture.bind(client), restore: client.restore.bind(client),
       capabilities: client.capabilities.bind(client), ownsRoute: client.ownsRoute.bind(client),
       getCurrentContext: client.getCurrentContext.bind(client)
