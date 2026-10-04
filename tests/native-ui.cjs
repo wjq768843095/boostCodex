@@ -98,8 +98,17 @@ for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePers
   state.planningContexts = { p: { charter: { revision: 2, status: 'confirmed', sections: [{ id: 'scope', title: '范围', content: 'Scope <content>' }, { id: 'architecture', title: '系统架构', content: 'Architecture details' }] }, plan: { revision: 3, items: [{ id: 'one', title: 'Task one', goal: 'Goal', acceptance: ['Acceptance detail'], directories: ['src'], dependencies: ['two'] }, { id: 'two', title: 'Task two' }], issue_links: [{ item_id: 'two', issue_id: 'issue-two' }], validation: { warnings: [{ code: 'unmapped_requirement', requirement_id: 'REQ-1' }] } } } };
   state.planSelections = { p: ['one'] };
   const markup = context.projectPlanningMarkup({ id: 'p' });
-  for (const text of ['Scope &lt;content&gt;', 'Architecture details', 'Acceptance detail', 'data-project-native-session="charter"', 'data-project-native-session="planning"', 'data-plan-convert="p"', '已关联开发任务', '该需求尚未安排任务']) assert(markup.includes(text), text);
+  for (const text of ['Scope &lt;content&gt;', 'Architecture details', 'Acceptance detail', 'data-project-native-session="charter"', 'data-project-native-session="planning"', 'data-plan-convert="p"', '已关联开发任务']) assert(markup.includes(text), text);
   assert(!markup.includes('unmapped_requirement'));
+  assert(!markup.includes('该需求尚未安排任务'));
+  assert(!markup.includes('REQ-1'));
+  assert(markup.includes('one · Task one'));
+  state.planningContexts.p.plan.validation.warnings.push({ code: 'missing_acceptance', item_id: 'one' }, { code: 'duplicate_requirement_mapping', requirement_id: 'REQ-2' });
+  const incomplete = context.projectPlanningMarkup({ id: 'p' }, { inline: true });
+  assert(incomplete.includes('任务待补充内容'));
+  assert(incomplete.includes('请补充验收标准 · one'));
+  assert(!incomplete.includes('REQ-2'));
+  assert.equal(state.planningContexts.p.plan.validation.warnings.length, 3, 'display filtering preserves saved coverage checks');
   assert(!markup.includes('<textarea'));
   assert(!markup.includes('data-project-planning-form'));
   assert.match(markup, /data-plan-item="two"[^>]* disabled/);

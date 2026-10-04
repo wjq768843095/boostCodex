@@ -376,7 +376,12 @@ class NodeFixture {
   assert(conversationColumn.innerHTML.includes('Architecture A') && conversationColumn.innerHTML.includes('Architecture B'), 'second column contains current project planning conversation history');
   assert.equal(projectColumn.hidden, false); assert.equal(conversationColumn.hidden, false); assert.equal(detailsColumn.hidden, false);
   assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '370px');
-  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '318px');
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '360px');
+  renderCtx.inlineConversationWidth = 900; renderCtx.innerWidth = 1920; renderCtx.renderInlineConversation();
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '900px', 'dragged details can exceed the old 600px and 24 percent limits');
+  renderCtx.innerWidth = 1324; renderCtx.renderInlineConversation();
+  assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '542px', 'details expansion preserves at least 360px for the central workspace');
+  renderCtx.inlineConversationWidth = 360; renderCtx.renderInlineConversation();
   renderCtx.inlineConversationDetailsOpen = false; renderCtx.renderInlineConversation();
   assert.equal(detailsColumn.hidden, true); assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '0px', 'desktop collapse releases the fourth-column space');
   compactWorkspace = true; renderCtx.innerWidth = 900; renderCtx.renderInlineConversation();

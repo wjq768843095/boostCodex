@@ -2192,7 +2192,7 @@ var BetterCodexInjected = (() => {
     let inlineConversationNavigationMarkup = "";
     let inlineConversationResize = null;
     let inlineConversationResizeFrame = null;
-    let inlineConversationWidth = Math.min(600, Math.max(280, Number(localStorage.getItem("better-codex-conversation-details-width")) || 360));
+    let inlineConversationWidth = Math.min(4096, Math.max(280, Number(localStorage.getItem("better-codex-conversation-details-width")) || 360));
     let inlineConversationDetailsOpen = !window.matchMedia("(max-width: 980px)").matches;
     let inlineConversationCompactDetailsOpen = false;
     let inlineConversationNavigationRequest = 0;
@@ -2611,6 +2611,22 @@ var BetterCodexInjected = (() => {
         @media (max-width: 1100px) { #better-codex-native-conversation[data-planning-workspace="true"] { --bc-planning-projects-width: 152px; --bc-planning-conversations-width: 176px; } }
         .better-codex-inline-details { position: absolute; top: 58px; right: 0; bottom: 0; width: var(--bc-inline-details-width, 360px); border-left: 1px solid var(--bc-color-hairline); background: var(--bc-color-canvas); overflow: auto; overscroll-behavior: contain; pointer-events: auto; box-sizing: border-box; }
         .better-codex-inline-details[hidden], .better-codex-inline-status[hidden] { display: none; }
+        .better-codex-inline-details .bc-native-planning .better-codex-project-plan-item { display: block !important; }
+        .better-codex-inline-details .bc-planning-fold > summary { width: 100%; box-sizing: border-box; }
+        .better-codex-inline-details .bc-planning-fold > summary > label { display: flex; align-items: center; gap: 8px; }
+        .better-codex-inline-details .bc-planning-fold > summary > label input { flex: 0 0 auto; }
+        .better-codex-inline-details .bc-planning-fold > summary > label strong { min-width: 0; overflow-wrap: anywhere; }
+        .better-codex-inline-details .bc-planning-fold > summary > .better-codex-project-plan-status { flex: 0 0 auto; white-space: nowrap; }
+        .better-codex-inline-details .better-codex-inline-details-toolbar button { display: inline-flex; width: auto; flex: 0 0 auto; white-space: nowrap; }
+        .better-codex-inline-details .better-codex-project-plan-item, .better-codex-inline-details .better-codex-project-plan-item :is(details, summary, label, strong, p, li, section, .better-codex-project-plan-status) { font-size: inherit !important; line-height: inherit; }
+        .better-codex-inline-resize:hover, .better-codex-inline-resize:active { background: color-mix(in srgb, var(--bc-color-accent) 25%, transparent); }
+        .bc-planning-fold { min-width: 0; width: 100%; }
+        .bc-planning-fold > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 0; cursor: pointer; list-style: none; font-weight: 600; }
+        .bc-planning-fold > summary::-webkit-details-marker { display: none; }
+        .bc-planning-fold > summary::before { content: "▸"; flex-shrink: 0; width: 12px; color: var(--bc-color-muted); }
+        .bc-planning-fold[open] > summary::before { content: "▾"; }
+        .bc-planning-fold > summary > label { flex: 1; min-width: 0; }
+        .bc-planning-fold-body { padding: 4px 0 12px; }
         .better-codex-inline-details-toolbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 6px 12px; border-bottom: 1px solid var(--bc-color-hairline); background: var(--bc-color-canvas); box-sizing: border-box; }
         .better-codex-inline-details-toolbar button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 4px 8px; border: 1px solid var(--bc-color-hairline); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
         .better-codex-inline-details-toolbar svg { width: 16px; height: 16px; }
@@ -2619,7 +2635,7 @@ var BetterCodexInjected = (() => {
         .better-codex-inline-details .better-codex-project-plan-scroll { overflow: visible; max-height: none; }
         .better-codex-inline-details article, .better-codex-inline-details p { overflow-wrap: anywhere; }
         .better-codex-inline-details-body { padding: 16px; }
-        .better-codex-inline-resize { position: absolute; top: 58px; bottom: 0; right: var(--bc-inline-details-width, 360px); width: 8px; margin-right: -4px; cursor: col-resize; pointer-events: auto; touch-action: none; z-index: 2; }
+        .better-codex-inline-resize { position: absolute; top: 58px; bottom: 0; right: var(--bc-inline-details-width, 360px); width: 12px; margin-right: -6px; cursor: col-resize; pointer-events: auto; touch-action: none; z-index: 4; }
         .better-codex-inline-resize:focus-visible { outline: 2px solid var(--bc-color-accent); outline-offset: -2px; }
         .better-codex-inline-status { position: absolute; left: 0; right: var(--bc-inline-details-space, 0px); top: 58px; bottom: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 28px; background: var(--bc-color-canvas); pointer-events: auto; overflow: auto; }
         .better-codex-inline-status p { max-width: 520px; white-space: pre-wrap; }
@@ -6144,12 +6160,13 @@ var BetterCodexInjected = (() => {
       const statusMarkup = inlineConversationError ? '<p>' + escapeHtml2(inlineConversationError) + '</p><button type="button" data-inline-retry>' + te("重试") + '</button>' : waiting ? '<strong>' + te(mode === "legacy_busy" ? "任务正在运行" : "任务会话已准备好") + '</strong><p>' + te(mode === "legacy_busy" ? "完成后可在这里继续会话。" : "打开会话，继续当前任务。") + '</p>' + (mode === "handoff_required" ? '<button type="button" data-inline-handoff>' + te("打开会话") + '</button>' : "") + ((inlineConversation.history || []).length ? '<div class="better-codex-inline-history">' + inlineConversation.history.map((message) => '<article><strong>' + te(message.role === "user" ? "你" : "Codex") + '</strong>' + documentTextMarkup(message.markdown || message.text || message.content) + '</article>').join("") + '</div>' : "") : inlineConversationLoading && !inlineConversationCacheRestoring ? '<p>' + te("正在打开会话…") + '</p>' : "";
       if (status.innerHTML !== statusMarkup) status.innerHTML = statusMarkup;
       status.hidden = !statusMarkup && (!inlineConversationCacheRestoring || projectSurfaceCache?.nativeRetained === true);
-      const detailsWidth = Math.min(inlineConversationWidth, Math.max(280, Math.round(innerWidth * .24)));
+      const nativeSurface = inlineConversationRoot.closest("[data-better-codex-inline-host]");
+      const navSpace = (innerWidth <= 1100 ? 328 : 370) + "px";
+      const maxDetailsWidth = compact ? Math.round(innerWidth * .9) : Math.max(280, (nativeSurface?.clientWidth || innerWidth - 52) - parseFloat(navSpace) - 360);
+      const detailsWidth = Math.min(inlineConversationWidth, maxDetailsWidth);
       details.hidden = !detailsOpen;
       inlineConversationRoot.querySelector(".better-codex-inline-resize").hidden = !detailsOpen;
       inlineConversationRoot.style.setProperty("--bc-inline-details-width", detailsWidth + "px");
-      const nativeSurface = inlineConversationRoot.closest("[data-better-codex-inline-host]");
-      const navSpace = (innerWidth <= 1100 ? 328 : 370) + "px";
       nativeSurface?.style.setProperty("--bc-inline-nav-space", navSpace);
       nativeSurface?.style.setProperty("--bc-inline-details-space", detailsOpen && !compact ? detailsWidth + "px" : "0px");
       document.documentElement.style.setProperty("--bc-planning-left-space", navSpace);
@@ -6221,13 +6238,13 @@ var BetterCodexInjected = (() => {
         const resize = inlineConversationRoot.querySelector(".better-codex-inline-resize");
         resize.addEventListener("pointerdown", (event) => {
           if (event.button !== 0) return;
-          inlineConversationResize = { pointerId: event.pointerId, x: event.clientX, width: inlineConversationWidth };
+          inlineConversationResize = { pointerId: event.pointerId, x: event.clientX, width: parseFloat(inlineConversationRoot.style.getPropertyValue("--bc-inline-details-width")) || inlineConversationWidth };
           resize.setPointerCapture(event.pointerId);
           event.preventDefault();
         });
         resize.addEventListener("pointermove", (event) => {
           if (!inlineConversationResize || event.pointerId !== inlineConversationResize.pointerId) return;
-          inlineConversationWidth = Math.min(600, Math.max(280, inlineConversationResize.width + inlineConversationResize.x - event.clientX));
+          inlineConversationWidth = Math.min(Math.max(280, innerWidth - 52 - (innerWidth <= 1100 ? 328 : 370) - 360), Math.max(280, inlineConversationResize.width + inlineConversationResize.x - event.clientX));
           renderInlineConversation();
         });
         const finishResize = () => { inlineConversationResize = null; localStorage.setItem("better-codex-conversation-details-width", String(inlineConversationWidth)); };
@@ -6236,7 +6253,7 @@ var BetterCodexInjected = (() => {
         resize.addEventListener("keydown", (event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
           event.preventDefault();
-          inlineConversationWidth = Math.min(600, Math.max(280, inlineConversationWidth + (event.key === "ArrowLeft" ? 20 : -20)));
+          inlineConversationWidth = Math.min(Math.max(280, innerWidth - 52 - (innerWidth <= 1100 ? 328 : 370) - 360), Math.max(280, (parseFloat(inlineConversationRoot.style.getPropertyValue("--bc-inline-details-width")) || inlineConversationWidth) + (event.key === "ArrowLeft" ? 20 : -20)));
           localStorage.setItem("better-codex-conversation-details-width", String(inlineConversationWidth));
           renderInlineConversation();
         });
@@ -7614,17 +7631,18 @@ var BetterCodexInjected = (() => {
         const issue = context?.tasks?.find(candidate => candidate.id === issueId) || state.projectIssues?.find(candidate => candidate.id === issueId) || state.issues?.find(candidate => candidate.id === issueId);
         const workState = issue?.archived_at || link?.archived ? "已归档" : statusLabels[issue?.status || link?.status] || "待规划";
         const action = issueId ? '<button type="button" data-inline-work-task="' + escapeHtml2(issueId) + '">' + te("开发任务") + ' · ' + te(workState) + '</button>' : '<button type="button" data-plan-convert="' + escapeHtml2(project.id) + '" data-plan-convert-item="' + escapeHtml2(item.id) + '">' + te("转开发任务") + '</button>';
-        return '<article class="better-codex-project-plan-item"><label><input type="checkbox" data-plan-item="' + escapeHtml2(item.id) + '" data-plan-project="' + escapeHtml2(project.id) + '"' + (issueId ? ' disabled' : '') + (selected.includes(item.id) ? ' checked' : '') + '><strong>' + escapeHtml2(item.title || item.name || "任务") + '</strong></label><span class="better-codex-project-plan-status">' + te(issueId ? "已转开发" : "待转开发") + '</span>' + documentTextMarkup(item.goal || item.description || item.summary) + planItemDetailsMarkup(item) + issuePlanDetailMarkup(item) + '<footer>' + (issueId ? '<span>' + te("已关联开发任务") + '</span>' : '') + action + '</footer></article>';
+        return '<article class="better-codex-project-plan-item">' + (options.inline ? '<details class="bc-planning-fold" data-planning-fold="task:' + escapeHtml2(project.id) + ':' + escapeHtml2(item.id) + '"><summary>' : '') + '<label><input type="checkbox" data-plan-item="' + escapeHtml2(item.id) + '" data-plan-project="' + escapeHtml2(project.id) + '"' + (issueId ? ' disabled' : '') + (selected.includes(item.id) ? ' checked' : '') + '><strong>' + escapeHtml2((item.id && !(item.title || item.name || "").startsWith(item.id) ? item.id + " · " : "") + (item.title || item.name || "任务")) + '</strong></label><span class="better-codex-project-plan-status">' + te(issueId ? "已转开发" : "待转开发") + '</span>' + (options.inline ? '</summary><div class="bc-planning-fold-body">' : '') + documentTextMarkup(item.goal || item.description || item.summary) + planItemDetailsMarkup(item) + issuePlanDetailMarkup(item) + '<footer>' + (issueId ? '<span>' + te("已关联开发任务") + '</span>' : '') + action + '</footer>' + (options.inline ? '</div></details>' : '') + '</article>';
       }).join("");
-      const warnings = (plan.validation?.warnings || plan.warnings || []).map((warning) => ({ unmapped_requirement: "该需求尚未安排任务", duplicate_requirement_mapping: "该需求关联了多个任务", missing_scope: "请补充任务范围", missing_acceptance: "请补充验收标准", missing_deliverables: "请补充任务产物", missing_manual_steps: "请补充人工验收步骤", missing_directories: "请明确任务涉及的目录", missing_contract_refs: "请关联总纲章节和契约", missing_contract_owner: "请明确契约责任归属", missing_requirement_refs: "请关联需求来源" }[warning.code] || "任务规划有待确认事项") + (warning.requirement_id || warning.item_id ? " · " + (warning.requirement_id || warning.item_id) : ""));
-      const warningMarkup = warnings.length ? '<section class="better-codex-project-plan-section"><header><strong>' + te("待确认事项") + '</strong></header>' + documentTextMarkup(warnings) + '</section>' : '';
+      const warningLabels = { missing_scope: "请补充任务范围", missing_acceptance: "请补充验收标准", missing_deliverables: "请补充任务产物", missing_manual_steps: "请补充人工验收步骤", missing_directories: "请明确任务涉及的目录" };
+      const warnings = (plan.validation?.warnings || plan.warnings || []).filter(warning => warningLabels[warning.code] && items.some(item => item.id === warning.item_id)).map(warning => warningLabels[warning.code] + " · " + warning.item_id);
+      const warningMarkup = warnings.length ? (options.inline ? '<details class="bc-planning-fold" data-planning-fold="warnings:' + escapeHtml2(project.id) + '"><summary>' + te("任务待补充内容") + ' · ' + escapeHtml2(String(warnings.length)) + '</summary><div class="bc-planning-fold-body">' + documentTextMarkup(warnings) + '</div></details>' : '<section class="better-codex-project-plan-section"><header><strong>' + te("任务待补充内容") + '</strong></header>' + documentTextMarkup(warnings) + '</section>') : '';
       const ready = state.nativePlanningEnabled === true;
       const actions = ready && !options.inline ? planningStageTabsMarkup(project.id, state.projectDocumentView, charter.status === "confirmed") : '';
       const confirmation = projectCharterConfirmationState(project.id, options);
       const confirmTitle = confirmation.readOnly ? "当前页面仅供查看。" : confirmation.busy ? "总纲会话正在运行，请等待回复完成后再确认。" : !confirmation.revision ? "暂无可确认的总纲，请先完成总纲内容。" : "";
       const confirmButton = ready ? '<button type="button" class="better-codex-submit" data-project-charter-confirm="' + escapeHtml2(project.id) + '" data-charter-revision="' + escapeHtml2(String(confirmation.revision)) + '"' + (confirmation.threadId ? ' data-charter-thread="' + escapeHtml2(confirmation.threadId) + '"' : '') + (!confirmation.available ? ' disabled' : '') + (confirmation.pending ? ' aria-busy="true"' : '') + (confirmTitle ? ' title="' + te(confirmTitle) + '"' : '') + '>' + te(confirmation.pending ? "正在确认…" : confirmation.confirmed ? "已确认" : "确认总纲") + '</button>' : '';
       const confirmationError = state.charterConfirmationError?.projectId === project.id ? '<p class="better-codex-project-document-notice is-error" role="alert">' + escapeHtml2(state.charterConfirmationError.message) + '</p>' : '';
-      return '<section class="better-codex-project-document-panel bc-native-planning">' + actions + '<article class="better-codex-project-plan"><header class="better-codex-project-planning-panel-head"><div><span>' + te("项目总纲") + '</span><strong>' + te(charter.status === "confirmed" ? "已确认" : "待确认") + ' · ' + te("版本") + ' ' + escapeHtml2(String(charter.revision || 0)) + '</strong></div>' + confirmButton + '</header>' + confirmationError + '<div class="better-codex-project-plan-scroll">' + document + '<section class="better-codex-project-plan-section"><header><strong>' + te("任务规划") + '</strong><span>' + te("版本") + ' ' + escapeHtml2(String(plan.revision || 0)) + '</span></header>' + warningMarkup + (taskRows || '<div class="better-codex-project-dashboard-empty">' + te("暂无规划任务") + '</div>') + (ready && items.length ? '<button type="button" class="better-codex-submit" data-plan-convert="' + escapeHtml2(project.id) + '"' + (!selected.length ? ' disabled' : '') + '>' + te("将所选任务加入待规划") + '</button>' : '') + '</section></div></article></section>';
+      return '<section class="better-codex-project-document-panel bc-native-planning">' + actions + '<article class="better-codex-project-plan"><header class="better-codex-project-planning-panel-head"><div><span>' + te("项目总纲") + '</span><strong>' + te(charter.status === "confirmed" ? "已确认" : "待确认") + ' · ' + te("版本") + ' ' + escapeHtml2(String(charter.revision || 0)) + '</strong></div>' + confirmButton + '</header>' + confirmationError + '<div class="better-codex-project-plan-scroll">' + (options.inline ? '<details class="bc-planning-fold" data-planning-fold="charter:' + escapeHtml2(project.id) + '"><summary>' + te("总纲内容") + '</summary><div class="bc-planning-fold-body">' + document + '</div></details>' : document) + '<section class="better-codex-project-plan-section"><header><strong>' + te("任务规划") + '</strong><span>' + te("版本") + ' ' + escapeHtml2(String(plan.revision || 0)) + '</span></header>' + warningMarkup + (taskRows || '<div class="better-codex-project-dashboard-empty">' + te("暂无规划任务") + '</div>') + (ready && items.length ? '<button type="button" class="better-codex-submit" data-plan-convert="' + escapeHtml2(project.id) + '"' + (!selected.length ? ' disabled' : '') + '>' + te("将所选任务加入待规划") + '</button>' : '') + '</section></div></article></section>';
     }
     async function loadPlanningContext(projectId, options = {}) {
       if (!state.nativePlanningEnabled || !projectId) return;
@@ -12889,7 +12907,7 @@ var BetterCodexInjected = (() => {
       if (saved.open && saved.nativeConversation) {
         inlineConversationDetailsOpen = saved.nativeConversation.detailsOpen !== false;
         inlineConversationCompactDetailsOpen = saved.nativeConversation.compactDetailsOpen === true;
-        inlineConversationWidth = Math.min(600, Math.max(280, Number(saved.nativeConversation.detailsWidth) || 360));
+        inlineConversationWidth = Math.min(4096, Math.max(280, Number(saved.nativeConversation.detailsWidth) || 360));
         await openInlineConversation(saved.nativeConversation.target, { restore: saved.nativeConversation.context, adapterSnapshot: saved.nativeConversation.adapterSnapshot });
       } else if(saved.open)open(saved.surface);else close();
       render();return {error:bootstrapFailure || injectionSurfaceError()};
