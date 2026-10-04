@@ -27,7 +27,7 @@ const adapter = {
 const ctx = vm.createContext({
   URLSearchParams, state: { projects: [{ id: 'p1', name: 'One' }, { id: 'p2', name: 'Two' }], issues: [], projectIssues: [], surface: 'projects', projectPage: 'planning', nativePlanningEnabled: true },
   location: { pathname: '/local/original-thread', search: '' }, NAVIGATION: { threadRoutePrefix: '/local/' },
-  projectSurfaceCache: null, inlineConversation: null, inlineConversationRoot: {}, inlineConversationAdapter: null,
+  projectSurfaceCache: null, inlineConversation: null, inlineConversationRoot: {}, inlineConversationAdapter: null, inlineNativePanelObserver: null, inlineNativePanelNode: null,
   inlineConversationRequest: 0, inlineConversationCacheRestoring: false, inlineConversationLoading: false, inlineConversationError: '',
   inlineConversationDetailsOpen: true, inlineConversationCompactDetailsOpen: false, inlineConversationNavigationRequest: 0, inlineConversationWidth: 360, active: true, destroyed: false, routeSuppressed: false, pollTimer: null,
   relayId: 'fixture-relay', relayThreads: new Set(), RESUME_SURFACE_KEY: 'fixture-resume', projectPlanningDrafts: new Map(),
@@ -358,7 +358,7 @@ class NodeFixture {
     window: { matchMedia: () => ({ matches: compactWorkspace }) }, document: { documentElement: { style: new NodeFixture('html').style } },
     t: value => value, te: value => value, escapeHtml2: value => String(value), icon: name => '<i>' + name + '</i>', projectLabel: project => project.name,
     statusLabels: { todo: '待办', backlog: '待规划', in_progress: '进行中', done: '已完成' },
-    projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {} });
+    projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {}, syncInlineNativeFilePanel() {} });
   for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineWorkDetailsMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
   renderCtx.renderInlineConversation();
   renderCtx.inlineConversationLoading = true;
@@ -383,6 +383,15 @@ class NodeFixture {
   assert.equal(projectColumn.hidden, false); assert.equal(conversationColumn.hidden, false); assert.equal(detailsColumn.hidden, true, 'compact workspace retains the first three columns');
   renderCtx.inlineConversationCompactDetailsOpen = true; renderCtx.renderInlineConversation();
   assert.equal(detailsColumn.hidden, false);
+  assert(detailsColumn.innerHTML.includes('data-inline-details-close'), 'the document panel always provides its own close control');
+  vm.runInContext(readFunction('onInlineConversationClick'), renderCtx);
+  const closeDetails = { dataset: {}, closest: () => null, matches: selector => selector.split(',').map(value => value.trim()).includes('[data-inline-details-close]') };
+  renderCtx.onInlineConversationClick({ target: { closest: () => closeDetails } });
+  assert.equal(detailsColumn.hidden, true, 'the compact document drawer can close from inside the drawer');
+  compactWorkspace = false; renderCtx.innerWidth = 1326; renderCtx.inlineConversationDetailsOpen = true;
+  renderCtx.onInlineConversationClick({ target: { closest: () => closeDetails } });
+  assert.equal(detailsColumn.hidden, true, 'the wide document panel can close without relying on the distant top toolbar');
+  compactWorkspace = true; renderCtx.innerWidth = 900; renderCtx.inlineConversationCompactDetailsOpen = true; renderCtx.renderInlineConversation();
   assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '0px', 'compact document drawer never narrows the native chat column');
 
   renderCtx.state.nativeWorkConversations = { p1: [

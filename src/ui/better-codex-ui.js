@@ -2181,6 +2181,8 @@ var BetterCodexInjected = (() => {
     let projectSurfaceCache = null;
     let inlineConversationCacheRestoring = false;
     let inlineConversationRoot = null;
+    let inlineNativePanelObserver = null;
+    let inlineNativePanelNode = null;
     let inlineConversationAdapter = null;
     let inlineConversationRequest = 0;
     let inlineConversationLoading = false;
@@ -2547,12 +2549,14 @@ var BetterCodexInjected = (() => {
         [data-better-codex-native-preview="true"] { display: flex !important; flex-direction: column !important; position: absolute !important; inset: 0 !important; z-index: 40 !important; visibility: visible !important; }
         [data-better-codex-native-preview="true"] > * { display: var(--bc-native-retained-display, block) !important; }
         [data-better-codex-native-preview-obscured="true"] { visibility: hidden !important; }
-        [data-better-codex-inline-content="true"] { position: absolute !important; left: var(--bc-inline-nav-space, 0px) !important; right: var(--bc-inline-details-space, 0px) !important; top: 58px !important; bottom: 0 !important; width: auto !important; max-width: none !important; height: auto !important; min-height: 0 !important; margin: 0 !important; pointer-events: auto !important; }
+        [data-better-codex-inline-content="true"] { position: absolute !important; left: var(--bc-inline-nav-space, 0px) !important; right: calc(var(--bc-inline-details-space, 0px) + var(--bc-inline-native-panel-width, 0px)) !important; top: 98px !important; bottom: 0 !important; width: auto !important; max-width: none !important; height: auto !important; min-height: 0 !important; margin: 0 !important; pointer-events: auto !important; }
+        [data-better-codex-native-panel="true"] { position: absolute !important; top: 98px !important; right: var(--bc-inline-details-space, 0px) !important; bottom: 0 !important; width: var(--bc-inline-native-panel-width, 0px) !important; max-width: calc(100% - var(--bc-inline-nav-space, 0px) - var(--bc-inline-details-space, 0px)) !important; height: auto !important; z-index: 34 !important; }
         [data-better-codex-planning-native-hidden="true"] { display: none !important; }
         [data-better-codex-planning-native-rail="true"] { width: 52px !important; min-width: 52px !important; max-width: 52px !important; flex-basis: 52px !important; }
-        [data-better-codex-planning-native-header="true"] { left: calc(52px + var(--bc-planning-left-space, 370px)) !important; right: max(var(--bc-planning-details-space, 320px), var(--bc-planning-toolbar-space, 0px)) !important; width: auto !important; background: transparent !important; pointer-events: none !important; z-index: 33 !important; }
-        [data-better-codex-planning-native-header="true"] [data-app-shell-main-titlebar="true"], [data-better-codex-planning-native-header="true"] [data-app-shell-header-slot="start"] { display: none !important; }
-        [data-better-codex-planning-native-header="true"] [data-app-shell-header-slot="end"] { margin-left: auto; pointer-events: auto; }
+        [data-better-codex-planning-native-header="true"] { top: calc(var(--bc-native-header-top, 44px) + 58px) !important; left: calc(52px + var(--bc-planning-left-space, 370px)) !important; right: var(--bc-planning-details-space, 0px) !important; height: 40px !important; --app-shell-header-height: 40px; width: auto !important; background: transparent !important; pointer-events: none !important; z-index: 42 !important; }
+        [data-better-codex-planning-native-header="true"] > * { pointer-events: none !important; }
+        [data-better-codex-planning-native-header="true"] [data-app-shell-header-slot="end"] { margin-left: auto; pointer-events: auto; background: var(--bc-color-canvas); }
+        [data-better-codex-planning-native-header="true"] button, [data-better-codex-planning-native-header="true"] a, [data-better-codex-planning-native-header="true"] input, [data-better-codex-planning-native-header="true"] [role="button"] { pointer-events: auto !important; }
         #better-codex-panel[data-better-codex-inline-shell="true"] { position: absolute !important; inset: 0 !important; display: block !important; width: auto !important; max-width: none !important; height: auto !important; padding: 0 !important; margin: 0 !important; background: transparent !important; pointer-events: none !important; overflow: visible !important; }
         #better-codex-panel[data-better-codex-inline-shell="true"] > :not(#better-codex-native-conversation) { display: none !important; }
         #better-codex-native-conversation { position: absolute; inset: 0; z-index: 32; display: block; min-width: 0; pointer-events: none; color: var(--bc-color-ink); background: transparent; }
@@ -2607,6 +2611,9 @@ var BetterCodexInjected = (() => {
         @media (max-width: 1100px) { #better-codex-native-conversation[data-planning-workspace="true"] { --bc-planning-projects-width: 152px; --bc-planning-conversations-width: 176px; } }
         .better-codex-inline-details { position: absolute; top: 58px; right: 0; bottom: 0; width: var(--bc-inline-details-width, 360px); border-left: 1px solid var(--bc-color-hairline); background: var(--bc-color-canvas); overflow: auto; overscroll-behavior: contain; pointer-events: auto; box-sizing: border-box; }
         .better-codex-inline-details[hidden], .better-codex-inline-status[hidden] { display: none; }
+        .better-codex-inline-details-toolbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 6px 12px; border-bottom: 1px solid var(--bc-color-hairline); background: var(--bc-color-canvas); box-sizing: border-box; }
+        .better-codex-inline-details-toolbar button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 4px 8px; border: 1px solid var(--bc-color-hairline); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+        .better-codex-inline-details-toolbar svg { width: 16px; height: 16px; }
         .better-codex-inline-details .better-codex-project-document-panel { min-width: 0; height: auto; padding: 16px; display: block; }
         .better-codex-inline-details .better-codex-project-plan { min-width: 0; height: auto; display: block; }
         .better-codex-inline-details .better-codex-project-plan-scroll { overflow: visible; max-height: none; }
@@ -3108,6 +3115,12 @@ var BetterCodexInjected = (() => {
     }
     function findMount() {
       if (HOST_KIND === "web") return document.querySelector("[data-better-codex-web-surface]");
+      if (inlineConversation) {
+        const page = document.querySelector('[data-app-shell-active-page="true"]');
+        const layout = page?.querySelector(SELECTORS.contentLayout);
+        const surface = layout?.parentElement;
+        if (surface?.closest("main") && !surface.closest('[' + OWNED + '="true"]') && inlineNativeElementVisible(surface)) return surface;
+      }
       return findInjectedMount(SELECTORS, OWNED, inlineConversation ? inlineNativeElementVisible : injectedElementVisible);
     }
     function activeThreadRow() {
@@ -5989,6 +6002,8 @@ var BetterCodexInjected = (() => {
       return '<header><strong>' + te("工作会话") + '</strong></header><nav aria-label="' + te("项目工作会话") + '">' + (groups || '<div class="better-codex-project-dashboard-empty">' + te("暂无工作任务") + '</div>') + '</nav>';
     }
     function leaveInlineConversation() {
+      inlineNativePanelObserver?.disconnect();
+      inlineNativePanelObserver = inlineNativePanelNode = null;
       document.querySelectorAll('[data-better-codex-native-preview], [data-better-codex-native-preview-obscured]').forEach(node => { node.removeAttribute('data-better-codex-native-preview'); node.removeAttribute('data-better-codex-native-preview-obscured'); });
       if (!inlineConversation) return;
       rememberProjectView();
@@ -6009,7 +6024,7 @@ var BetterCodexInjected = (() => {
       syncPlanningWorkspaceNativeChrome(false);
       panel?.removeAttribute("data-better-codex-inline-shell");
       document.querySelectorAll("[data-better-codex-inline-content]").forEach((node) => { if (node !== projectSurfaceCache?.nativeLayout) node.removeAttribute("data-better-codex-inline-content"); });
-      document.querySelectorAll("[data-better-codex-inline-host]").forEach((node) => { if (node === projectSurfaceCache?.nativeSurface) return; node.removeAttribute("data-better-codex-inline-host"); node.style.removeProperty("--bc-inline-details-space"); node.style.removeProperty("--bc-inline-nav-space"); });
+      document.querySelectorAll("[data-better-codex-inline-host]").forEach((node) => { if (node === projectSurfaceCache?.nativeSurface) return; node.querySelectorAll("[data-better-codex-native-panel]").forEach(panel => panel.removeAttribute("data-better-codex-native-panel")); node.removeAttribute("data-better-codex-inline-host"); node.style.removeProperty("--bc-inline-details-space"); node.style.removeProperty("--bc-inline-nav-space"); node.style.removeProperty("--bc-inline-native-panel-width"); });
     }
     function inlineWorkDetailsMarkup() {
       const target = inlineConversationTarget();
@@ -6110,7 +6125,7 @@ var BetterCodexInjected = (() => {
         state.planningContexts ||= {};
         state.planningContexts[target.project_id] = context;
       }
-      const markup = target.kind === "work" ? inlineWorkDetailsMarkup() : projectPlanningMarkup(project, { inline: true });
+      const markup = '<header class="better-codex-inline-details-toolbar"><strong>' + te(workWorkspace ? "任务资料" : "总纲与任务") + '</strong><button type="button" data-inline-details-close aria-label="' + te("收起资料") + '">' + icon("close") + te("收起") + '</button></header>' + (target.kind === "work" ? inlineWorkDetailsMarkup() : projectPlanningMarkup(project, { inline: true }));
       if (markup !== inlineConversationDetailsMarkup) {
         const scrollTop = details.scrollTop;
         details.innerHTML = markup;
@@ -6139,6 +6154,7 @@ var BetterCodexInjected = (() => {
       nativeSurface?.style.setProperty("--bc-inline-details-space", detailsOpen && !compact ? detailsWidth + "px" : "0px");
       document.documentElement.style.setProperty("--bc-planning-left-space", navSpace);
       document.documentElement.style.setProperty("--bc-planning-details-space", detailsOpen && !compact ? detailsWidth + "px" : "0px");
+      if (nativeSurface) syncInlineNativeFilePanel(nativeSurface);
       const toolbarWidth = heading.querySelector(".better-codex-inline-heading-actions")?.getBoundingClientRect?.().width || 0;
       document.documentElement.style.setProperty("--bc-planning-toolbar-space", Math.ceil(toolbarWidth + 24) + "px");
       syncInlineConversationInteraction();
@@ -6156,13 +6172,44 @@ var BetterCodexInjected = (() => {
         document.documentElement.style.removeProperty("--bc-planning-toolbar-space");
         return;
       }
-      (nativePage || document).querySelectorAll(".app-shell-left-panel").forEach(node => {
+      const ownsChrome = node => !node.closest('[data-app-shell-active-page]') || node.closest('[data-app-shell-active-page]') === nativePage;
+      Array.from(document.querySelectorAll(".app-shell-left-panel")).filter(ownsChrome).forEach(node => {
         if (node.getAttribute("data-better-codex-planning-native-rail") !== "true") node.setAttribute("data-better-codex-planning-native-rail", "true");
         node.querySelectorAll(".sidebar-navigation").forEach(sidebar => { if (!sidebar.querySelector("[data-app-navigation-rail]") && sidebar.getAttribute("data-better-codex-planning-native-hidden") !== "true") sidebar.setAttribute("data-better-codex-planning-native-hidden", "true"); });
       });
-      (nativePage || document).querySelectorAll('[data-app-shell-header-layout="thread-edge-scroll"][data-app-shell-application-menu-bar="true"]').forEach(node => {
-        if (node.getAttribute("data-better-codex-planning-native-header") !== "true") node.setAttribute("data-better-codex-planning-native-header", "true");
+      Array.from(document.querySelectorAll('[data-app-shell-header-layout="thread-edge-scroll"][data-app-shell-application-menu-bar="true"]')).filter(ownsChrome).forEach(node => {
+        if (node.getAttribute("data-better-codex-planning-native-header") !== "true") {
+          node.style.setProperty('--bc-native-header-top', getComputedStyle(node).top);
+          node.setAttribute("data-better-codex-planning-native-header", "true");
+        }
       });
+    }
+    function syncInlineNativeFilePanel(surface) {
+      const filePanel = surface.querySelector(':scope > aside[data-app-shell-focus-area="right-panel"]');
+      const nativeLayout = surface.querySelector(':scope > ' + SELECTORS.contentLayout);
+      let width = 0;
+      if (filePanel && !filePanel.hidden && filePanel.getAttribute('aria-hidden') !== 'true' && getComputedStyle(filePanel).display !== 'none') {
+        const navWidth = parseFloat(surface.style.getPropertyValue('--bc-inline-nav-space')) || 0;
+        const detailsWidth = parseFloat(surface.style.getPropertyValue('--bc-inline-details-space')) || 0;
+        const available = Math.max(0, (surface.clientWidth || innerWidth - 52) - navWidth - detailsWidth);
+        const full = nativeLayout?.getAttribute('data-app-shell-right-panel-full-width') === 'true';
+        const nativeWidth = filePanel.style.width;
+        const preferred = /px$/.test(nativeWidth) ? parseFloat(nativeWidth) : parseFloat(filePanel.getAttribute('data-better-codex-panel-width')) || Math.min(480, available * .5);
+        if (!full) filePanel.setAttribute('data-better-codex-panel-width', String(preferred));
+        width = full ? available : Math.min(preferred, Math.max(0, available - 360), available * .6);
+        filePanel.setAttribute('data-better-codex-native-panel', 'true');
+      }
+      const value = Math.round(width) + 'px';
+      if (surface.style.getPropertyValue('--bc-inline-native-panel-width') !== value) surface.style.setProperty('--bc-inline-native-panel-width', value);
+      if (inlineNativePanelNode !== filePanel) {
+        inlineNativePanelObserver?.disconnect();
+        inlineNativePanelObserver = null;
+        inlineNativePanelNode = filePanel;
+        if (filePanel && typeof MutationObserver === 'function') {
+          inlineNativePanelObserver = new MutationObserver(() => { if (active && inlineConversation && filePanel.isConnected) syncInlineNativeFilePanel(surface); });
+          inlineNativePanelObserver.observe(filePanel, { attributes: true, attributeFilter: ['style', 'aria-hidden', 'hidden'] });
+        }
+      }
     }
     function mountInlineConversation(surface) {
       if (!inlineConversationRoot) {
@@ -6201,7 +6248,7 @@ var BetterCodexInjected = (() => {
       panel.hidden = false;
       if (inlineConversationRoot.parentElement !== panel) panel.appendChild(inlineConversationRoot);
       surface.setAttribute("data-better-codex-inline-host", "true");
-      const nativeLayout = Array.from(surface.children).find((child) => !child.hasAttribute(OWNED) && inlineNativeElementVisible(child) && child.matches(SELECTORS.contentLayout)) || Array.from(surface.children).find((child) => !child.hasAttribute(OWNED) && inlineNativeElementVisible(child) && child.querySelector(SELECTORS.contentFrame));
+      const nativeLayout = Array.from(surface.children).find((child) => !child.hasAttribute(OWNED) && child.matches(SELECTORS.contentLayout)) || Array.from(surface.children).find((child) => !child.hasAttribute(OWNED) && inlineNativeElementVisible(child) && child.querySelector(SELECTORS.contentFrame));
       if (nativeLayout) nativeLayout.setAttribute("data-better-codex-inline-content", "true");
       renderInlineConversation();
     }
@@ -6244,9 +6291,10 @@ var BetterCodexInjected = (() => {
         rememberProjectView();
         return openRoute(surface, { projectId: current.project_id, resume: false });
       }
-      if (target.matches("[data-inline-details]")) {
-        if (window.matchMedia("(max-width: 980px)").matches) inlineConversationCompactDetailsOpen = !inlineConversationCompactDetailsOpen;
-        else inlineConversationDetailsOpen = !inlineConversationDetailsOpen;
+      if (target.matches("[data-inline-details], [data-inline-details-close]")) {
+        const closing = target.matches("[data-inline-details-close]");
+        if (window.matchMedia("(max-width: 980px)").matches) inlineConversationCompactDetailsOpen = closing ? false : !inlineConversationCompactDetailsOpen;
+        else inlineConversationDetailsOpen = closing ? false : !inlineConversationDetailsOpen;
         renderInlineConversation(); return;
       }
       if (target.matches("[data-inline-stage]")) return target.disabled ? void 0 : void perform(() => openProjectNativeSession(inlineConversationTarget().project_id, target.dataset.inlineStage));
@@ -12295,6 +12343,8 @@ var BetterCodexInjected = (() => {
         surface?.removeAttribute?.("data-better-codex-inline-host");
         surface?.style.removeProperty("--bc-inline-nav-space");
         surface?.style.removeProperty("--bc-inline-details-space");
+        surface?.style.removeProperty("--bc-inline-native-panel-width");
+        surface?.querySelectorAll?.('[data-better-codex-native-panel]').forEach(node => node.removeAttribute('data-better-codex-native-panel'));
         projectSurfaceCache?.chromeStyles?.forEach(([name]) => page?.style.removeProperty(name));
         page?.querySelectorAll('[data-better-codex-planning-native-hidden], [data-better-codex-planning-native-rail], [data-better-codex-planning-native-header]').forEach(node => {
           ["data-better-codex-planning-native-hidden", "data-better-codex-planning-native-rail", "data-better-codex-planning-native-header"].forEach(name => node.removeAttribute(name));
@@ -12801,7 +12851,7 @@ var BetterCodexInjected = (() => {
         hydrateAddedIconButtons(records);
         scheduleRefresh();
       });
-      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current", ATTRIBUTES.threadActive] });
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current", ATTRIBUTES.threadActive, "data-app-shell-right-panel-full-width"] });
       startLiveUpdates();
       if (HOST_KIND !== "web" && HOST_CAPABILITIES.nativeThreads !== false) startSessionRelay();
       refresh();

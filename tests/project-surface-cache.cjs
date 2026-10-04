@@ -39,7 +39,7 @@ function fixture() {
   const ctx = vm.createContext({
     URLSearchParams,
     state: { surface: 'projects', projectDetailId: 'p1', projectId: 'p1', projectPage: 'planning', projectDocumentView: 'planning', projectResumePending: '', projects: [{ id: 'p1' }, { id: 'p2' }], projectsLoaded: true, projectIssues: [], projectIssuesProjectId: 'p1', issues: [], nativePlanningEnabled: true },
-    projectSurfaceCache: null, inlineConversation: conversation, inlineConversationRoot: root,
+    projectSurfaceCache: null, inlineConversation: conversation, inlineConversationRoot: root, inlineNativePanelObserver: null, inlineNativePanelNode: null,
     inlineConversationAdapter: adapter, inlineConversationRequest: 3, inlineConversationNavigationRequest: 5,
     inlineConversationLoading: false, inlineConversationCacheRestoring: false, inlineConversationError: '', inlineConversationDetailsMarkup: 'details', inlineConversationHeaderMarkup: 'heading', inlineConversationNavigationMarkup: 'navigation',
     inlineConversationDetailsOpen: false, inlineConversationCompactDetailsOpen: true, inlineConversationWidth: 432,
