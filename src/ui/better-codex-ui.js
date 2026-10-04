@@ -1921,6 +1921,7 @@ var BetterCodexInjected = (() => {
     localeResources.en["有任务正在运行，请等待任务结束后再更新。"] = "A task is running. Wait for it to finish before updating.";
     localeResources.en["更新正在进行中，请稍候。"] = "An update is already in progress. Please wait.";
     localeResources.en["当前部署尚未启用在线升级。"] = "Online updates are not enabled for this deployment.";
+    localeResources.en["数据所在磁盘空间不足，请清理空间后重试。"] = "The data disk is low on space. Free up space and try again.";
     localeResources.en["服务器磁盘空间不足，请清理空间后重试升级（至少保留 5 GiB 和 5% 可用空间）。"] = "The server is low on disk space. Free up space before retrying the update (at least 5 GiB and 5% free space required).";
     localeResources.en["远程服务升级完成。"] = "The remote service update is complete.";
     localeResources.en["远程服务正在重启，页面稍后会自动恢复。"] = "The remote service is restarting. This page will reconnect automatically.";
@@ -2624,6 +2625,10 @@ var BetterCodexInjected = (() => {
         .better-codex-inline-details .better-codex-inline-details-toolbar button { display: inline-flex; width: auto; flex: 0 0 auto; white-space: nowrap; }
         .better-codex-inline-details .better-codex-project-plan-item, .better-codex-inline-details .better-codex-project-plan-item :is(details, summary, label, strong, p, li, section, .better-codex-project-plan-status) { font-size: inherit !important; line-height: inherit; }
         .better-codex-inline-resize:hover, .better-codex-inline-resize:active { background: color-mix(in srgb, var(--bc-color-accent) 25%, transparent); }
+        .bc-project-work-views { display: flex; align-items: center; gap: 4px; padding: 4px; margin: 8px 0 12px; width: fit-content; border: 1px solid var(--bc-color-hairline); border-radius: 8px; pointer-events: auto; }
+        .bc-project-work-views button { padding: 6px 12px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
+        .bc-project-work-views button[aria-current="page"] { background: var(--bc-color-control); font-weight: 600; }
+        .better-codex-inline-heading-actions .bc-project-work-views { margin: 0; }
         .bc-planning-fold { min-width: 0; width: 100%; }
         .bc-planning-fold > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 0; cursor: pointer; list-style: none; font-weight: 600; }
         .bc-planning-fold > summary::-webkit-details-marker { display: none; }
@@ -4316,6 +4321,7 @@ var BetterCodexInjected = (() => {
     }
     function errorLabel(error) {
       const value = error instanceof Error ? error.message : String(error || "request_failed");
+      if (value === "insufficient_disk_space" || value.startsWith("insufficient_disk_space:")) return t("数据所在磁盘空间不足，请清理空间后重试。");
       const serviceLabel = serviceFailureLabel(error);
       if (serviceLabel) return serviceLabel;
       if (value === "thread_open_timeout" || value === "thread_open_unconfirmed") return t("对话仍在加载，请稍后重试。");
@@ -4468,6 +4474,7 @@ var BetterCodexInjected = (() => {
       if (securityErrorCodes.has(code)) return { category: "security", tone: "danger", report: true };
       if (integrityErrorCodes.has(code) || code.startsWith("update_activation_failed:")) return { category: "integrity", tone: "danger", report: true };
       if (protocolErrorCodes.has(code)) return { category: "protocol", tone: "danger", report: true };
+      if (code === "insufficient_disk_space" || code.startsWith("insufficient_disk_space:")) return { category: "service", tone: "warning", report: true };
       if (code === "database_unavailable") return { category: "service", tone: "danger", report: true };
       if (validationErrorCodes.has(code) || code.startsWith("native_command_argument_required:") || code.endsWith("_value_invalid") || code === "native_command_invalid" || code.startsWith("请选择") || code.startsWith("图片") || code.startsWith("最多传输") || code.startsWith("当前环境无法") || code.startsWith("创建智能体 Issue 需要本地工作区") || code.startsWith("展示")) return { category: "validation", tone: "danger", report: false };
       if (informationalErrorCodes.has(code)) return { category: "state", tone: "info", report: false };
@@ -6117,7 +6124,7 @@ var BetterCodexInjected = (() => {
       const taskStart = workWorkspace && !task?.archived_at ? '<button type="button" data-work-create="' + escapeHtml2(target.issue_id) + '">' + icon("plus") + te("新建会话") + '</button>' : "";
       const compact = window.matchMedia("(max-width: 980px)").matches;
       const detailsOpen = compact ? inlineConversationCompactDetailsOpen : inlineConversationDetailsOpen;
-      const header = '<div class="better-codex-inline-heading-leading"><button type="button" data-inline-back aria-label="' + te(workWorkspace ? "返回任务看板" : "返回项目") + '">' + icon("back") + te("返回") + '</button><span class="better-codex-inline-title" title="' + escapeHtml2(title) + '">' + escapeHtml2(title) + '</span>' + tabs + '</div>' + stageTabs + '<div class="better-codex-inline-heading-actions">' + taskStart + '<button type="button" data-inline-details aria-expanded="' + String(detailsOpen) + '">' + icon("docs") + te(workWorkspace ? "资料" : "总纲与任务") + '</button>' + (workWorkspace && !inlineConversation.read_only && !target.history_id && inlineConversation.mode !== "legacy_busy" && !issueExecutionRunning(task) ? '<button type="button" data-inline-restart>' + te("重新开始") + '</button>' : '') + '<button type="button" data-inline-retry aria-label="' + te("重新连接会话") + '" title="' + te("重新连接会话") + '">' + icon("refresh") + '</button></div>';
+      const header = '<div class="better-codex-inline-heading-leading"><button type="button" data-inline-back aria-label="' + te(workWorkspace ? "返回任务看板" : "返回项目") + '">' + icon("back") + te("返回") + '</button><span class="better-codex-inline-title" title="' + escapeHtml2(title) + '">' + escapeHtml2(title) + '</span>' + tabs + '</div>' + stageTabs + '<div class="better-codex-inline-heading-actions">' + (workWorkspace ? '<nav class="bc-project-work-views" aria-label="' + te("工作视图") + '"><button type="button" data-inline-work-view="board">' + te("状态看板") + '</button><button type="button" aria-current="page" data-inline-work-view="conversations">' + te("工作会话") + '</button></nav>' : '') + taskStart + '<button type="button" data-inline-details aria-expanded="' + String(detailsOpen) + '">' + icon("docs") + te(workWorkspace ? "资料" : "总纲与任务") + '</button>' + (workWorkspace && !inlineConversation.read_only && !target.history_id && inlineConversation.mode !== "legacy_busy" && !issueExecutionRunning(task) ? '<button type="button" data-inline-restart>' + te("重新开始") + '</button>' : '') + '<button type="button" data-inline-retry aria-label="' + te("重新连接会话") + '" title="' + te("重新连接会话") + '">' + icon("refresh") + '</button></div>';
       const heading = inlineConversationRoot.querySelector(".better-codex-inline-heading");
       if (header !== inlineConversationHeaderMarkup) { heading.innerHTML = header; inlineConversationHeaderMarkup = header; }
       const projects = inlineConversationRoot.querySelector(".bc-planning-projects");
@@ -6295,6 +6302,18 @@ var BetterCodexInjected = (() => {
         if (!inlineConversation || inlineConversationKey(inlineConversation) !== originKey || navigationRequest !== inlineConversationNavigationRequest) return;
         await openInlineConversation({ project_id: projectId, kind: response.conversation.kind, conversation_id: response.conversation.conversation_id });
       });
+      if (target.matches("[data-inline-work-view]")) {
+        const projectId = inlineConversationTarget().project_id;
+        if (target.dataset.inlineWorkView === "conversations") return void perform(() => openProjectWorkSession(projectId));
+        leaveInlineConversation();
+        state.projectDetailId = projectId;
+        state.projectPage = "work";
+        state.projectResumePending = "";
+        rememberProjectView();
+        openRoute("projects", { projectId, resume: false });
+        if (!state.issuesLoaded) void perform(() => loadIssues());
+        return;
+      }
       if (target.matches("[data-planning-workspace-view]")) {
         const projectId = inlineConversationTarget().project_id;
         if (target.dataset.planningWorkspaceView === "work") return void perform(() => openProjectWorkSession(projectId));
@@ -7701,7 +7720,7 @@ var BetterCodexInjected = (() => {
       const tabs = controllers().projects.renderDashboardTabs(page, { page: t("项目页面"), overview: t("概览"), planning: t("规划"), conversation: t("对话"), conversationAria: t("规划对话"), work: t("工作") });
       const header = '<header class="better-codex-project-dashboard-head"><div class="better-codex-project-dashboard-title"><div><h1>' + escapeHtml2(projectLabel(project)) + '</h1><span data-project-health-badge data-tone="' + healthTone + '">' + escapeHtml2(healthLabel) + "</span></div><p>" + escapeHtml2(project.description || t("尚未生成项目介绍")) + "</p></div>" + headerActions + "</header>" + tabs;
       if (page === "planning") return '<section class="better-codex-project-dashboard">' + header + projectPlanningMarkup(project) + "</section>";
-      if (page === "work") return '<section class="better-codex-project-dashboard">' + header + '<main class="better-codex-board better-codex-project-work-board" data-project-board></main></section>';
+      if (page === "work") return '<section class="better-codex-project-dashboard">' + header + '<nav class="bc-project-work-views" aria-label="' + te("工作视图") + '"><button type="button" aria-current="page" data-project-work-view="board">' + te("状态看板") + '</button><button type="button" data-project-work-view="conversations">' + te("工作会话") + '</button></nav><main class="better-codex-board better-codex-project-work-board" data-project-board></main></section>';
       const priority = { blocked: 0, in_review: 1, in_progress: 2, todo: 3, backlog: 4, done: 5 };
       const work = [...activeIssues].filter((issue) => ["blocked", "in_review", "in_progress", "todo"].includes(issue.status)).sort((left, right) => (priority[left.status] ?? 9) - (priority[right.status] ?? 9) || String(right.updated_at).localeCompare(String(left.updated_at))).slice(0, 5);
       const issueAssignee = (issue) => {
@@ -7969,6 +7988,16 @@ var BetterCodexInjected = (() => {
       await loadProjects();
     }
     function onProjectsClick(event) {
+      const workView = event.target.closest("[data-project-work-view]");
+      if (workView) {
+        if (workView.dataset.projectWorkView === "conversations") return void perform(() => openProjectWorkSession(state.projectDetailId));
+        state.projectPage = "work";
+        state.projectResumePending = "";
+        rememberProjectView();
+        renderProjects();
+        return;
+      }
+
       const charterConfirm = event.target.closest("[data-project-charter-confirm]");
       if (charterConfirm) return void perform(() => confirmProjectCharter(charterConfirm));
       const nativeSession = event.target.closest("[data-project-native-session]");
