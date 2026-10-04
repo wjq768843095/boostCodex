@@ -71218,7 +71218,8 @@ function errorStatus(code2) {
   if (["native_operation_not_found"].includes(code2)) return 404;
   if (["native_operation_scope_mismatch", "native_operation_identity_mismatch", "native_host_mismatch", "native_binding_required", "native_operation_busy", "native_conversation_busy", "native_outcome_unknown", "native_operation_finished", "native_handoff_required", "native_tool_call_conflict", "native_tool_outcome_unknown", "native_allocation_checkpoint_required", "explicit_restart_required","conversation_project_mismatch","conversation_kind_mismatch","conversation_select_required"].includes(code2)) return 409;
   if (["confirmed_charter_required", "explicit_user_confirmation_required", "confirmation_message_mismatch", "session_thread_mismatch", "command_project_mismatch", "command_relay_mismatch", "command_turn_mismatch", "command_already_finished", "native_start_already_pending", "event_id_conflict", "item_charter_revision_mismatch", "item_not_converted", "issue_project_mismatch", "skill_name_conflict", "skill_slug_conflict", "skill_export_path_conflict", "builtin_skill_slug_locked"].includes(code2)) return 409;
-  if (["external_skill_read_only", "builtin_skill_delete_forbidden"].includes(code2)) return 403;
+  if (["external_skill_read_only", "builtin_skill_delete_forbidden", "skill_project_mismatch"].includes(code2)) return 403;
+  if (["skill_scope_locked", "skill_project_locked", "skill_source_missing", "skill_project_root_shared", "conversation_issue_mismatch"].includes(code2)) return 409;
   if (code2 === "project_backup_failed") return 503;
   if (/^(invalid_|duplicate_|missing_)/.test(code2) || ["skill_input_required", "skill_name_and_instructions_required"].includes(code2)) return 400;
   if (code2 === "update_operation_not_found") return 404;
@@ -71343,11 +71344,11 @@ function startServer() {
   const projectRuntime = require("../modules/native-project-runtime.cjs").createNativeProjectRuntime({ store, worker, home: betterCodexHome, codexHome, publishChange: () => publishChange() });
   store.nativeProjectRuntime = projectRuntime;
   const enrichIssue = issue => projectRuntime.enrichIssue(issue);
-  const validateIssueSkill = body => {
+  const validateIssueSkill = (body, projectId) => {
     if (!("skill_id" in body)) return undefined;
     if (typeof body.skill_id !== "string") throw new Error("invalid_skill_id");
     const id = cleanString(body.skill_id, 200);
-    if (id && !projectRuntime.findSkill(id)) throw new Error("skill_not_found");
+    if (id) projectRuntime.assertSkill(id, projectId || body.project_id);
     return id;
   };
   if (identity.handoffUpdateId) worker.beginUpdateDrain();
@@ -72235,11 +72236,13 @@ data: ${JSON.stringify({ revision })}
       }
       if (url.pathname === "/api/projects" && method === "GET") {
         if (!mockupEnabled) syncCodexProjects(store);
+        projectRuntime.refreshSkillExports();
         return sendJson(response, 200, store.listProjects());
       }
       if (url.pathname === "/api/projects" && method === "POST") {
         const body = await readBody(request2);
         const project = createCodexProject(store, body.name, body.workspace_path);
+        projectRuntime.refreshSkillExports();
         return sendJson(response, 201, project);
       }
       if (url.pathname === "/api/projects/ensure" && method === "POST") {
@@ -72249,6 +72252,7 @@ data: ${JSON.stringify({ revision })}
           name: cleanString(body.name, 120) || "Codex",
           workspacePath: cleanString(body.workspace_path, 4096)
         });
+        projectRuntime.refreshSkillExports();
         if (project.workspace_path) worker.wake();
         return sendJson(response, 200, project);
       }
@@ -72268,7 +72272,9 @@ data: ${JSON.stringify({ revision })}
         return project ? sendJson(response, 200, project) : sendJson(response, 404, { error: "project_not_found" });
       }
       if (path[0] === "api" && path[1] === "projects" && path[2] && path.length === 3 && method === "DELETE") {
+        projectRuntime.skills.deactivateProject(decodeURIComponent(path[2]));
         const result2 = removeCodexProject(store, decodeURIComponent(path[2]));
+        projectRuntime.refreshSkillExports();
         worker.wake();
         publishChange();
         return sendJson(response, 200, result2);
@@ -72383,9 +72389,10 @@ data: ${JSON.stringify({ revision })}
         const params = body.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {};
         const eventThreadId = normalizeSessionId(cleanString(params.threadId, 200));
         const projectBinding = eventThreadId && projectRuntime.planning.getSessionByThread(eventThreadId);
-        if (!relayId || !eventThreadId || (projectBinding ? !store.nativeSessionProxyIsLeader(relayId) : !store.sessionCommandRelayOwnsThread(relayId, eventThreadId))) throw new Error("session_relay_not_leader");
+        const workBinding = eventThreadId && store.db.prepare('SELECT conversation_id FROM issue_native_conversations WHERE thread_id=?').get(eventThreadId);
+        if (!relayId || !eventThreadId || (projectBinding || workBinding ? !store.nativeSessionProxyIsLeader(relayId) : !store.sessionCommandRelayOwnsThread(relayId, eventThreadId))) throw new Error("session_relay_not_leader");
         if (!["thread/status/changed", "turn/started", "turn/completed", "error", "item/started", "item/completed"].includes(eventMethod)) throw new Error("session_event_invalid");
-        return sendJson(response, 200, { accepted: projectBinding ? projectRuntime.handleProjectEvent(eventMethod, params) : worker.handleSessionEvent(eventMethod, params) });
+        return sendJson(response, 200, { accepted: projectBinding || workBinding ? projectRuntime.handleProjectEvent(eventMethod, params) : worker.handleSessionEvent(eventMethod, params) });
       }
       if (url.pathname === "/api/issues" && method === "GET") {
         const issues = await reconcileInterruptedIssues(store, store.listIssues({
@@ -72440,12 +72447,15 @@ data: ${JSON.stringify({ revision })}
       if (url.pathname === "/api/issues" && method === "POST") {
         const body = await readBody(request2, maxRemoteFileBodyBytes);
         const projectId2 = cleanString(body.project_id, 200);
-        const skillId = validateIssueSkill(body);
+        const skillId = validateIssueSkill(body, projectId2);
         const requestId = cleanString(body.request_id, 200);
         if ("ai_enrich" in body && typeof body.ai_enrich !== "boolean") throw new Error("invalid_ai_enrich");
+        if ("native_only" in body && typeof body.native_only !== "boolean") throw new Error("invalid_native_only");
+        const nativeOnly = body.native_only === true;
+        if (nativeOnly && body.ai_enrich === true) throw new Error("native_explicit_send_required");
         const aiEnrich = body.ai_enrich === true;
         const userAssigned = body.user_assigned === true;
-        const agentEnabled = (body.agent_enabled === true || aiEnrich) && !userAssigned;
+        const agentEnabled = !nativeOnly && (body.agent_enabled === true || aiEnrich) && !userAssigned;
         if ("thread_id" in body) throw new Error("issue_session_binding_disabled");
         let workspacePath = cleanString(body.workspace_path, 4096);
         const project = store.getProject(projectId2);
@@ -72504,11 +72514,12 @@ data: ${JSON.stringify({ revision })}
           throw error2;
         }
         const { issue } = created;
+        if (nativeOnly) store.db.prepare("INSERT OR IGNORE INTO issue_native_ownership(issue_id,owner,created_at) VALUES(?,'native',?)").run(issue.id, new Date().toISOString());
         if (skillId !== undefined) {
           if (created.replayed && enrichIssue(issue).skill_id !== skillId) throw new Error("request_id_conflict");
           if (!created.replayed) projectRuntime.setIssueSkill(issue.id, skillId);
         }
-        worker.wake();
+        if (!nativeOnly) worker.wake();
         if (created.replayed) return sendJson(response, 200, withReplyStatus(store.getIssue(issue.id)));
         if (aiEnrich) {
           worker.enrichIssue(issue, issue.description, agentId2);
@@ -72525,7 +72536,7 @@ data: ${JSON.stringify({ revision })}
         }
         if (method === "PATCH" && path.length === 3) {
           const body = await readBody(request2, maxRemoteFileBodyBytes);
-          const skillId = validateIssueSkill(body);
+          const skillId = validateIssueSkill(body, body.project_id || issue.project_id);
           if (relayRequest && "creator_user_id" in body) throw new Error("issue_creator_update_local_only");
           const version = Number(body.version);
           if (!Number.isInteger(version) || version < 1) throw new Error("invalid_version");
@@ -72561,7 +72572,7 @@ data: ${JSON.stringify({ revision })}
           if (updateInstallInProgress) throw new Error("update_in_progress");
           const body = await readBody(request2);
           if (Object.prototype.hasOwnProperty.call(body, "history_id")) throw new Error("native_history_read_only");
-          const skillId = validateIssueSkill(body);
+          const skillId = validateIssueSkill(body, body.project_id || issue.project_id);
           const version = Number(body.version);
           if (!Number.isInteger(version) || version < 1) throw new Error("invalid_version");
           const patch = parseIssuePatch(body);

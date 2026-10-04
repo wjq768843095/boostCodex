@@ -211,6 +211,213 @@ try {
     assert.deepEqual(reopened.get(customized.id), customized);
     console.log('PASS: both initial defaults upgraded, recorded-hash future upgrades, customized instructions/name/description preserved, unrecognized baseline rejected, version/idempotency and owned-file backups verified');
   } finally { upgradeDb.close(); }
+  // Project Skills derive complete resources without changing their read-only sources.
+  const projectA = path.join(temporary, 'project-a');
+  const projectB = path.join(temporary, 'project-b');
+  fs.mkdirSync(projectA, { recursive: true });
+  fs.mkdirSync(projectB, { recursive: true });
+  const projectResolver = id => ({ a: { id: 'a', workspace_path: projectA }, b: { id: 'b', workspace_path: projectB }, shared: { id: 'shared', workspace_path: projectA } })[id];
+  let includeSharedProject = false;
+  const listProjects = () => (includeSharedProject ? ['a', 'b', 'shared'] : ['a', 'b']).map(projectResolver);
+  const projectStore = createManagedSkills({ db, home, userHome, codexHome, resolveProject: projectResolver, listProjects });
+  const global = projectStore.get('better-codex-plan');
+  const fromGlobal = projectStore.derive({ source_skill_id: global.id, project_id: 'a', name: 'A 项目规划' });
+  assert.equal(fromGlobal.scope, 'project');
+  assert.equal(fromGlobal.source_skill_id, global.id);
+  assert.equal(fromGlobal.source_version, global.version);
+  assert.equal(fromGlobal.source_update_available, false);
+  assert.equal(projectStore.list().managed.some(skill => skill.id === fromGlobal.id), false);
+  assert.ok(projectStore.list({ projectId: 'a' }).managed.some(skill => skill.id === fromGlobal.id));
+  assert.equal(projectStore.list({ projectId: 'b' }).managed.some(skill => skill.id === fromGlobal.id), false);
+  assert.ok(projectStore.list({ includeAllProjects: true }).managed.some(skill => skill.id === fromGlobal.id));
+  assert.throws(() => projectStore.assertAvailable(fromGlobal.id, 'b'), /skill_project_mismatch/);
+  assert.throws(() => projectStore.assertAvailable(fromGlobal.id, null), /skill_project_mismatch/);
+  assert.throws(() => projectStore.derive({ source_skill_id: fromGlobal.id, project_id: 'b' }), /skill_project_mismatch/);
+  assert.throws(() => projectStore.save({ id: fromGlobal.id, scope: 'global', project_id: null }), /skill_scope/);
+  assert.throws(() => projectStore.save({ scope: 'project', project_id: 'unknown', name: 'x', instructions: 'x' }), /skill_project_not_found/);
+  const projectExport = projectStore.exportOwned();
+  const beforeProjectGlobals = snapshot(root);
+  assert.ok(projectExport.exported.includes(fromGlobal.id));
+  projectStore.exportOwned();
+  assert.ok(fs.existsSync(fromGlobal.path));
+  assert.equal(fs.existsSync(path.join(root, fromGlobal.slug)), false);
+  assert.deepEqual(snapshot(root), beforeProjectGlobals);
+  projectStore.save({ id: global.id, instructions: `${global.instructions}\n新的来源规则。` });
+  assert.equal(projectStore.list({ projectId: 'a' }).managed.find(skill => skill.id === fromGlobal.id).source_update_available, true);
+  assert.equal(projectStore.get(fromGlobal.id).instructions, fromGlobal.instructions);
+  const originalExternal = projectStore.list().external.find(skill => skill.name === 'external');
+  write(path.join(root, 'external', 'scripts', 'nested', 'run.cjs'), 'console.log("fixture only");');
+  write(path.join(root, 'external', 'references', 'guide.md'), '项目工作方法');
+  write(path.join(root, 'external', 'assets', 'example.bin'), Buffer.from([0, 255, 17, 0]));
+  write(path.join(root, 'external', 'agents', 'openai.yaml'), 'interface:\n  display_name: Fixture');
+  const sourceBeforeCopy = snapshot(path.join(root, 'external'));
+  const copied = projectStore.derive({ source_id: originalExternal.id, project_id: 'a', name: '复制外部 Skill' });
+  assert.equal(copied.instructions, 'External instructions.');
+  assert.equal(copied.source_version, null);
+  projectStore.exportOwned();
+  for (const resource of ['scripts/nested/run.cjs', 'references/guide.md', 'assets/example.bin', 'agents/openai.yaml']) {
+    assert.deepEqual(fs.readFileSync(path.join(path.dirname(copied.path), resource)), fs.readFileSync(path.join(root, 'external', resource)));
+  }
+  assert.equal(fs.existsSync(path.join(path.dirname(copied.path), 'auth.json')), false);
+  assert.deepEqual(snapshot(path.join(root, 'external')), sourceBeforeCopy);
+  write(path.join(root, 'external', 'scripts', 'nested', 'run.cjs'), 'source updated');
+  assert.equal(projectStore.list({ projectId: 'a' }).managed.find(skill => skill.id === copied.id).source_update_available, true);
+  const copiedAgain = projectStore.derive({ source_id: copied.id, project_id: 'a', name: '再次复制' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM managed_skill_resources WHERE skill_id=?').get(copiedAgain.id).count, 4);
+  assert.throws(() => projectStore.save({ scope: 'project', project_id: 'shared', slug: copied.slug, name: '共享根目录', instructions: 'x' }), /skill_project_root_shared/);
+  assert.throws(() => projectStore.derive({ source_id: global.id, project_id: 'shared' }), /skill_project_root_shared/);
+  const scopedExternalPath = path.join(projectB, '.agents', 'skills', 'outside', 'SKILL.md');
+  write(scopedExternalPath, '---\nname: project-b-only\ndescription: only B\n---\nB only.');
+  const bExternal = projectStore.list({ projectId: 'b' }).external.find(skill => skill.name === 'project-b-only');
+  assert.ok(bExternal);
+  assert.ok(projectStore.list({ includeAllProjects: true }).external.some(skill => skill.id === bExternal.id));
+  assert.equal(projectStore.list({ projectId: 'a' }).external.some(skill => skill.id === bExternal.id), false);
+  assert.throws(() => projectStore.derive({ source_id: bExternal.id, project_id: 'a' }), /skill_not_found/);
+  // Existing files never become managed resources merely because their directory is owned.
+  projectStore.exportOwned();
+  const editedResource = path.join(path.dirname(copied.path), 'references', 'guide.md');
+  write(editedResource, 'external modification must be kept');
+  assert.equal(projectStore.exportOwned().conflicts.find(item => item.id === copied.id).reason, 'skill_resource_modified_conflict');
+  assert.throws(() => projectStore.delete(copied.id), /skill_resource_modified_conflict/);
+  assert.equal(fs.readFileSync(editedResource, 'utf8'), 'external modification must be kept');
+  write(editedResource, '项目工作方法');
+  write(path.join(path.dirname(copiedAgain.path), 'external-note.txt'), 'keep external note');
+  projectStore.delete(copiedAgain.id);
+  assert.equal(fs.readFileSync(path.join(path.dirname(copiedAgain.path), 'external-note.txt'), 'utf8'), 'keep external note');
+  assert.equal(fs.existsSync(path.join(path.dirname(copiedAgain.path), 'scripts')), false);
+  projectStore.delete(copied.id);
+  assert.equal(fs.existsSync(path.dirname(copied.path)), false);
+  // Exercise the link rejection branches even when Windows denies creating file symlinks.
+  const realLstat = fs.lstatSync;
+  try {
+    fs.lstatSync = function(file, ...args) {
+      const stat = realLstat.call(this, file, ...args);
+      if (path.resolve(file) === path.resolve(projectA)) return { ...stat, isSymbolicLink: () => true, isDirectory: () => true };
+      return stat;
+    };
+    assert.equal(projectStore.exportOwned().conflicts.find(item => item.id === fromGlobal.id).reason, 'skill_export_path_conflict');
+  } finally { fs.lstatSync = realLstat; }
+  try {
+    fs.lstatSync = function(file, ...args) {
+      const stat = realLstat.call(this, file, ...args);
+      if (path.resolve(file) === path.resolve(root, 'external', 'scripts')) return { ...stat, isSymbolicLink: () => true, isDirectory: () => true };
+      return stat;
+    };
+    assert.throws(() => projectStore.derive({ source_id: originalExternal.id, project_id: 'a' }), /skill_source_symlink_forbidden/);
+  } finally { fs.lstatSync = realLstat; }
+  // Project parent junctions and resource symlinks must never redirect export or derivation.
+  const redirected = path.join(temporary, 'redirected-project');
+  const outsideRedirect = path.join(temporary, 'outside-redirect');
+  fs.mkdirSync(outsideRedirect);
+  try {
+    fs.symlinkSync(outsideRedirect, redirected, 'junction');
+    const redirectedStore = createManagedSkills({ db, home, userHome, codexHome, resolveProject: id => id === 'redirected' ? { workspace_path: redirected } : projectResolver(id) });
+    assert.throws(() => redirectedStore.save({ scope: 'project', project_id: 'redirected', name: 'redirect', instructions: 'x' }), /skill_export_path_conflict/);
+    const blocked = db.prepare('INSERT INTO managed_skills(id,name,slug,description,instructions,created_at,updated_at,scope,project_id) VALUES(?,?,?,?,?,?,?,?,?)').run('redirected-skill', 'redirect', 'better-codex-redirected', '', 'x', 'fixture', 'fixture', 'project', 'redirected');
+    assert.equal(redirectedStore.exportOwned().conflicts.find(item => item.id === 'redirected-skill').reason, 'skill_export_path_conflict');
+    assert.deepEqual(snapshot(outsideRedirect), {});
+    // Remove the fixture row without following the redirected export location.
+    db.prepare('DELETE FROM managed_skills WHERE id=?').run('redirected-skill');
+    const sourceLink = path.join(root, 'external', 'scripts', 'linked.cjs');
+    fs.symlinkSync(linkTarget, sourceLink, 'file');
+    assert.throws(() => projectStore.derive({ source_id: originalExternal.id, project_id: 'a' }), /skill_source_symlink_forbidden/);
+    fs.unlinkSync(sourceLink);
+  } catch (error) {
+    if (!['EPERM', 'EACCES'].includes(error.code)) throw error;
+    console.log('NOTE: project junction fixture unavailable in this environment.');
+  }
+  const orphanStore = createManagedSkills({ db, home, userHome, codexHome, resolveProject: id => id === 'a' ? null : projectResolver(id), listProjects: () => [projectResolver('b')] });
+  assert.ok(orphanStore.list().managed.every(skill => skill.scope === 'global'));
+  assert.equal(orphanStore.list({ includeAllProjects: true }).managed.find(skill => skill.id === fromGlobal.id).project_unavailable, true);
+  assert.equal(orphanStore.exportOwned().conflicts.find(skill => skill.id === fromGlobal.id).reason, 'skill_project_not_found');
+  assert.ok(orphanStore.get('better-codex-plan'));
+  const beforeShared = projectStore.derive({ source_id: originalExternal.id, project_id: 'a', name: '共享前资源副本' });
+  const independent = projectStore.save({ scope: 'project', project_id: 'b', name: '独立项目', instructions: '独立的工作方法' });
+  projectStore.exportOwned();
+  const modifiedBeforeShared = path.join(path.dirname(beforeShared.path), 'references', 'guide.md');
+  write(modifiedBeforeShared, 'external modification');
+  const globalBeforeShared = snapshot(root);
+  includeSharedProject = true;
+  assert.throws(() => projectStore.save({ scope: 'project', project_id: 'a', name: 'blocked', instructions: 'blocked' }), /skill_project_root_shared/);
+  assert.throws(() => projectStore.derive({ source_id: global.id, project_id: 'a' }), /skill_project_root_shared/);
+  assert.throws(() => projectStore.assertAvailable(fromGlobal.id, 'a'), /skill_project_root_shared/);
+  const disabled = projectStore.exportOwned();
+  assert.equal(disabled.conflicts.find(skill => skill.id === fromGlobal.id).reason, 'skill_project_root_shared');
+  assert.ok(disabled.deactivated.includes(fromGlobal.id));
+  assert.equal(fs.existsSync(fromGlobal.path), false);
+  assert.equal(disabled.conflicts.find(skill => skill.id === beforeShared.id).cleanup_reason, 'skill_resource_modified_conflict');
+  assert.equal(fs.readFileSync(modifiedBeforeShared, 'utf8'), 'external modification');
+  assert.ok(fs.existsSync(path.join(path.dirname(beforeShared.path), '.better-codex-owned.json')));
+  assert.ok(fs.existsSync(independent.path));
+  assert.deepEqual(snapshot(root), globalBeforeShared);
+  write(modifiedBeforeShared, '项目工作方法');
+  assert.ok(projectStore.exportOwned().deactivated.includes(beforeShared.id));
+  assert.equal(fs.existsSync(path.dirname(beforeShared.path)), false);
+  assert.ok(Object.keys(snapshot(path.join(home, 'backups', 'managed-skills'))).some(file => file.includes(beforeShared.slug)));
+  includeSharedProject = false;
+  assert.ok(projectStore.exportOwned().exported.includes(fromGlobal.id));
+  const ancestorDb = new DatabaseSync(':memory:');
+  try {
+    const ancestorRoot = path.join(temporary, 'ancestor-project');
+    const descendantRoot = path.join(ancestorRoot, 'descendant');
+    fs.mkdirSync(descendantRoot, { recursive: true });
+    const ancestorProjects = [{ id: 'parent', workspace_path: ancestorRoot }, { id: 'child', workspace_path: descendantRoot }];
+    const ancestorStore = createManagedSkills({ db: ancestorDb, home: path.join(temporary, 'ancestor-data'), userHome: path.join(temporary, 'ancestor-user'), resolveProject: id => ancestorProjects.find(item => item.id === id), listProjects: () => ancestorProjects });
+    assert.throws(() => ancestorStore.save({ scope: 'project', project_id: 'parent', name: 'parent', instructions: 'x' }), /skill_project_root_shared/);
+    const descendant = ancestorStore.save({ scope: 'project', project_id: 'child', name: 'child', instructions: 'x' });
+    assert.ok(ancestorStore.exportOwned().exported.includes(descendant.id));
+    assert.equal(fs.existsSync(path.join(ancestorRoot, '.agents', 'skills')), false);
+    assert.ok(fs.existsSync(descendant.path));
+  } finally { ancestorDb.close(); }
+  const aliasDb = new DatabaseSync(':memory:');
+  const originalStat = fs.statSync, originalRealpath = fs.realpathSync.native;
+  try {
+    const realRoot = path.join(temporary,'physical-root'), aliasRoot = path.join(temporary,'physical-alias');
+    fs.mkdirSync(realRoot,{recursive:true});
+    const aliasProjects = [{id:'real',workspace_path:realRoot}];
+    const aliasStore = createManagedSkills({db:aliasDb,home:path.join(temporary,'alias-data'),userHome:path.join(temporary,'alias-user'),resolveProject:id=>aliasProjects.find(item=>item.id===id),listProjects:()=>aliasProjects});
+    const isolated = aliasStore.save({scope:'project',project_id:'real',name:'物理隔离',instructions:'x'});
+    aliasStore.exportOwned(); assert.ok(fs.existsSync(isolated.path));
+    aliasProjects.push({id:'alias',workspace_path:aliasRoot});
+    fs.statSync = (file,...args) => path.resolve(file)===aliasRoot?originalStat(realRoot,...args):originalStat(file,...args);
+    fs.realpathSync.native = (file,...args) => path.resolve(file)===aliasRoot?originalRealpath(realRoot,...args):originalRealpath(file,...args);
+    assert.throws(()=>aliasStore.assertAvailable(isolated.id,'real'),/skill_project_root_shared/,'junction/ancestor aliases must participate in physical-root isolation');
+    assert.ok(aliasStore.exportOwned().deactivated.includes(isolated.id));
+    assert.equal(fs.existsSync(isolated.path),false);
+    aliasProjects.pop(); fs.statSync=originalStat;fs.realpathSync.native=originalRealpath;
+    aliasStore.exportOwned();
+    assert.ok(aliasStore.deactivateProject('real').deactivated.includes(isolated.id));
+    assert.equal(fs.existsSync(isolated.path),false);assert.ok(aliasStore.get(isolated.id),'project deactivation preserves authoritative Skill metadata');
+  } finally { fs.statSync=originalStat;fs.realpathSync.native=originalRealpath;aliasDb.close(); }
+  // Upgrade an existing legacy schema only after writing a restorable table backup.
+  const migrationDb = new DatabaseSync(':memory:');
+  try {
+    migrationDb.exec(`CREATE TABLE managed_skills(id TEXT PRIMARY KEY,name TEXT NOT NULL,slug TEXT NOT NULL UNIQUE,description TEXT NOT NULL,instructions TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,builtin INTEGER NOT NULL DEFAULT 0,legacy_agent_id TEXT UNIQUE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      INSERT INTO managed_skills VALUES('existing','Existing','better-codex-existing','','preserved',1,0,NULL,'before','before');`);
+    const migrationHome = path.join(temporary, 'migration-backup-data');
+    const migratedStore = createManagedSkills({ db: migrationDb, home: migrationHome, userHome: path.join(temporary, 'migration-backup-user') });
+    const backups = snapshot(path.join(migrationHome, 'backups', 'managed-skills-migrations'));
+    assert.equal(Object.keys(backups).length, 1);
+    const backup = JSON.parse(Buffer.from(Object.values(backups)[0], 'base64').toString('utf8'));
+    assert.ok(backup.tables[0].schema.includes('CREATE TABLE'));
+    assert.equal(backup.tables[0].rows[0].instructions, 'preserved');
+    const restored = new DatabaseSync(':memory:');
+    try {
+      for (const table of backup.tables) {
+        restored.exec(table.schema);
+        for (const row of table.rows) {
+          const columns = Object.keys(row);
+          restored.prepare(`INSERT INTO ${table.name} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...Object.values(row));
+        }
+      }
+      assert.equal(restored.prepare('SELECT instructions FROM managed_skills WHERE id=?').get('existing').instructions, 'preserved');
+      assert.equal(restored.prepare('PRAGMA table_info(managed_skills)').all().some(column => column.name === 'scope'), false);
+    } finally { restored.close(); }
+    assert.equal(migratedStore.get('existing').scope, 'global');
+    createManagedSkills({ db: migrationDb, home: migrationHome, userHome: path.join(temporary, 'migration-backup-user') });
+    assert.deepEqual(snapshot(path.join(migrationHome, 'backups', 'managed-skills-migrations')), backups);
+  } finally { migrationDb.close(); }
+  console.log('PASS: project/global visibility, server scope validation, source version/hash update hints, full resource copies, shared/ancestor native-root isolation and backed-up deactivation, external read-only preservation, resource conflicts and symlink boundaries');
   console.log('PASS: isolated Skill migration, stable DB authority, native configuration/role preservation, external read-only metadata, ownership conflicts, idempotent export, affected-file backups, rename/delete boundaries, optimistic versions');
 } finally {
   db.close();

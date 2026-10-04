@@ -7,9 +7,10 @@ const cp = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-native-backend-'));
-const home = path.join(folder, 'better'), user = path.join(folder, 'user'), codex = path.join(user, '.codex'), workspace = path.join(folder, '中文 项目');
-for (const entry of [home, user, codex, workspace]) fs.mkdirSync(entry, { recursive: true });
+const home = path.join(folder, 'better'), user = path.join(folder, 'user'), codex = path.join(user, '.codex'), workspace = path.join(folder, '中文 项目'), projectWorkspace = path.join(folder, '独立项目');
+for (const entry of [home, user, codex, workspace, projectWorkspace]) fs.mkdirSync(entry, { recursive: true });
 fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: 'isolated', dependencies: { react: '^18.2.0' } }));
+fs.copyFileSync(path.join(workspace,'package.json'),path.join(projectWorkspace,'package.json'));
 const env = { ...process.env, BETTER_CODEX_HOME: home, BETTER_CODEX_SKILLS_USER_HOME: user, CODEX_HOME: codex, USERPROFILE: user, HOME: user, NODE_TEST_CONTEXT: 'native-backend-fixture' };
 delete env.BETTER_CODEX_LOCAL_PROJECT;
 delete env.BC_RUNTIME_API;
@@ -27,10 +28,14 @@ async function main() {
   const runtime = JSON.parse(fs.readFileSync(state, 'utf8')); port = runtime.port;
   token = fs.readFileSync(path.join(home, 'run/token'), 'utf8').trim();
   assert.equal((await api('/health')).status, 200);
-  const initial = await api('/api/projects'); assert.equal(initial.status, 200); assert.equal(initial.value.length, 1, 'only the built-in inbox should exist'); assert.equal(initial.value[0].external_id,'inbox'); assert.equal(initial.value[0].workspace_path,workspace);
+  let initial = await api('/api/projects');
+  for (let retry = 0; initial.status === 503 && retry < 50; retry++) {
+    await new Promise(resolve => setTimeout(resolve,100)); initial = await api('/api/projects');
+  }
+  assert.equal(initial.status, 200); assert.equal(initial.value.length, 1, 'only the built-in inbox should exist'); assert.equal(initial.value[0].external_id,'inbox'); assert.equal(initial.value[0].workspace_path,workspace);
   for (const route of ['/web', '/web/session', '/web/injection.js', '/api/relay/status', '/api/remote-access/status', '/api/sync/status']) assert.equal((await api(route)).status, 404, route);
   const relay = await fetch('http://127.0.0.1:' + port + '/api/projects', { headers: { Authorization: 'Bearer ' + token, 'x-better-codex-relay': '1' } }); assert([403,404].includes(relay.status), 'relay headers must be rejected');
-  const created = await api('/api/projects', 'POST', { name: '隔离项目', workspace_path: workspace });
+  const created = await api('/api/projects', 'POST', { name: '隔离项目', workspace_path: projectWorkspace });
   assert.equal(created.status, 201, JSON.stringify(created.value)); const project = created.value.project || created.value;
   const groups = await api('/api/skills'); assert.equal(groups.status, 200); assert(groups.value.managed.some(skill => skill.id === 'better-codex-charter'));
   assert(groups.value.managed.every(skill => skill.path.startsWith(user)), 'fixture exports must stay in temporary user home');
@@ -47,15 +52,35 @@ async function main() {
   const relayId = randomUUID(), pollBody = { relay_id: relayId, app_session_id: 'isolated-fixture', owner: 'native', capability: 'ready' };
   let poll = await api('/api/session-relay/poll', 'POST', pollBody); assert.equal(poll.status, 200);
   assert.equal(poll.value.command,null,'opening must not queue native model requests');
+  const projectSkill = await api('/api/skills/derive','POST',{source_id:'better-codex-plan',project_id:project.id,name:'本项目规划'});
+  assert.equal(projectSkill.status,201,JSON.stringify(projectSkill.value));
+  const scopedSkill=projectSkill.value.skill;
+  assert.equal((await api('/api/skills?project_id='+initial.value[0].id)).value.managed.some(item=>item.id===scopedSkill.id),false);
+  const foreignSkillIssue=await api('/api/issues','POST',{project_id:initial.value[0].id,title:'拒绝跨项目Skill',native_only:true,skill_id:scopedSkill.id});
+  assert.equal(foreignSkillIssue.status,403);assert.equal(foreignSkillIssue.value.error,'skill_project_mismatch');
+  const nativeOnly = await api('/api/issues','POST',{project_id:project.id,title:'原生工作会话',native_only:true,status:'todo',agent_enabled:true,skill_id:scopedSkill.id});
+  assert.equal(nativeOnly.status,201);assert.equal(nativeOnly.value.session_native_owned,true);
+  assert.equal(Boolean(nativeOnly.value.agent_enabled),false,'native creation cannot enable background dispatch');
+  const workA=await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'work',issue_id:nativeOnly.value.id,title:'调查'});
+  const workB=await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'work',issue_id:nativeOnly.value.id,title:'开发'});
+  assert.equal(workA.status,200,JSON.stringify(workA.value));assert.equal(workB.status,200);
+  assert.notEqual(workA.value.conversation.conversation_id,workB.value.conversation.conversation_id);
+  const workRows=(await api('/api/native-conversations/list?project_id='+project.id+'&kind=work&issue_id='+nativeOnly.value.id)).value.conversations;
+  assert.equal(workRows.length,2);assert(workRows.every(item=>!item.thread_id));
+  assert.equal((await api('/api/session-relay/poll','POST',pollBody)).value.command,null,'creating native work conversations leaves dispatch queue empty');
   const prepareArgs = {project_id:project.id,kind:'charter',conversation_id:conversationId,relay_id:relayId,host_id:'local',request_id:randomUUID(),expected_revision:0};
   const prepared = await api('/api/native-conversations/prepare','POST',prepareArgs); assert.equal(prepared.status,200,JSON.stringify(prepared.value));
   assert.equal(prepared.value.operation.status,'prepared'); assert.equal(prepared.value.dynamic_tools.length,5);
   assert.equal(prepared.value.operation.conversation_id,conversationId);
+  const illegalSkillPrepare=await api('/api/native-conversations/prepare','POST',{...prepareArgs,request_id:randomUUID(),skill_paths:[scopedSkill.path],project_id:initial.value[0].id,conversation_id:undefined});
+  assert.equal(illegalSkillPrepare.status,403);assert.equal(illegalSkillPrepare.value.error,'skill_project_mismatch');
   const busySelect=await api('/api/native-conversations/select','POST',{project_id:project.id,conversation_id:firstConversation.value.conversation.conversation_id});assert.equal(busySelect.status,409);assert.equal(busySelect.value.error,'native_conversation_busy');
   assert.equal((await api('/api/session-relay/poll','POST',pollBody)).value.command,null,'inline operations are not consumed by the queue');
   const threadId = randomUUID();
   assert.equal((await api('/api/native-conversations/bind','POST',{...prepareArgs,thread_id:threadId,checkpoint:'allocated'})).status,200);
   assert.equal((await api('/api/native-conversations/bind','POST',{...prepareArgs,thread_id:threadId,checkpoint:'bound'})).status,200);
+  const inputCheck=await api('/api/native-conversations/validate-input','POST',{relay_id:relayId,host_id:'local',thread_id:threadId,skill_paths:[scopedSkill.path]});
+  assert.equal(inputCheck.status,200,JSON.stringify(inputCheck.value));
   const turnId = randomUUID();
   assert.equal((await api('/api/native-conversations/receipt','POST',{...prepareArgs,thread_id:threadId,turn_id:turnId,status:'accepted'})).status,200);
   assert.equal((await api('/api/session-relay/events','POST',{relay_id:relayId,method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}})).status,200);
@@ -184,6 +209,14 @@ async function main() {
   assert(!historyBootstrap.some(row=>row.thread_id===ordinaryThread),'read-only history is never enrolled as a current binding');
   assert(historyBootstrap.some(row=>row.thread_id===newCurrentThread&&row.issue_id===ordinaryIssue.value.id));
   assert.equal((await api('/api/agents', 'POST', {})).status, 404);
+  const buttonDraft = await api('/api/project-tools/project_charter_save','POST',{ project_id:project.id,thread_id:threadId,
+    expected_revision:confirmed.value.revision,sections:[{id:'scope',title:'范围',content:'按钮确认测试'}] });
+  assert.equal(buttonDraft.status,200);
+  const buttonConfirmed = await api('/api/projects/'+project.id+'/charter-confirm','POST',{expected_revision:buttonDraft.value.revision});
+  assert.equal(buttonConfirmed.status,200,JSON.stringify(buttonConfirmed.value));
+  assert.equal(buttonConfirmed.value.status,'confirmed');
+  assert.match(buttonConfirmed.value.confirmation_message_id,/^ui-charter-confirm:/);
+  assert.equal((await api('/api/projects/'+project.id+'/charter-confirm','POST',{expected_revision:buttonDraft.value.revision})).status,409);
   assert(!/codex_exec|planning_process_started|scheduler_started/.test(output), 'no model process may be started by the fixture');
   console.log('PASS: isolated real backend routes, read-only opening, first-send checkpoints, trusted native tools, confirmation events and explicit native-owned work queue without model execution');
 }
@@ -191,5 +224,5 @@ main().catch(error => { console.error(error); process.exitCode = 1; }).finally(a
   if (child?.exitCode === null && port && token) await api('/api/shutdown', 'POST', {}).catch(() => {});
   if (child?.exitCode === null) { await Promise.race([new Promise(resolve => child.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 4000))]); if (child.exitCode === null) child.kill(); }
   const resolved = path.resolve(folder); assert.equal(path.dirname(resolved), path.resolve(os.tmpdir())); assert(path.basename(resolved).startsWith('bc-native-backend-'));
-  fs.rmSync(resolved, { recursive: true, force: true });
+  fs.rmSync(resolved, { recursive: true, force: true, maxRetries:10, retryDelay:100 });
 });

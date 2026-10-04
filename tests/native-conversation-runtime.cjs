@@ -106,6 +106,7 @@ async function run() {
     await assert.rejects(post('prepare',request('p1','work','while-active',{issue_id:issue.id,expected_revision:1})),/issue_execution_running/);
     store.db.prepare("UPDATE issue_sessions SET status='idle',active_turn_id=NULL WHERE issue_id=?").run(issue.id);
     store.db.prepare("UPDATE issue_replies SET status='succeeded' WHERE issue_id=?").run(issue.id);
+    runtime.conversations.handleWorkEvent('turn/completed',{threadId:'work-native',turn:{id:'ordinary-turn',status:'completed'}});
     assert.equal(issueExecutionRunning((await get('p1','work',issue.id)).value.context.task),false,'completed direct chat restores execution affordance data without starting a task');
     await post('prepare',request('p1','work','disconnect',{issue_id:issue.id,expected_revision:1}));
     runtime.conversations.recoverRelay('relay-leader');

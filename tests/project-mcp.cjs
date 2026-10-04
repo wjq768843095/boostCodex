@@ -72,7 +72,8 @@ async function run() {
     f.userMessage('charter-1','user-accept','确认总纲');
     const evidence = await invoke('project_context_read',{project_id:'p1',thread_id:'charter-1',section_ids:['api']});
     assert.equal(evidence.charter.sections.length,1);assert.equal(evidence.charter.sections[0].id,'api');
-    assert.equal(evidence.confirmation_candidates[0].event_id,'user-accept');
+    assert.equal(evidence.charter.status,'confirmed');
+    assert.equal(evidence.charter.confirmation_message_id,'user-accept');
     await invoke('project_charter_confirm',{project_id:'p1',thread_id:'charter-1',expected_revision:1,message_id:'user-accept'});
     const confirmedContext = await invoke('project_context_read',{project_id:'p1',thread_id:'plan-1'});
     assert.equal(confirmedContext.workspaces[0].role,'Web前端');

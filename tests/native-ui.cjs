@@ -19,12 +19,13 @@ const state = { agentView: 'all', agentSearch: '', agentPane: 'preview', nativeP
 const container = { innerHTML: '' };
 const context = vm.createContext({
   state, panel: { dataset: {}, querySelector: () => container }, statusLabels: { backlog: '待规划', in_progress: '进行中', done: '已完成' },
+  inlineConversation: null, inlineConversationLoading: false, inlineConversationTarget: () => ({}), READ_ONLY: false,
   SELECTORS: { threadRow: '[data-thread-row]' },
   entry, agentsEntry, projectsEntry, moreEntry: null, profileEntry: null, usageEntry: null, themeEntry: null,
   active: false, suppressAgentOutside: false, closeAuxiliaryMenu() {}, openRoute: surface => routed.push(surface),
   t: value => String(value), te: value => String(value),
   escapeHtml2: value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]),
-  icon: name => `<i data-icon="${name}"></i>`,
+  icon: name => `<i data-icon="${name}"></i>`, projectLabel: project => project?.name || '',
   normalizeSessionId: value => String(value || ''),
   relayThreads: new Set(), relayId: 'fixture-relay', relayCurrentThreadId: '', relayCommandInFlight: false,
   relayBufferedEvents: [], sessionStorage: { setItem() {} },
@@ -40,7 +41,7 @@ const context = vm.createContext({
   },
   api: async (url, options) => { http.push({ url, body: JSON.parse(options.body) }); return {}; }
 });
-for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePersistedThread', 'semanticInput', 'turnStartParams', 'executeSessionCommand', 'nativeUserMessage', 'appServerEnvelope', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'projectPlanningMarkup', 'renderAgents', 'onClick', 'placeRailSequence']) vm.runInContext(readFunction(name), context);
+for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePersistedThread', 'semanticInput', 'turnStartParams', 'executeSessionCommand', 'nativeUserMessage', 'appServerEnvelope', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'planningStageTabsMarkup', 'projectCharterConfirmationState', 'projectPlanningMarkup', 'skillAvailableForProject', 'skillScopeLabel', 'renderAgents', 'onClick', 'placeRailSequence']) vm.runInContext(readFunction(name), context);
 (async () => {
   const rail = { children: [], moves: 0, insertBefore(node, cursor) {
     this.moves++;
@@ -121,6 +122,83 @@ for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePers
   assert(container.innerHTML.includes('data-skill-delete="managed"'));
   assert(container.innerHTML.includes('name="instructions"'));
   for (const field of ['name="model"', 'name="reasoning_effort"', 'name="fast"', 'name="sandbox_mode"', 'name="max_concurrency"']) assert(!container.innerHTML.includes(field), field);
+  state.projects = [{ id: 'p1', name: 'Project one' }, { id: 'p2', name: 'Project two' }];
+  state.skillsManaged.push({ id: 'project-one', name: 'Project one skill', scope: 'project', project_id: 'p1', source_skill_id: 'managed', source_version: 1, source_update_available: true }, { id: 'project-two', name: 'Project two skill', scope: 'project', project_id: 'p2' });
+  assert.equal(context.skillAvailableForProject(state.skillsManaged[0], 'p1'), true);
+  assert.equal(context.skillAvailableForProject(state.skillsManaged[1], 'p1'), true);
+  assert.equal(context.skillAvailableForProject(state.skillsManaged[1], 'p2'), false);
+  assert.equal(context.skillAvailableForProject({ project_id: 'p2' }, 'p1'), false, 'malformed scope cannot leak a project skill');
+  state.agentPane = 'preview'; state.skillScopeFilter = 'project:p1'; context.renderAgents();
+  assert(container.innerHTML.includes('data-skill-key="project-one"'));
+  assert(!container.innerHTML.includes('data-skill-key="project-two"'));
+  assert(!container.innerHTML.includes('data-skill-key="managed"'));
+  assert(container.innerHTML.includes('来源有更新'));
+  state.agentPane = 'detail'; state.selectedSkillId = 'external:one'; context.renderAgents();
+  assert(container.innerHTML.includes('data-skill-derive="external:one"'), 'external skills can be copied into a project');
+  state.agentPane = 'create'; state.skillDraft = { source_id: 'managed', name: 'Project copy', project_id: 'p1', instructions: 'Original method' }; context.renderAgents();
+  assert(container.innerHTML.includes('data-skill-form="derive"'));
+  assert(container.innerHTML.includes('name="project_id" required'));
+  assert(container.innerHTML.includes('name="instructions" rows="12" readonly'));
+  const createCalls = [], nativeDrafts = [], createSubmit = { disabled: false }, createError = { hidden: true };
+  let closed = 0;
+  const createContext = vm.createContext({
+    issue: null, editingLocked: false, submitInFlight: false, retainCreateDraft: true,
+    draft: { mode: 'manual', title: 'A development task', description: 'Task requirements', prompt: '', projectId: 'p1', skillId: 'project-one', assignee: 'none', status: 'todo', priority: 'none', labels: '', attachments: [], promptSemanticReferences: [] },
+    state: { projects: [{ id: 'p1', workspace_path: 'D:\\workspace' }], issueDescriptionLimit: 10000, mockup: false, locale: 'zh-CN' },
+    dialog: { querySelector: selector => selector === '.better-codex-submit' ? createSubmit : selector === '.better-codex-dialog-error' ? createError : null, close: () => closed++ },
+    createRequestId: 'fixture-new-task', CREATE_DRAFT_KEY: 'fixture-create-draft', VERSION: 'fixture', RELAY: false, REMOTE: false, globalThis: { crypto: { randomUUID: () => 'fixture-command' } },
+    readContext: () => ({}), resolveWorkspacePath: async () => '', uploadPastedImages: async () => {}, withAttachments: text => text,
+    traceDialog() {}, writeCreateDraft() {}, sessionStorage: { removeItem() {} }, loadIssues: async () => {},
+    api: async (url, options) => { const body = JSON.parse(options.body); createCalls.push({ url, body }); return { ...body, id: 'new-task' }; },
+    createIssueNativeConversation: async item => nativeDrafts.push(plain(item)),
+    reconcileIssueConflict: async error => { throw error; }, console
+  });
+  vm.runInContext(readFunction('submitIssue'), createContext);
+  await createContext.submitIssue();
+  assert.equal(createCalls.length, 1, 'creating task never sends a model request');
+  assert.equal(createCalls[0].url, '/api/issues');
+  assert.equal(createCalls[0].body.native_only, true);
+  assert.equal(createCalls[0].body.ai_enrich, false);
+  assert.equal(createCalls[0].body.agent_enabled, false);
+  assert.equal(nativeDrafts[0].id, 'new-task');
+  assert.equal(closed, 1);
+  createContext.inlineConversationNavigationRequest = 0;
+  createContext.destroyed = false;
+  createContext.t = value => value;
+  vm.runInContext(readFunction('createProjectWorkConversation'), createContext);
+  let releaseDirectCreate;
+  createCalls.length = 0; nativeDrafts.length = 0;
+  createContext.api = (url, options) => { createCalls.push({ url, body: JSON.parse(options.body) }); return new Promise(resolve => { releaseDirectCreate = resolve; }); };
+  const directCreate = createContext.createProjectWorkConversation('p1');
+  const repeatedDirectCreate = createContext.createProjectWorkConversation('p1');
+  assert.equal(createCalls.length, 1, 'double clicks cannot register duplicate work placeholders');
+  assert.equal(createCalls[0].body.title, '新会话');
+  assert.equal(createCalls[0].body.status, 'backlog');
+  assert.equal(createCalls[0].body.native_only, true);
+  assert.equal(createCalls[0].body.ai_enrich, false);
+  releaseDirectCreate({ id: 'direct-task', project_id: 'p1' });
+  await Promise.all([directCreate, repeatedDirectCreate]);
+  assert.equal(nativeDrafts.length, 1, 'direct creation opens one native draft and never sends its contents');
+  nativeDrafts.length = 0;
+  const staleDirectCreate = createContext.createProjectWorkConversation('p1');
+  createContext.inlineConversationNavigationRequest++;
+  releaseDirectCreate({ id: 'background-task', project_id: 'p1' });
+  assert.equal((await staleDirectCreate).reason, 'navigation_changed');
+  assert.equal(nativeDrafts.length, 0, 'late task creation cannot replace the newly selected conversation');
+  let skillSavePromise;
+  const skillRequests = [], derivedSubmit = { disabled: false, isConnected: true }, skillError = { hidden: true };
+  const derivedForm = { dataset: { skillForm: 'derive' }, elements: { name: { value: 'Project skill copy' }, description: { value: 'For project one' }, instructions: { value: 'Ignored read-only source' }, project_id: { value: 'p1' } }, querySelector: selector => selector === '[type="submit"]' ? derivedSubmit : skillError };
+  const skillContext = vm.createContext({
+    state: { skillsManaged: [], skillDraft: { source_id: 'external:one' } },
+    perform: fn => { skillSavePromise = fn(); }, loadSkills: async () => {}, renderAgents() {}, errorLabel: error => error.message,
+    api: async (url, options) => { skillRequests.push({ url, method: options.method, body: JSON.parse(options.body) }); return { skill: { id: 'derived-project-skill' } }; }
+  });
+  vm.runInContext(readFunction('onSkillSubmit'), skillContext);
+  assert.equal(skillContext.onSkillSubmit({ target: { closest: () => derivedForm }, preventDefault() {} }), true);
+  await skillSavePromise;
+  assert.deepEqual(skillRequests, [{ url: '/api/skills/derive', method: 'POST', body: { source_id: 'external:one', project_id: 'p1', name: 'Project skill copy', description: 'For project one' } }]);
+  assert.equal(skillContext.state.selectedSkillId, 'derived-project-skill');
+  assert.equal(derivedSubmit.disabled, false);
   assert(!source.includes('/api/remote-access/'));
   assert(!source.includes('data-help-view="remote"'));
   assert(source.includes('function conversationPanel() { return ""; }'));

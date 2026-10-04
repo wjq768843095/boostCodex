@@ -59,8 +59,9 @@ async function run() {
     assert.equal(runtime.planning.getCharter('p1').revision,2);
     f.userMessage('first-thread','first-confirm','确认总纲');
     const evidence=(await tool(boundFirst,'project_context_read')).value;
-    assert.equal(evidence.confirmation_candidates[0].event_id,'first-confirm');
-    await assert.rejects(tool(boundSecond,'project_charter_confirm',{expected_revision:2,message_id:'first-confirm'}),/explicit_user_confirmation_required/);
+    assert.equal(evidence.charter.status,'confirmed');
+    assert.equal(evidence.charter.confirmation_message_id,'first-confirm');
+    await assert.rejects(tool(boundSecond,'project_charter_confirm',{expected_revision:evidence.charter.revision,message_id:'first-confirm'}),/explicit_user_confirmation_required/);
     await tool(boundFirst,'project_charter_confirm',{expected_revision:2,message_id:'first-confirm'});
     assert.equal(runtime.planning.getCharter('p1').status,'confirmed');
     const planA=(await post('create',{project_id:'p1',kind:'planning'})).value.conversation;

@@ -198,9 +198,18 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
   function confirmCharter(args) {
     assertThread(args.project_id, 'charter', args.thread_id);
     const current = latest('project_charter_revisions', args.project_id);
-    checkRevision(args.expected_revision, current?.revision);
     if (!current) fail('charter_not_found');
     const messageId = string(args.confirmation_message_id || args.message_id, 'confirmation_message_id', true);
+    // The native event may have already applied the same human confirmation.
+    if (current.status === 'confirmed' && current.source_thread_id === args.thread_id &&
+        current.confirmation_message_id === messageId && args.expected_revision === current.revision - 1) {
+      if (args.confirmation_message !== undefined) {
+        const evidence = db.prepare('SELECT message_hash FROM project_native_session_events WHERE event_id=?').get(messageId);
+        if (createHash('sha256').update(string(args.confirmation_message, 'confirmation_message', true)).digest('hex') !== evidence?.message_hash) fail('confirmation_message_mismatch');
+      }
+      return getCharter(args.project_id);
+    }
+    checkRevision(args.expected_revision, current.revision);
     const evidence = db.prepare(`SELECT * FROM project_native_session_events WHERE event_id=? AND project_id=?
       AND thread_id=? AND kind='charter' AND role='user' AND charter_revision=? AND is_confirmation=1`)
       .get(messageId, args.project_id, args.thread_id, current.revision);
@@ -211,6 +220,26 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
       confirmation_message_id,confirmation_message,confirmed_at,created_at) VALUES(?,?,'confirmed',?,?,?,?,?,?)`)
       .run(args.project_id, current.revision + 1, current.document_json, args.thread_id, messageId, null, timestamp, timestamp);
     return getCharter(args.project_id);
+  }
+
+  function confirmCharterFromUI(args) {
+    project(args.project_id);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = getCharter(args.project_id);
+      if (!current) fail('charter_not_found');
+      checkRevision(args.expected_revision, current.revision);
+      const threadId = args.thread_id || current.source_thread_id;
+      assertThread(args.project_id, 'charter', threadId);
+      if (current.status === 'confirmed') { db.exec('COMMIT'); return current; }
+      // This is a human button action, kept distinct from native chat message IDs.
+      const evidence = recordSessionEvent({ project_id: args.project_id, kind: 'charter', thread_id: threadId,
+        expected_revision: current.revision, event_id: 'ui-charter-confirm:' + randomUUID(), role: 'user', message: '确认总纲' });
+      const value = confirmCharter({ project_id: args.project_id, thread_id: threadId,
+        expected_revision: current.revision, message_id: evidence.event_id });
+      db.exec('COMMIT');
+      return value;
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
 
   function normalizeItem(item, charterRevision) {
@@ -348,8 +377,13 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
       return { ...existing, replayed: true };
     }
     const negative = /(?:不(?:要|能|会|予|应|同意|确认)|暂不|拒绝|尚未|未确认|不要确认|\b(?:no|not|never|don't|do not)\b)/i.test(message);
-    const explicit = /^(?:我(?:已|现在)?\s*)?(?:确认|同意|认可)(?:本|这份|该|当前|项目)?总纲(?:[，,。.!！\s]*(?:可以|请)?(?:开始|继续)(?:项目)?(?:规划|拆解任务))?[。.!！\s]*$|^(?:I\s+)?confirm\s+(?:the\s+)?(?:project\s+)?charter[.!\s]*$/i.test(message);
-    const isConfirmation = role === 'user' && sessionKind === 'charter' && charter?.status === 'draft' && explicit && !negative;
+    const normalized = message.replace(/[，,。.!！、\s]+/g, '').replace(/^(?:当然了?|好的?|没问题|可以)(?=我|确认|同意|认可|就按|按)/, '');
+    // Short answers refer to the current draft only inside its bound charter chat.
+    // Anchoring rejects questions, quotations, instructions and future intentions.
+    const explicit = /^(?:我(?:已|已经|现在)?)?(?:确认|同意|认可)(?:(?:本|这份|这个|该|当前|项目)?总纲(?:修订|版本)?\d*)?(?:了|通过)?(?:(?:可以|请)?(?:开始|继续|进入)(?:项目|下一步)?(?:规划|任务规划|拆解任务|拆分任务))?$|^(?:就)?按(?:这个|这份|当前)?总纲来$/.test(normalized) || /^(?:I\s+)?confirm\s+(?:the\s+)?(?:project\s+)?charter[.!\s]*$/i.test(message);
+    const specifiedRevision = normalized.match(/总纲(?:修订|版本)?(\d+)/);
+    const isConfirmation = role === 'user' && sessionKind === 'charter' && charter?.status === 'draft' && explicit && !negative &&
+      (!specifiedRevision || Number(specifiedRevision[1]) === charter.revision);
     db.prepare(`INSERT INTO project_native_session_events(event_id,project_id,kind,thread_id,role,message_hash,charter_revision,is_confirmation,created_at)
       VALUES(?,?,?,?,?,?,?,?,?)`).run(eventId, args.project_id, sessionKind, args.thread_id, role, hash, charter?.revision || 0, Number(isConfirmation), now());
     return { ...db.prepare('SELECT * FROM project_native_session_events WHERE event_id=?').get(eventId), replayed: false };
@@ -550,7 +584,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
   }
 
   return { migrate, getContext, getCharter, saveCharter, confirmCharter, getPlan, savePlan, validate, convertItems,
-    getSession, getSessionByThread, assertThread, bindSession, recordSessionEvent, getConfirmationCandidates, enqueueCommand, getCommand, listPendingCommands, finishCommand,
+    getSession, getSessionByThread, assertThread, bindSession, recordSessionEvent, getConfirmationCandidates, confirmCharterFromUI, enqueueCommand, getCommand, listPendingCommands, finishCommand,
     claimCommand, checkpointCommand, recoverCommands };
 }
 

@@ -64,9 +64,16 @@ try {
     thread_id:'charter-1',event_id,role,message,expected_revision:1,...extra});
   event('assistant','assistant','确认总纲'); event('negative','user','暂不确认总纲');
   event('future','user','等我确认总纲再规划'); event('instruction','user','请用户确认总纲后再规划');
+  for (const [index,message] of ['确认吗？','我还没确认','我确认了？','他说“确认总纲”','好的','确认之前先修改','确认总纲前不要规划','确认总纲修订2'].entries()) {
+    assert.equal(event('not-confirm-'+index,'user',message).is_confirmation,0,message);
+  }
   assert.equal(api.getConfirmationCandidates('p1','charter-1').length,0);
   event('real-user-message','user','确认总纲');
   assert.equal(api.getConfirmationCandidates('p1','charter-1')[0].event_id,'real-user-message');
+  for (const [index,message] of ['当然了，确认','我确认了','我确认这个总纲','就按这个总纲来','确认总纲，开始任务规划','确认总纲修订1'].entries()) {
+    assert.equal(event('natural-confirm-'+index,'user',message).is_confirmation,1,message);
+  }
+  assert.equal(event('planning-confirm','user','我确认了',{kind:'planning',thread_id:'plan-1'}).is_confirmation,0);
   assert.equal(api.getContext('p1',{thread_id:'plan-1'}).confirmation_candidates.length,0);
   throws(() => api.getContext('p1',{thread_id:'charter-2'}), 'session_thread_mismatch');
   assert.equal(event('real-user-message','user','确认总纲').replayed,true);

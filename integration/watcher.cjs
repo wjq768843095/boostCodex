@@ -1,5 +1,5 @@
 const fs=require('node:fs'),path=require('node:path');const lib=require('./lib.cjs');
-let running=false,stopping=false,rejected=null,pending=false,force=false;const handles=[];
+let running=false,stopping=false,rejected=null,pending=false,force=false,recoveryFailures=0;const handles=[];
 function preserveExpression(){return `(() => {const panel=document.querySelector('#better-codex-panel');return {surface:panel?.dataset.surface,open:!!panel&&!panel.hidden,project:document.querySelector('.bc-project-row.is-active')?.dataset.projectId||localStorage.getItem('better-codex-managed-project'),tab:document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view][aria-current="page"]')?.dataset.projectDashboardView,...window.__betterCodexInjection__?.captureReloadState?.(),fields:[...document.querySelectorAll('#better-codex-panel textarea,#better-codex-panel input')].map(e=>({key:e.getAttribute('name')||e.id||e.getAttribute('placeholder'),value:e.value,focus:e===document.activeElement,start:e.selectionStart,end:e.selectionEnd})),scroll:[...document.querySelectorAll('#better-codex-panel [class]')].filter(e=>e.scrollTop>0).map(e=>({cls:e.className,top:e.scrollTop}))};})()`;}
 function restoredViewMatches(saved,current){
  if(!current||current.surface!==saved.surface||!current.open)return false;
@@ -56,6 +56,22 @@ async function reconcile(){
   }
  }catch(e){lib.status({phase:'error',error:e.message});lib.log('reload_error',{error:e.message});}finally{running=false;try{const now=lib.hashes().sourceHash;if(now!==lib.state().sourceHash&&now!==rejected)pending=true;}catch{}}
 }
+async function recover(){
+ if(running||stopping||lib.read(path.join(lib.DEV,'status.json'))?.phase==='repairing'||!lib.read(path.join(lib.DEV,'activated.json')))return;
+ // Health requests can time out while the desktop or disk is busy. Serialize
+ // probes with source reloads and never rebuild the UI for a transient failure.
+ running=true;
+ try{
+  const h=await lib.health();if(h?.ok){recoveryFailures=0;return;}
+  if(++recoveryFailures<3)return;
+  const before=lib.read(path.join(lib.HOME,'run/runtime.json'));
+  if(lib.alive(before?.pid)){lib.log('runtime_recovery_deferred',{reason:'runtime_still_running'});recoveryFailures=0;return;}
+  const ready=await lib.ensureLocalRuntime();
+  recoveryFailures=0;
+  if(ready.pid!==before?.pid){await refresh();lib.log('runtime_recovered',{pid:ready.pid});}
+ }catch(e){lib.log('runtime_recovery_failed',{error:e.message});}
+ finally{running=false;}
+}
 function finish(restart=false){if(stopping)return;stopping=true;for(const handle of handles)clearInterval(handle);const lock=path.join(lib.DEV,'watcher.json');if(lib.read(lock)?.pid===process.pid)fs.unlinkSync(lock);if(restart)lib.ensureWatcher();process.exit(0);}
 async function start(){
  const lock=path.join(lib.DEV,'watcher.json');const existing=lib.read(lock);if(existing?.pid!==process.pid&&lib.alive(existing?.pid))return;
@@ -66,6 +82,6 @@ async function start(){
  handles.push(setInterval(()=>{if(fs.existsSync(stopFile))return finish();try{const next=lib.hashes().sourceHash;if(next!==seen){seen=next;changedAt=Date.now();}const request=path.join(lib.DEV,'reload-request.json');if(fs.existsSync(request)){fs.unlinkSync(request);force=true;changedAt=Date.now()-600;}if(changedAt&&Date.now()-changedAt>=600){changedAt=0;void reconcile();}else if(pending&&!running)void reconcile();}catch(e){lib.status({phase:'invalid',error:e.message});}},750));
  process.on('SIGTERM',()=>finish());process.on('SIGINT',()=>finish());
  // Recover an unavailable service only after this project has been activated.
- handles.push(setInterval(async()=>{if(running||stopping||lib.read(path.join(lib.DEV,'status.json'))?.phase==='repairing'||!lib.read(path.join(lib.DEV,'activated.json')))return;const h=await lib.health();if(!h?.ok){try{await lib.ensureLocalRuntime();await refresh();lib.log('runtime_recovered');}catch(e){lib.log('runtime_recovery_failed',{error:e.message});}}},10000));
+ handles.push(setInterval(()=>void recover(),10000));
 }
-module.exports={start,reconcile,refresh,cdp,preserveExpression,restoredViewMatches};
+module.exports={start,reconcile,recover,refresh,cdp,preserveExpression,restoredViewMatches};

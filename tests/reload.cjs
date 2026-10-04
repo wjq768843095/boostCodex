@@ -26,6 +26,21 @@ const root=path.resolve(__dirname,'..'),lib=require('../integration/lib.cjs');
  assert(!restored(historySaved,{surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i',history_id:'h2'}}}));
  assert(!restored({surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i'}}},{surface:'board',open:true,nativeConversation:{target:{project_id:'p',kind:'work',issue_id:'i',history_id:'h1'}}}));
  assert(restored({surface:'agents',open:true},{surface:'agents',open:true}));
+ // Recovery must not reinject for transient probes, degraded live processes,
+ // overlapping timers, or a service that recovered before ensure completed.
+ let probe=null,alive=true,ensured=0,injected=0,releaseProbe;
+ const recoveryFake={DEV:root,HOME:root,read:file=>file.endsWith('runtime.json')?{pid:11}:{},alive:()=>alive,health:async()=>probe,ensureLocalRuntime:async()=>{ensured++;return {pid:22};},inject:async()=>{injected++;},log:()=>{}};
+ const recoveryContext={module:{exports:{}},require:name=>name==='./lib.cjs'?recoveryFake:require(name),setTimeout,clearInterval,process,console,fetch:async()=>{throw Error('no desktop');}};
+ vm.runInNewContext(watcherSource,recoveryContext);const recover=recoveryContext.module.exports.recover;
+ await recover();probe={ok:true};await recover();probe=null;await recover();await recover();assert.equal(ensured,0);
+ await recover();assert.equal(ensured,0);assert.equal(injected,0); // live but unhealthy
+ alive=false;await recover();await recover();await recover();assert.equal(ensured,1);
+ recoveryFake.ensureLocalRuntime=async()=>{ensured++;return {pid:11};};await recover();await recover();await recover();assert.equal(ensured,2);assert.equal(injected,0);
+ recoveryFake.health=()=>new Promise(resolve=>{releaseProbe=resolve;});const pendingProbe=recover();await recover();assert.equal(typeof releaseProbe,'function');releaseProbe({ok:true});await pendingProbe;assert.equal(ensured,2);
+ // A failed health probe cannot spawn a second runtime beside a live process.
+ const ensureSource=lib.ensureLocalRuntime.toString();let spawned=0;
+ const ensure=vm.runInNewContext('('+ensureSource+')',{health:async()=>null,alive:()=>true,read:()=>({pid:11}),path,HOME:root,spawnCore:()=>{spawned++;},waitReady:async()=>({ok:true})});
+ await assert.rejects(ensure(),/runtime_still_running_health_unavailable/);assert.equal(spawned,0);
  // Discovery accepts Unicode and spaces and recovers when the old CLI disappears.
  const core=fs.readFileSync(path.join(root,'src/backend/better-codex.cjs'),'utf8');const begin=core.indexOf('function createCodexExecutablePathResolver('),end=core.indexOf('function codexExecutablePath()',begin);
  const factory=vm.runInNewContext('('+core.slice(begin,end).trim()+')',{import_node_path13:path,process});let target='C:\\程序 空格\\旧版\\codex.exe';const available=new Set([target]);const resolve=factory(()=>target,p=>available.has(p),'win32');assert.equal(resolve(),target);available.clear();target='C:\\程序 空格\\新版\\codex.exe';available.add(target);assert.equal(resolve(),target);

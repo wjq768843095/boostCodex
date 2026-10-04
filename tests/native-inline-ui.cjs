@@ -14,6 +14,7 @@ function readFunction(name) {
 const plain = value => JSON.parse(JSON.stringify(value));
 const http = [], hostActions = [], registeredBindings = [], adapterContextUpdates = [], acceptedRoutes = new Set();
 let hooks, desiredMode = 'draft', confirmed = true, binding = null;
+const workFixtureConversations = [];
 const adapter = {
   open: async response => { hostActions.push({ action: 'open', target: plain(response.target) }); const route = response.binding ? '/local/' + response.binding.thread_id : '/local/client-new-thread:' + response.target.project_id + ':' + response.target.kind + ':' + (response.target.issue_id || ''); acceptedRoutes.clear(); acceptedRoutes.add(route); ctx.location.pathname = route; ctx.location.search = ''; return { mode: response.mode }; },
   leave: () => { hostActions.push({ action: 'leave' }); acceptedRoutes.clear(); },
@@ -26,8 +27,8 @@ const adapter = {
 const ctx = vm.createContext({
   URLSearchParams, state: { projects: [{ id: 'p1', name: 'One' }, { id: 'p2', name: 'Two' }], issues: [], projectIssues: [], surface: 'projects', projectPage: 'planning', nativePlanningEnabled: true },
   location: { pathname: '/local/original-thread', search: '' }, NAVIGATION: { threadRoutePrefix: '/local/' },
-  inlineConversation: null, inlineConversationRoot: {}, inlineConversationAdapter: null,
-  inlineConversationRequest: 0, inlineConversationLoading: false, inlineConversationError: '',
+  projectSurfaceCache: null, inlineConversation: null, inlineConversationRoot: {}, inlineConversationAdapter: null,
+  inlineConversationRequest: 0, inlineConversationCacheRestoring: false, inlineConversationLoading: false, inlineConversationError: '',
   inlineConversationDetailsOpen: true, inlineConversationCompactDetailsOpen: false, inlineConversationNavigationRequest: 0, inlineConversationWidth: 360, active: true, destroyed: false, routeSuppressed: false, pollTimer: null,
   relayId: 'fixture-relay', relayThreads: new Set(), RESUME_SURFACE_KEY: 'fixture-resume', projectPlanningDrafts: new Map(),
   t: value => value, normalizeSessionId: value => String(value || ''), appendDiagnostic() {},
@@ -37,11 +38,20 @@ const ctx = vm.createContext({
   window: { BetterCodexNativeConversation: { create: config => { hooks = config; return adapter; } } },
   api: async (url, options = {}) => {
     http.push({ url, method: options.method || 'GET' });
+    if (url.endsWith('/create') && options.body) {
+      const body = JSON.parse(options.body);
+      if (body.kind === 'work') {
+        workFixtureConversations.filter(row => row.issue_id === body.issue_id).forEach(row => row.selected = false);
+        const conversation = { ...body, conversation_id: 'fixture-work-' + (workFixtureConversations.length + 1), selected: true, source: 'current', title: 'Work task', status: 'todo' };
+        workFixtureConversations.push(conversation); return { conversation };
+      }
+    }
+    if (url.endsWith('/select')) return {};
     if (url.endsWith('/conversation')) return { messages: [{ role: 'user', markdown: 'Historical request' }] };
     const query = new URLSearchParams(url.split('?')[1]);
-    if (url.includes('/list?') && query.get('kind') === 'work') return { conversations: [{ project_id: query.get('project_id'), kind: 'work', issue_id: 'work', title: 'Work task', source: 'current', status: 'todo' }] };
+    if (url.includes('/list?') && query.get('kind') === 'work') return { conversations: [{ project_id: query.get('project_id'), kind: 'work', issue_id: 'work', title: 'Work task', source: 'current', status: 'todo' }, ...workFixtureConversations.filter(row => row.project_id === query.get('project_id'))] };
     if (query.get('history_id')) return { mode: 'thread', read_only: true, thread_id: 'history-work-thread', binding: { thread_id: 'history-work-thread' }, target: { project_id: query.get('project_id'), kind: 'work', issue_id: query.get('issue_id'), history_id: query.get('history_id') }, context: { task: { id: query.get('issue_id'), title: 'Historical work' } } };
-    return { mode: desiredMode, binding, expected_revision: 3, native_project_id: 'native-' + query.get('project_id'), planning_available: confirmed, context: { project: { id: query.get('project_id') }, charter: { revision: 2, status: confirmed ? 'confirmed' : 'draft' }, plan: { revision: 1, items: [] } } };
+    return { mode: desiredMode, binding, expected_revision: 3, native_project_id: 'native-' + query.get('project_id'), planning_available: confirmed, ...(query.get('conversation_id') && query.get('kind') === 'work' ? { target: { project_id: query.get('project_id'), kind: 'work', issue_id: query.get('issue_id'), conversation_id: query.get('conversation_id') } } : {}), context: { project: { id: query.get('project_id') }, charter: { revision: 2, status: confirmed ? 'confirmed' : 'draft' }, plan: { revision: 1, items: [] } } };
   },
   isBetterCodexRoute: () => false,
   entry: {}, agentsEntry: {}, projectsEntry: {}, moreEntry: null, profileEntry: null, usageEntry: null, themeEntry: null,
@@ -51,7 +61,7 @@ const ctx = vm.createContext({
   isNativeRailDestination: () => false, isSidebarNavigationTarget: () => false,
   closeAuxiliaryMenu() {}, openRoute() {}, close() {}
 });
-for (const name of ['inlineConversationKey', 'inlineConversationTarget', 'inlineConversationRouteAllowed', 'nativeInlineErrorLabel', 'ensureInlineConversationAdapter', 'registerInlineConversationBindings', 'inlineConversationQuery', 'reloadInlineConversationContext', 'openInlineConversation', 'openIssueNativeConversation', 'loadProjectWorkConversations', 'openProjectWorkSession', 'loadProjectNativeConversations', 'openProjectNativeSession', 'captureReloadState', 'restoreReloadState', 'isManagedNativeThread', 'onClick']) vm.runInContext(readFunction(name), ctx);
+for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationKey', 'inlineConversationTarget', 'inlineConversationRouteAllowed', 'nativeInlineErrorLabel', 'ensureInlineConversationAdapter', 'registerInlineConversationBindings', 'inlineConversationQuery', 'reloadInlineConversationContext', 'openInlineConversation', 'openIssueNativeConversation', 'createIssueNativeConversation', 'loadProjectWorkConversations', 'openProjectWorkSession', 'loadProjectNativeConversations', 'openProjectNativeSession', 'captureReloadState', 'restoreReloadState', 'isManagedNativeThread', 'onClick']) vm.runInContext(readFunction(name), ctx);
 
 class NodeFixture {
   constructor(name) { this.name = name; this.children = []; this.attrs = new Map(); this.style = { values: new Map(), setProperty(name, value) { this.values.set(name, value); } }; this.listeners = {}; this.parentElement = null; this.appendCount = 0; this.innerHTML = ''; }
@@ -222,10 +232,10 @@ class NodeFixture {
   componentCtx.destroyOwnedComponents(cachedPanel);
   assert.equal(toolbarLifecycle.signal.aborted, true, 'final teardown releases the preserved panel controls');
   assert.equal(componentCtx.activeComponents.size, 0);
-  assert(source.includes('destroyRemovedComponents(records, [panel, inlineConversationRoot].filter(Boolean))'), 'observer preserves only current reusable shells');
+  assert(source.includes('destroyRemovedComponents(records, [panel, inlineConversationRoot, projectSurfaceCache?.root].filter(Boolean))'), 'observer preserves current shells and the detached reusable project cache');
   let missingRailMounts = 0, missingRailCloses = 0;
   const routeCtx = vm.createContext({ HOST_KIND: 'codex', location: { pathname: '/index.html' }, state: {},
-    active: true, inlineConversation: { target: charter }, inlineConversationLoading: false,
+    active: true, inlineConversation: { target: charter }, inlineConversationCacheRestoring: false, inlineConversationLoading: false,
     isBetterCodexRoute: () => false, ensureEntry: () => false, inlineConversationRouteAllowed: () => true,
     mountPanel: () => missingRailMounts++, close: () => missingRailCloses++, routeSuppressed: false });
   vm.runInContext(readFunction('refresh'), routeCtx);
@@ -278,7 +288,7 @@ class NodeFixture {
     openInlineConversation: async target => { conversationOpens.push(plain(target)); conversationCtx.inlineConversation = { target, mode: 'draft' }; return { opened: true }; },
     inlineConversationAdapter: { leave() {} }, registerInlineConversationBindings() {}, confirmAction: async () => true,
     perform: action => { pendingInteraction = action(); return pendingInteraction; }, openIssueNativeConversation() {}, onProjectsClick() {} });
-  for (const name of ['inlineConversationKey', 'inlineConversationTarget', 'inlineConversationQuery', 'loadProjectNativeConversations', 'openProjectNativeSession', 'planningConversationListMarkup', 'onInlineConversationClick', 'openThread']) vm.runInContext(readFunction(name), conversationCtx);
+  for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationKey', 'inlineConversationTarget', 'inlineConversationQuery', 'loadProjectNativeConversations', 'openProjectNativeSession', 'planningConversationListMarkup', 'onInlineConversationClick', 'openThread']) vm.runInContext(readFunction(name), conversationCtx);
   await conversationCtx.openThread('thread-A');
   assert.equal(conversationOpens.at(-1).conversation_id, 'A', 'native sidebar opens exact A even when same-stage B is selected');
   assert.equal(conversationCalls.find(call => call.url.endsWith('/select')).body.conversation_id, 'A');
@@ -343,13 +353,24 @@ class NodeFixture {
   let compactWorkspace = false;
   const renderCtx = vm.createContext({ state: { issues: [], projectDetailId: 'p1', projects: [{ id: 'p1', name: 'Project one' }, { id: 'p2', name: 'Project two' }], nativeConversations: { p1: [{ conversation_id: 'A', kind: 'charter', title: 'Architecture A', status: 'draft' }, { conversation_id: 'B', kind: 'charter', title: 'Architecture B', thread_id: 'thread-B' }] } },
     inlineConversation: { target: { project_id: 'p1', kind: 'charter', conversation_id: 'A' }, context: { charter: { status: 'confirmed' } }, mode: 'draft' }, inlineConversationRoot: planningRoot,
-    inlineConversationHeaderMarkup: '', inlineConversationNavigationMarkup: '', inlineConversationDetailsMarkup: '', inlineConversationError: '', inlineConversationLoading: false,
+    inlineConversationHeaderMarkup: '', inlineConversationNavigationMarkup: '', inlineConversationDetailsMarkup: '', inlineConversationError: '', inlineConversationCacheRestoring: false, inlineConversationLoading: false, projectSurfaceCache: null,
     inlineConversationDetailsOpen: true, inlineConversationCompactDetailsOpen: false, inlineConversationWidth: 360, innerWidth: 1326,
     window: { matchMedia: () => ({ matches: compactWorkspace }) }, document: { documentElement: { style: new NodeFixture('html').style } },
     t: value => value, te: value => value, escapeHtml2: value => String(value), icon: name => '<i>' + name + '</i>', projectLabel: project => project.name,
     statusLabels: { todo: '待办', backlog: '待规划', in_progress: '进行中', done: '已完成' },
     projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {} });
-  for (const name of ['inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineWorkDetailsMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
+  for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineWorkDetailsMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
+  renderCtx.renderInlineConversation();
+  renderCtx.inlineConversationLoading = true;
+  renderCtx.inlineConversationCacheRestoring = true;
+  renderCtx.projectSurfaceCache = { nativeRetained: true };
+  renderCtx.renderInlineConversation();
+  assert.equal(planningRoot.parts['.better-codex-inline-status'].hidden, true, 'a genuine retained native page stays visible during background validation');
+  renderCtx.projectSurfaceCache.nativeRetained = false;
+  renderCtx.renderInlineConversation();
+  assert.equal(planningRoot.parts['.better-codex-inline-status'].hidden, false, 'a missing native cache cannot expose an unrelated Home composer');
+  renderCtx.inlineConversationLoading = false;
+  renderCtx.inlineConversationCacheRestoring = false;
   renderCtx.renderInlineConversation();
   assert(projectColumn.innerHTML.includes('Project one') && projectColumn.innerHTML.includes('Project two'), 'four-column workspace uses Better Codex project data');
   assert(conversationColumn.innerHTML.includes('Architecture A') && conversationColumn.innerHTML.includes('Architecture B'), 'second column contains current project planning conversation history');
@@ -381,7 +402,8 @@ class NodeFixture {
   assert(conversationColumn.innerHTML.includes('First task') && conversationColumn.innerHTML.includes('Second task'), 'work navigation groups all tasks in the current project');
   assert(conversationColumn.innerHTML.includes('data-work-history="old-one"'), 'each task exposes its associated history without replacing current session');
   assert(conversationColumn.innerHTML.includes('工作中'), 'second-column status comes from real task execution fields');
-  assert(heading.innerHTML.includes('data-inline-start'), 'eligible task retains the explicit queue start action');
+  assert(heading.innerHTML.includes('data-work-create="work-one"'), 'work toolbar creates a new native conversation for the same task');
+  assert(!heading.innerHTML.includes('data-inline-start'), 'work toolbar sends work through the native composer');
   for (const value of ['Task requirements', 'Module responsibilities', 'Required acceptance result', 'Referenced contract version three', '任务状态 · 待办', '版本 3']) assert(detailsColumn.innerHTML.includes(value), value);
   assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '370px', 'work reserves the same first two columns as planning');
   assert.equal(renderCtx.document.documentElement.style.values.get('--bc-planning-toolbar-space'), '268px', 'native menu reserves the measured workspace toolbar width');
@@ -512,6 +534,54 @@ class NodeFixture {
   confirmed = false; await ctx.reloadInlineConversationContext();
   assert.equal(ctx.inlineConversation.read_only, true, 'fresh charter revision disables the already-open planning composer');
   assert.equal(adapterContextUpdates.at(-1).read_only, true, 'fresh charter revision also blocks the adapter send scope without navigation');
+  confirmed = true; desiredMode = 'draft'; binding = null;
+  await ctx.openIssueNativeConversation({ project_id: 'p1', id: 'first-empty-task' });
+  const firstEmptyId = ctx.inlineConversationTarget().conversation_id;
+  assert(firstEmptyId, 'a first empty task conversation receives a stable ID before opening the native draft');
+  assert.equal(ctx.state.nativeWorkSelections.p1.conversation_id, firstEmptyId);
+  await ctx.createIssueNativeConversation({ project_id: 'p1', id: 'first-empty-task' });
+  const secondEmptyId = ctx.inlineConversationTarget().conversation_id;
+  assert(secondEmptyId && secondEmptyId !== firstEmptyId, 'a second empty native draft keeps a separate identity before either chat is sent');
+  await ctx.openIssueNativeConversation({ project_id: 'p1', id: 'first-empty-task' }, firstEmptyId);
+  assert.equal(ctx.inlineConversationTarget().conversation_id, firstEmptyId, 'the first unsent draft can be reopened by its stable ID');
+  assert.equal(workFixtureConversations.filter(row => row.issue_id === 'first-empty-task').length, 2, 'opening an existing empty draft does not register a third conversation');
+  const taskConversations = [
+    { project_id: 'p1', kind: 'work', issue_id: 'multi-task', conversation_id: 'work-c1', source: 'current', selected: true, title: 'Multi-session task', thread_id: 'thread-c1', status: 'todo' },
+    { project_id: 'p1', kind: 'work', issue_id: 'multi-task', conversation_id: 'work-c2', source: 'current', selected: false, title: 'Multi-session task', status: 'todo' }
+  ];
+  const multiCalls = [];
+  ctx.api = async (url, options = {}) => {
+    const body = options.body ? JSON.parse(options.body) : null;
+    multiCalls.push({ url, method: options.method || 'GET', body });
+    if (url.includes('/list?')) return { conversations: taskConversations };
+    if (url.endsWith('/select')) { taskConversations.forEach(row => row.selected = row.conversation_id === body.conversation_id); return {}; }
+    if (url.endsWith('/create')) {
+      taskConversations.forEach(row => row.selected = false);
+      const conversation = { project_id: body.project_id, kind: 'work', issue_id: body.issue_id, conversation_id: 'work-c3', source: 'current', selected: true, title: 'Multi-session task', status: 'todo' };
+      taskConversations.push(conversation); return { conversation };
+    }
+    const query = new URLSearchParams(url.split('?')[1]);
+    const row = taskConversations.find(item => item.conversation_id === query.get('conversation_id')) || taskConversations.find(item => item.selected);
+    return { mode: row.thread_id ? 'thread' : 'draft', thread_id: row.thread_id || null, binding: row.thread_id ? { thread_id: row.thread_id } : null, expected_revision: 1, target: { project_id: 'p1', kind: 'work', issue_id: row.issue_id, conversation_id: row.conversation_id }, context: { task: { id: row.issue_id, title: row.title, status: row.status } } };
+  };
+  await ctx.openIssueNativeConversation({ project_id: 'p1', id: 'multi-task' }, 'work-c2');
+  assert.equal(ctx.inlineConversationTarget().conversation_id, 'work-c2');
+  assert.equal(ctx.state.nativeWorkSelections.p1.conversation_id, 'work-c2');
+  assert.deepEqual(multiCalls.find(call => call.url.endsWith('/select')).body, { project_id: 'p1', kind: 'work', issue_id: 'multi-task', conversation_id: 'work-c2' });
+  assert.equal(ctx.captureReloadState().nativeConversation.target.conversation_id, 'work-c2');
+  await ctx.createIssueNativeConversation({ project_id: 'p1', id: 'multi-task' });
+  assert.equal(ctx.inlineConversationTarget().conversation_id, 'work-c3');
+  assert.equal(taskConversations.length, 3);
+  assert.deepEqual(multiCalls.find(call => call.url.endsWith('/create')).body, { project_id: 'p1', kind: 'work', issue_id: 'multi-task' });
+  assert(!multiCalls.some(call => /\/(start|prepare|bind)$/.test(call.url)), 'opening, selecting and adding chats never sends work');
+  renderCtx.state.nativeWorkConversations.p1 = taskConversations;
+  renderCtx.inlineConversation = { target: { project_id: 'p1', kind: 'work', issue_id: 'multi-task', conversation_id: 'work-c2' }, mode: 'draft', context: { task: { id: 'multi-task', title: 'Multi-session task', status: 'todo' } } };
+  renderCtx.renderInlineConversation();
+  assert.equal((conversationColumn.innerHTML.match(/class="bc-work-conversation-group"/g) || []).length, 1, 'one task groups all active native chats');
+  for (const id of ['work-c1', 'work-c2', 'work-c3']) assert(conversationColumn.innerHTML.includes('data-work-conversation-id="' + id + '"'));
+  assert(conversationColumn.innerHTML.includes('data-work-create="multi-task"'));
+  assert.equal((conversationColumn.innerHTML.match(/aria-current="true"/g) || []).length, 1, 'only the precise selected chat is active');
+  ctx.api = originalApi;
   console.log('PASS: planning conversation identity, precise sidebar selection, canonical restart, stale creation protection and native fail-closed/read-only fixtures');
   console.log('PASS: inline empty native drafts, scoped routes, stage isolation, stale callbacks, reload reattachment, legacy writer preservation and stable native DOM fixtures');
   console.log('PASS: work four-column navigation, honest task material/state, immutable native histories, reload identity and readonly toolbar guards');

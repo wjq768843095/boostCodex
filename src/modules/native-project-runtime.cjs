@@ -36,8 +36,24 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     updateIssue: (id, version, patch) => store.updateIssue(id, version, patch)
   });
   planning.migrate();
-  const skills = createManagedSkills({ db: store.db, home, userHome, codexHome, profiles: store.listAgentProfiles() });
+  const skills = createManagedSkills({ db: store.db, home, userHome, codexHome, profiles: store.listAgentProfiles(), resolveProject: id => store.getProject(id), listProjects: () => store.listProjects?.() || [] });
   let exportStatus = skills.exportOwned();
+  const projectSignature = () => JSON.stringify((store.listProjects?.() || []).map(project => [project.id, project.workspace_path]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  let exportedProjects = projectSignature();
+  function refreshSkillExports(force = false) {
+    const signature = projectSignature();
+    if (force || signature !== exportedProjects) { exportStatus = skills.exportOwned(); exportedProjects = signature; }
+    return exportStatus;
+  }
+  async function refreshNativeSkills(skill) {
+    if (typeof worker.semanticRequest !== 'function') return false;
+    const projects = store.listProjects?.() || [];
+    const candidates = skill?.scope === 'project' ? [store.getProject(skill.project_id)?.workspace_path] : [process.cwd(), ...projects.map(project => project.workspace_path)];
+    const cwds = [...new Set(candidates.filter(folder => { try { return folder && fs.statSync(folder).isDirectory(); } catch { return false; } }))];
+    if (!cwds.length) return false;
+    try { await worker.semanticRequest('skills/list', { cwds, forceReload: true }, 3000); return true; }
+    catch { return false; }
+  }
   if (exportStatus.conflicts?.length) console.error('BETTER_CODEX_DIAGNOSTIC ' + JSON.stringify({ scope: 'managed_skills', event: 'export_conflict', conflicts: exportStatus.conflicts.map(entry => typeof entry === 'string' ? entry : entry.id || entry.slug) }));
   // Claimed native operations with a checkpoint are never resent on restart.
   for (const row of store.db.prepare("SELECT DISTINCT relay_id FROM project_native_commands WHERE status='claimed' AND relay_id IS NOT NULL").all()) planning.recoverCommands(row.relay_id);
@@ -54,18 +70,39 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     for (const row of automaticStarts) retire.run(new Date().toISOString(),row.request_id);
   }
 
-  const skillList = () => {
-    const groups = skills.list();
+  const skillList = (projectId, includeAllProjects = projectId === undefined) => {
+    refreshSkillExports();
+    const groups = skills.list({ ...(projectId === undefined ? {} : { projectId }), includeAllProjects });
     const conflicts = new Set(exportStatus.conflicts?.map(entry => entry.id) || []);
     return { managed: groups.managed.map(skill => ({ ...skill, available: !conflicts.has(skill.id), ...(conflicts.has(skill.id) ? { path: '' } : {}) })), external: groups.external };
   };
-  const findSkill = id => {
-    const groups = skillList();
+  const findSkill = (id, projectId) => {
+    const groups = skillList(projectId);
     return [...groups.managed, ...groups.external].find(skill => skill.id === id) || null;
   };
+  function assertSkill(id, projectId) {
+    skills.assertAvailable(id, projectId);
+    const known = findSkill(id, projectId) || findSkill(id);
+    if (!known) throw Error('skill_not_found');
+    if (known.scope === 'project' && known.project_id !== projectId) throw Error('skill_project_mismatch');
+    if (known.available === false || !known.path) throw Error('skill_export_path_conflict');
+    return known;
+  }
+  function assertSkillPaths(paths, projectId) {
+    if (!Array.isArray(paths) || paths.length > 100 || paths.some(value => typeof value !== 'string' || !value || value.length > 4096)) throw Error('invalid_skill_paths');
+    const normalize = value => path.resolve(value).replaceAll('\\', '/').toLowerCase();
+    const all = skills.list({ includeAllProjects: true });
+    for (const value of paths) {
+      const known = [...all.managed, ...all.external].find(skill => skill.path && normalize(skill.path) === normalize(value));
+      if (known && !findSkill(known.id, projectId)) throw Error('skill_project_mismatch');
+      if (known) assertSkill(known.id, projectId);
+    }
+    return true;
+  }
   function setIssueSkill(issueId, skillId) {
-    if (!store.getIssue(issueId)) throw Error('issue_not_found');
-    if (skillId && !findSkill(skillId)) throw Error('skill_not_found');
+    const issue = store.getIssue(issueId);
+    if (!issue) throw Error('issue_not_found');
+    if (skillId) assertSkill(skillId, issue.project_id);
     if (!skillId) store.db.prepare('DELETE FROM issue_managed_skills WHERE issue_id=?').run(issueId);
     else store.db.prepare(`INSERT INTO issue_managed_skills(issue_id,skill_id,updated_at) VALUES(?,?,?)
       ON CONFLICT(issue_id) DO UPDATE SET skill_id=excluded.skill_id,updated_at=excluded.updated_at`).run(issueId, skillId, new Date().toISOString());
@@ -73,21 +110,22 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
   function enrichIssue(issue) {
     if (!issue) return issue;
     const selected = store.db.prepare('SELECT skill_id FROM issue_managed_skills WHERE issue_id=?').get(issue.id);
-    const skill = selected ? findSkill(selected.skill_id) : skills.list({ includeExternal: false }).managed.find(entry => entry.legacy_agent_id === issue.agent_id);
+    const skill = selected ? findSkill(selected.skill_id, issue.project_id) : skills.list({ includeExternal: false, projectId: issue.project_id }).managed.find(entry => entry.legacy_agent_id === issue.agent_id);
     return { ...issue, skill_id: skill?.id || '', skill_name: skill?.name || '',
       session_native_owned: Boolean(store.db.prepare('SELECT 1 FROM issue_native_ownership WHERE issue_id=?').get(issue.id)) };
   }
   function context(projectId, options = {}) {
     const sessions = ['charter', 'planning'].map(kind => planning.getSession(projectId, kind));
     const tasks = store.listIssues({ projectId });
+    const workBinding = options.thread_id && store.db.prepare("SELECT issue_id FROM native_conversation_bindings WHERE thread_id=? AND project_id=? AND kind='work' AND archived_at IS NULL").get(options.thread_id, projectId);
     const workTask = options.issue_id ? tasks.find(issue => issue.id === options.issue_id) : options.thread_id && !sessions.some(session => session?.thread_id === options.thread_id)
-      ? tasks.find(issue => [issue.thread_id, issue.session_thread_id, issue.run_thread_id].includes(options.thread_id)) : null;
+      ? tasks.find(issue => issue.id === workBinding?.issue_id || [issue.thread_id, issue.session_thread_id, issue.run_thread_id].includes(options.thread_id)) : null;
     const link = workTask && store.db.prepare('SELECT item_id,charter_revision,plan_revision FROM project_planning_issue_links WHERE issue_id=?').get(workTask.id);
     const value = planning.getContext(projectId, workTask ? { ...options, thread_id: undefined,
       ...(link ? { charter_revision: options.charter_revision ?? options.revision ?? link.charter_revision, plan_revision: options.plan_revision ?? link.plan_revision } : {}) } : options);
     if (workTask) value.confirmation_candidates = [];
     const project = store.getProject(projectId);
-    const groups = skillList();
+    const groups = skillList(projectId);
     const planningLinks=store.db.prepare('SELECT item_id,issue_id,charter_revision,plan_revision FROM project_planning_issue_links WHERE project_id=?').all(projectId);
     return { ...value, project: { ...value.project, root_paths: project.root_paths || [] }, ...getWorkspaceContext(project, { workspaceMap: value.charter?.metadata?.workspace_map }),
       tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version,archived_at:issue.archived_at || null,...planningLinks.find(entry=>entry.issue_id===issue.id) })),
@@ -95,7 +133,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
       ...(workTask ? { task: { id: workTask.id, title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),
         active_run_status:workTask.active_run_status || null,session_status:workTask.session_status || null,session_active_turn_id:workTask.session_active_turn_id || null,
         reply_status:workTask.reply_status || store.getIssueReplyState?.(workTask.id)?.status || 'idle',archived_at:workTask.archived_at || null, ...link } } : {}),
-      skills: [...groups.managed, ...groups.external].map(({ id, name, slug, description, path, managed }) => ({ id, name, slug, description, path, managed })) };
+      skills: [...groups.managed, ...groups.external].map(({ id, name, slug, description, path, managed, scope, project_id }) => ({ id, name, slug, description, path, managed, scope, project_id })) };
   }
   function startSession(projectId, body) {
     if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
@@ -105,12 +143,26 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     return { ...value, session: value.binding, command: null };
   }
   function handleProjectEvent(method, params) {
+    const work = conversations.handleWorkEvent(method, params);
+    if (work) {
+      if (!work.ignored && store.getIssueSession?.(work.issue_id)?.thread_id === params.threadId) worker.handleSessionEvent?.(method, params);
+      if (work.changed) publishChange();
+      return true;
+    }
     const row = planning.getSessionByThread(params.threadId);
     if (!row) return false;
     const item = params.item;
     if (['item/started', 'item/completed'].includes(method) && item?.type === 'userMessage') {
       const message = Array.isArray(item.content) ? item.content.filter(entry => entry.type === 'text').map(entry => entry.text || '').join('\n') : String(item.text || '');
-      if (item.id && message.trim()) planning.recordSessionEvent({ project_id: row.project_id, kind: row.kind, thread_id: row.thread_id, event_id: item.id, role: 'user', message, expected_revision: planning.getCharter(row.project_id)?.revision || 0 });
+      if (item.id && message.trim()) {
+        const evidence = planning.recordSessionEvent({ project_id: row.project_id, kind: row.kind, thread_id: row.thread_id, event_id: item.id, role: 'user', message, expected_revision: planning.getCharter(row.project_id)?.revision || 0 });
+        const charter = planning.getCharter(row.project_id);
+        if (method === 'item/completed' && evidence.is_confirmation && charter?.status === 'draft' && charter.revision === evidence.charter_revision) {
+          planning.confirmCharter({ project_id: row.project_id, thread_id: row.thread_id,
+            expected_revision: charter.revision, message_id: evidence.event_id });
+          publishChange();
+        }
+      }
     }
     if (method === 'turn/started' || method === 'thread/status/changed' || method === 'turn/completed') {
       const turnId = params.turn?.id;
@@ -132,21 +184,36 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     const send = (value, status = 200) => { sendJson(response, status, value); return true; };
     if (parts[0] !== 'api') return false;
+    if (parts[1] === 'native-conversations' && parts[2] === 'validate-input' && method === 'POST') {
+      const body = await readBody(request);
+      if (!store.nativeSessionProxyIsLeader(body.relay_id)) throw Error('session_relay_not_leader');
+      const binding = conversations.trustedBinding(body.thread_id, body.host_id);
+      assertSkillPaths(body.skill_paths || [], binding.project_id);
+      return send({ valid: true });
+    }
     if (await conversations.handle({ url, method, request, response, readBody, sendJson })) return true;
     if (parts[1] === 'skills') {
       if (parts[2] && ['PATCH', 'DELETE'].includes(method) && findSkill(parts[2])?.managed === false) throw Error('external_skill_read_only');
-      if (parts.length === 2 && method === 'GET') return send(skillList());
+      if (parts.length === 2 && method === 'GET') return send(skillList(url.searchParams.has('project_id') ? url.searchParams.get('project_id') : undefined));
+      if (parts.length === 3 && parts[2] === 'derive' && method === 'POST') {
+        const body = await readBody(request);
+        const skill = skills.derive(body);
+        const exported = exportStatus = skills.exportOwned(); publishChange();
+        const catalogRefreshed = await refreshNativeSkills(skill);
+        return send({ skill: skills.get(skill.id), export_status: exported, catalog_refreshed: catalogRefreshed }, 201);
+      }
       if (parts.length === 2 && method === 'POST' || parts.length === 3 && method === 'PATCH') {
         const body = await readBody(request);
         if (method === 'PATCH' && (!Number.isSafeInteger(body.version) || body.version < 1)) throw Error('invalid_version');
         const skill = skills.save({ ...body, ...(parts[2] ? { id: parts[2] } : {}) }, { expectedVersion: body.version });
         const exported = exportStatus = skills.exportOwned(); publishChange();
-        return send({ skill: skills.get(skill.id), export_status: exported }, method === 'POST' ? 201 : 200);
+        const catalogRefreshed = await refreshNativeSkills(skill);
+        return send({ skill: skills.get(skill.id), export_status: exported, catalog_refreshed: catalogRefreshed }, method === 'POST' ? 201 : 200);
       }
       if (parts.length === 3 && method === 'GET') {
         const skill = findSkill(parts[2]); if (!skill) throw Error('skill_not_found'); return send({ skill });
       }
-      if (parts.length === 3 && method === 'DELETE') { const body = await readBody(request); if (!Number.isSafeInteger(body.version) || body.version < 1) throw Error('invalid_version'); skills.delete(parts[2], { expectedVersion: body.version }); publishChange(); return send({ deleted: true }); }
+      if (parts.length === 3 && method === 'DELETE') { const body = await readBody(request); if (!Number.isSafeInteger(body.version) || body.version < 1) throw Error('invalid_version'); const skill = findSkill(parts[2]); skills.delete(parts[2], { expectedVersion: body.version }); publishChange(); return send({ deleted: true, catalog_refreshed: await refreshNativeSkills(skill) }); }
       return send({ error: 'not_found' }, 404);
     }
     if (parts[1] === 'project-tools' && method === 'POST') {
@@ -159,6 +226,13 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     if (parts[1] !== 'projects' || !parts[2]) return false;
     const projectId = parts[2];
     if (parts[3] === 'planning-context' && method === 'GET') return send(context(projectId));
+    if (parts[3] === 'charter-confirm' && method === 'POST') {
+      const body = await readBody(request);
+      if (Object.hasOwn(body, 'history_id')) throw Error('native_history_read_only');
+      const value = planning.confirmCharterFromUI({ project_id: projectId,
+        expected_revision: body.expected_revision, thread_id: body.thread_id });
+      publishChange(); return send(value);
+    }
     if (parts[3] === 'native-session' && method === 'POST') {
       const body = await readBody(request);
       if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
@@ -191,6 +265,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     const plan = planning.getPlan(body.project_id);
     if (!plan || body.expected_revision !== plan.revision) throw Error('version_conflict');
     if (!Array.isArray(body.item_ids) || !body.item_ids.length || body.item_ids.some(id => !plan.items.some(item => item.id === id))) throw Error('invalid_item_ids');
+    for (const item of plan.items.filter(item => body.item_ids.includes(item.id))) if (item.skill_id) assertSkill(item.skill_id, body.project_id);
     // Snapshot only the project rows and selected task rows affected by this handoff.
     const existing = store.db.prepare('SELECT * FROM project_planning_issue_links WHERE project_id=?').all(body.project_id);
     const selected = existing.filter(link => body.item_ids?.includes(link.item_id));
@@ -205,7 +280,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     for (const result of value.items) {
       const link = store.db.prepare('SELECT item_json FROM project_planning_issue_links WHERE issue_id=?').get(result.issue_id);
       const selected = link && JSON.parse(link.item_json).skill_id;
-      if (selected && findSkill(selected)) setIssueSkill(result.issue_id, selected);
+      if (selected) { assertSkill(selected, body.project_id); setIssueSkill(result.issue_id, selected); }
     }
     return { ...value, issues: value.items.map(result => enrichIssue(store.getIssue(result.issue_id))) };
   }
@@ -225,7 +300,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     }
     return planning.finishCommand({ request_id: id, project_id: command.project_id, session_kind: command.session_kind, thread_id: command.thread_id, expected_revision: command.revision, relay_id: relayId, result, ...(action === 'fail' ? { status: 'failed', error: error || 'desktop_bridge_request_failed' } : {}) });
   }
-  const activeTurns = () => store.db.prepare("SELECT activity.thread_id,activity.turn_id FROM project_native_activity AS activity WHERE activity.status='running' AND (EXISTS(SELECT 1 FROM project_native_sessions AS sessions WHERE sessions.thread_id=activity.thread_id AND sessions.status='running') OR EXISTS(SELECT 1 FROM project_native_conversations AS conversations WHERE conversations.thread_id=activity.thread_id AND conversations.status='running'))").all();
+  const activeTurns = () => store.db.prepare("SELECT activity.thread_id,activity.turn_id FROM project_native_activity AS activity WHERE activity.status='running' AND (EXISTS(SELECT 1 FROM project_native_sessions AS sessions WHERE sessions.thread_id=activity.thread_id AND sessions.status='running') OR EXISTS(SELECT 1 FROM project_native_conversations AS conversations WHERE conversations.thread_id=activity.thread_id AND conversations.status='running') OR EXISTS(SELECT 1 FROM issue_native_conversations AS work WHERE work.thread_id=activity.thread_id AND work.active_turn_id=activity.turn_id AND work.status='running'))").all();
   function invokeTool(name, body) {
     if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
     let value;
@@ -238,14 +313,14 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     publishChange(); return value;
   }
   const conversations = createNativeConversationRuntime({ store, planning, home, context, invokeTool, onProjectEvent: handleProjectEvent, publishChange });
-  return { planning, skills, conversations, context, handle, startSession, handleProjectEvent, commandReceipt, enrichIssue, setIssueSkill, findSkill, activeTurns };
+  return { planning, skills, conversations, context, handle, startSession, handleProjectEvent, commandReceipt, enrichIssue, setIssueSkill, findSkill, assertSkill, assertSkillPaths, refreshSkillExports, activeTurns };
 }
 
 function workPayload(store, issue, workspacePath, message, input) {
   const runtime = store.nativeProjectRuntime;
   const project = store.getProject(issue.project_id);
   const enriched = runtime?.enrichIssue(issue) || issue;
-  const skill = enriched.skill_id && runtime?.findSkill(enriched.skill_id);
+  const skill = enriched.skill_id && runtime?.assertSkill(enriched.skill_id, issue.project_id);
   const link = store.db.prepare('SELECT charter_revision,plan_revision,item_id FROM project_planning_issue_links WHERE issue_id=?').get(issue.id);
   const charter = link ? runtime?.planning.getCharter(issue.project_id, { revision: link.charter_revision }) : runtime?.planning.getCharter(issue.project_id);
   const workspace = getWorkspaceContext(project || { workspace_path: workspacePath }, { scan: false, workspaceMap: charter?.metadata?.workspace_map });

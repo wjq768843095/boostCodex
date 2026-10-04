@@ -5,6 +5,7 @@
   const HUB_KEY = "__betterCodexNativeConversationHub__";
   const DRAFT_KEY = "better-codex-native-drafts-v1";
   const DRAFT_STATE_KEY = "__betterCodexNativeDraftState__";
+  const RETAINED_PIN_KEY = "__betterCodexRetainedNativePin__";
   const PREFIX = "better_codex_";
   const API_ROOT = "/api/native-conversations/";
   const LOCAL = "local";
@@ -14,7 +15,7 @@
     "better_codex_project_plan_convert"
   ]);
   const normalizePath = value => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase();
-  const conversationId = context => context.kind === "work" ? "" : context.conversation_id || "";
+  const conversationId = context => context.conversation_id || "";
   const conversationFields = context => conversationId(context) ? { conversation_id: conversationId(context) } : {};
   const historyFields = context => context.history_id ? { history_id: context.history_id } : {};
   const readOnly = context => !!context?.history_id || context?.read_only === true;
@@ -24,7 +25,10 @@
   const requestKey = (host, id) => JSON.stringify([host || LOCAL, id]);
   const messageId = value => value?.message?.id ?? value?.response?.id;
   const messageBody = value => value?.message || value?.response;
-  const errorText = error => String(error?.message || error || "原生会话暂时无法打开");
+  const errorText = error => {
+    const value = String(error?.message || error || "原生会话暂时无法打开");
+    return ({ skill_project_mismatch: "此 Skill 仅适用于它所属的项目，请重新选择。", skill_project_root_shared: "项目目录与其他项目重叠，请选择独立目录后重试。", skill_project_not_found: "项目目录暂时无法访问，请检查项目设置。", skill_export_path_conflict: "此 Skill 暂时无法使用，请检查保存位置。", issue_execution_running: "任务正在执行，请等待完成后再发送。" })[value] || value;
+  };
   const uuid = () => root.crypto.randomUUID();
 
   function flattenContext(value) {
@@ -33,7 +37,7 @@
     context.kind = context.kind || context.session_kind;
     context.project_id = context.project_id || context.binding?.project_id || context.project?.id;
     context.issue_id = context.issue_id || context.binding?.issue_id;
-    context.conversation_id = context.kind === "work" ? undefined : context.conversation_id || context.binding?.conversation_id || value?.target?.conversation_id || undefined;
+    context.conversation_id = context.conversation_id || context.binding?.conversation_id || value?.target?.conversation_id || undefined;
     context.history_id = context.history_id || value?.target?.history_id || undefined;
     if (context.history_id) context.read_only = true;
     context.thread_id = context.thread_id || context.binding?.thread_id || "";
@@ -132,6 +136,123 @@
   }
 
   const findNativeScope = (predicate, selector, anchor) => findNativeValue(value => value.scope && typeof value.get === "function" && typeof value.set === "function" && predicate(value), selector, anchor);
+
+  function nativeNavigationRuntime() {
+    // The installed host retains genuine React route trees, including their
+    // location providers and editor controllers. Discover that owning router;
+    // never move its DOM or create a second editor outside those providers.
+    let router = null;
+    let retained = null;
+    let retainedFiber = null;
+    const seen = new Set();
+    const anchors = [...root.document.querySelectorAll('[data-app-shell-active-page="true"]'), ...root.document.querySelectorAll('[contenteditable], main')];
+    for (const anchor of anchors) {
+      for (let element = anchor; element; element = element.parentElement) {
+        const key = Object.keys(element).find(name => name.startsWith("__reactFiber$"));
+        for (let fiber = key && element[key]; fiber && !seen.has(fiber); fiber = fiber.return) {
+          seen.add(fiber);
+          const candidate = fiber.memoizedProps?.value?.router;
+          if (candidate && typeof candidate.navigate === "function" && candidate.state?.location && Array.isArray(candidate.routes)) router ||= candidate;
+          let hook = fiber.memoizedState;
+          for (let limit = 0; hook && typeof hook === "object" && limit < 128; limit++, hook = hook.next) {
+            const value = hook.memoizedState;
+            if (!retained && value?.current?.location?.location && Array.isArray(value.views) && value.views.every(view => view?.route && view?.location?.location && view.element)) { retained = value; retainedFiber = fiber; }
+          }
+        }
+      }
+      if (router && retained) break;
+    }
+    return { router, retained, retainedFiber };
+  }
+
+  function retainedExpirySlot(fiber, key) {
+    // The native retention component pairs an expiry event and a page in the
+    // same keyed Fragment. Require both identities before touching an event.
+    for (let fragment = fiber?.child; fragment; fragment = fragment.sibling) {
+      if (fragment.key !== key) continue;
+      let expiry = null, page = null;
+      for (let child = fragment.child; child; child = child.sibling) {
+        const props = child.memoizedProps;
+        if (props?.view?.key === key && typeof props.active === "boolean") page = child;
+        if (typeof props?.onExpire === "function" && typeof props.active === "boolean" && Number.isFinite(props.ttlSeconds) && props.ttlSeconds > 0) expiry = child;
+      }
+      if (!page || !expiry || page.memoizedProps.active !== expiry.memoizedProps.active) return null;
+      const first = expiry.memoizedState, second = first?.next, effect = second?.next;
+      const slot = second?.memoizedState;
+      const descriptor = slot && Object.getOwnPropertyDescriptor(slot, "impl");
+      if (!first?.memoizedState || !Object.prototype.hasOwnProperty.call(first.memoizedState, "current") || !effect?.memoizedState?.deps || effect.memoizedState.deps[0] !== expiry.memoizedProps.active || effect.memoizedState.deps[1] !== expiry.memoizedProps.ttlSeconds || !descriptor?.configurable || !("value" in descriptor && typeof descriptor.value === "function" && descriptor.writable || descriptor.get && root[RETAINED_PIN_KEY]?.slots?.has(slot))) return null;
+      return { slot, descriptor };
+    }
+    return null;
+  }
+
+  function refreshRetainedPin(pin = root[RETAINED_PIN_KEY]) {
+    if (!pin || !pin.active || pin.refreshing) return false;
+    pin.refreshing = true;
+    try {
+      const runtime = nativeNavigationRuntime();
+      const view = runtime.retained?.views.find(view => view.key === pin.key && view.route.pathname === pin.path && view.route.routeKind === "local-thread");
+      const access = view && retainedExpirySlot(runtime.retainedFiber, view.key);
+      if (!view || !access) return false;
+      for (const [previous, age] of pin.ages) if (previous !== view) {
+        Object.defineProperty(previous, "lastUsed", { ...age.descriptor, value: age.value });
+        pin.ages.delete(previous);
+      }
+      for (const [previous, record] of pin.slots) if (previous !== access.slot) {
+        Object.defineProperty(previous, "impl", { ...record.descriptor, value: record.implementation });
+        pin.slots.delete(previous);
+      }
+      if (!pin.slots.has(access.slot)) {
+        const record = { descriptor: access.descriptor, implementation: access.descriptor.value, deferred: false };
+        pin.slots.set(access.slot, record);
+        Object.defineProperty(access.slot, "impl", {
+          configurable: true, enumerable: access.descriptor.enumerable,
+          get: () => function retainedPageExpiry(...args) {
+            if (pin.active && root[RETAINED_PIN_KEY] === pin) { record.deferred = true; return; }
+            return record.implementation.apply(this, args);
+          },
+          set: implementation => { record.implementation = implementation; }
+        });
+      }
+      if (!pin.ages.has(view)) {
+        const descriptor = Object.getOwnPropertyDescriptor(view, "lastUsed");
+        if (descriptor?.configurable && descriptor.writable && typeof descriptor.value === "number") {
+          const age = { descriptor, value: descriptor.value === Number.MAX_SAFE_INTEGER ? pin.lastUsed : descriptor.value };
+          pin.lastUsed = age.value;
+          pin.ages.set(view, age);
+          Object.defineProperty(view, "lastUsed", { configurable: true, enumerable: descriptor.enumerable, get: () => Number.MAX_SAFE_INTEGER, set: value => { age.value = value; pin.lastUsed = value; } });
+        }
+      }
+      return true;
+    } finally { pin.refreshing = false; }
+  }
+
+  function clearRetainedPin(expire = true) {
+    const pin = root[RETAINED_PIN_KEY];
+    if (!pin) return;
+    const runtime = expire ? nativeNavigationRuntime() : null;
+    const inactive = !!runtime?.retained && runtime.retained.current?.key !== pin.key && runtime.router?.state?.location?.pathname !== pin.path;
+    pin.active = false;
+    pin.observer?.disconnect();
+    if (pin.refreshFrame != null) root.cancelAnimationFrame?.(pin.refreshFrame);
+    if (pin.refreshTimeout != null) root.clearTimeout(pin.refreshTimeout);
+    if (pin.timer) root.clearInterval?.(pin.timer);
+    delete root[RETAINED_PIN_KEY];
+    for (const [view, age] of pin.ages) Object.defineProperty(view, "lastUsed", { ...age.descriptor, value: age.value });
+    for (const [slot, record] of pin.slots) Object.defineProperty(slot, "impl", { ...record.descriptor, value: record.implementation });
+    // An elapsed native timer has no remaining timeout. On release, give its
+    // latest original event the normal opportunity to reclaim an inactive page.
+    if (expire && inactive) for (const record of pin.slots.values()) if (record.deferred) record.implementation();
+  }
+
+  function retainedNativeNavigation(path) {
+    const { router, retained } = nativeNavigationRuntime();
+    if (!router || !retained) return null;
+    const view = retained.views.find(view => view.route.routeKind === "local-thread" && view.route.pathname === path && !(view.route.search || ""));
+    if (!view) return null;
+    const location = router.state.location;
+    return { router, view, selected: location.pathname === path && !(location.search || "") && !(location.hash || "") };
+  }
 
   function nativeDraftAccess(namespace, composer) {
     // Source-managed capability profile for the installed native scope runtime.
@@ -451,6 +572,8 @@
     const pending = { type: "turn", scope, message };
     hub.requests.set(key, pending);
     try {
+      const skillPaths = (message.request.params?.input || []).filter(item => item?.type === "skill").map(item => item.path);
+      if (skillPaths.length) await post(scope, "validate-input", { thread_id: message.request.params.threadId, host_id: scope.context.host_id, skill_paths: skillPaths });
       if (!scope.operation) {
         const client = hub.latestClient() || scope.client;
         const target = scope.context;
@@ -469,7 +592,7 @@
         const prepared = await post(scope, "prepare", {
           ...targetIdentity(context),
           host_id: context.host_id, request_id: uuid(), expected_revision: context.expected_revision,
-          draft_generation: context.draft_generation
+          draft_generation: context.draft_generation, skill_paths: skillPaths
         });
         scope.operation = prepared.operation;
         assertReturnedTarget(context, scope.operation);
@@ -565,6 +688,17 @@
     let currentRoute = "";
     let originalNativeDraft = "";
     let registry = null;
+    let retainedNavigationPromise = Promise.resolve(false);
+    let pendingRetainedNavigation = null;
+    function cancelRetainedNavigation() {
+      const pending = pendingRetainedNavigation;
+      if (!pending) return;
+      pendingRetainedNavigation = null;
+      if (pending.frame != null) root.cancelAnimationFrame?.(pending.frame);
+      if (pending.timeout != null) root.clearTimeout(pending.timeout);
+      pending.unsubscribe?.();
+      pending.resolve(false);
+    }
     const draftIdStorage = options.storage || root.localStorage || root.sessionStorage;
     const drafts = { ...readDraftIds(root.sessionStorage), ...readDraftIds(draftIdStorage) };
     try { if (Object.keys(drafts).length) draftIdStorage?.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch { /* Mounted drafts still retain their stable IDs. */ }
@@ -625,7 +759,7 @@
         if (options.isCurrentContext && !options.isCurrentContext(this.current)) return false;
         return internalNavigation > 0 || this.ownsRoute(this.route());
       },
-      blocksNativeInput() { return !this.disposed && this.current?.native_open_state === "failed" && options.isCurrentContext?.(this.current) !== false; },
+      blocksNativeInput() { return !this.disposed && (this.current?.native_open_state === "failed" || !!pendingRetainedNavigation) && options.isCurrentContext?.(this.current) !== false; },
       blocksReadOnlyInput() { return !this.disposed && readOnly(this.current) && options.isCurrentContext?.(this.current) !== false && (internalNavigation > 0 || this.ownsRoute(this.route())); },
       updateContext(value) {
         const context = flattenContext(value);
@@ -664,6 +798,12 @@
       async navigate(path, state) {
         currentRoute = path;
         if (options.navigate) return options.navigate(path, state);
+        const retained = state === undefined ? retainedNativeNavigation(path) : null;
+        if (retained) {
+          if (!retained.selected) await retained.router.navigate(path, { state: retained.view.location.location.state, flushSync: true, preventScrollReset: true });
+          if (typeof options.afterNavigate === "function") await options.afterNavigate(path);
+          return;
+        }
         host.dispatcher.dispatchHostMessage({ type: "navigate-to-route", path, ...(state ? { state } : {}) });
         if (typeof options.afterNavigate === "function") await options.afterNavigate(path);
         else await new Promise(resolve => root.setTimeout(resolve, 40));
@@ -696,6 +836,7 @@
         if (nativeId === originalNativeDraft) this.saveDraft(originalNativeDraft, context);
       },
       async open(value, restored) {
+        cancelRetainedNavigation();
         const generation = ++navigationGeneration;
         const context = flattenContext(value);
         if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id) throw Error("项目会话资料不完整");
@@ -755,6 +896,118 @@
           this.report(error, context);
           return { mode: "unavailable", context: { ...context }, error: errorText(error), capabilities: this.capabilities() };
         }
+      },
+      resumeRetained(value, resumeOptions = {}) {
+        if (this.disposed || !host || !hub || options.navigate) return false;
+        const context = flattenContext(value);
+        if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id || !context.thread_id || context.mode === "legacy_busy" || context.mode === "handoff_required") return false;
+        if (context.conversation_id && typeof context.conversation_id !== "string" || context.history_id && (context.kind !== "work" || typeof context.history_id !== "string")) return false;
+        const path = "/local/" + encodeURIComponent(context.thread_id);
+        const retained = retainedNativeNavigation(path);
+        if (!retained) return false;
+        const previous = this.current;
+        if (previous?.history_id && targetKey(previous) !== targetKey(context)) this.forgetHistory(previous);
+        if (previous?.mode === "draft" && previous.client_draft_id && this.ownsNativeDraft()) this.saveDraft(previous.client_draft_id, previous);
+        cancelRetainedNavigation();
+        const generation = ++navigationGeneration;
+        if (!initialRoute) initialRoute = this.route();
+        const deferred = resumeOptions.deferNavigation === true && !retained.selected;
+        this.current = { ...context, native_open_state: deferred ? "loading" : "ready" };
+        hub.threads.set(threadKey(context.host_id, context.thread_id), { hub, client: this, context: { ...this.current }, operation: null });
+        currentRoute = path;
+        if (retained.selected) { retainedNavigationPromise = Promise.resolve(true); return true; }
+        const originLocation = retained.router.state.location;
+        let synchronousFailure = false;
+        retainedNavigationPromise = new Promise(resolve => {
+          const pending = { resolve, generation, frame: null, timeout: null, unsubscribe: null, started: false };
+          pendingRetainedNavigation = pending;
+          const current = () => pendingRetainedNavigation === pending && generation === navigationGeneration && !this.disposed;
+          const complete = ready => {
+            if (pendingRetainedNavigation === pending) pendingRetainedNavigation = null;
+            pending.unsubscribe?.();
+            resolve(ready);
+          };
+          const navigate = () => {
+            if (!current()) { complete(false); return; }
+            if (retained.router.state.location !== originLocation) {
+              const origin = { ...this.current };
+              this.leave();
+              this.options.onNavigateAway?.(origin);
+              complete(false);
+              return;
+            }
+            pending.started = true;
+            internalNavigation++;
+            let navigation;
+            try { navigation = retained.router.navigate(path, { state: retained.view.location.location.state, flushSync: true, preventScrollReset: true }); }
+            catch (error) {
+              synchronousFailure = true;
+              if (current()) { this.current = previous; this.report(error, context); }
+              complete(false);
+              return;
+            } finally { internalNavigation--; }
+            Promise.resolve(navigation).then(() => {
+              if (!current()) { complete(false); return; }
+              if (retained.router.state.location.pathname !== path || retained.router.state.location.search) {
+                const origin = { ...this.current };
+                this.leave();
+                this.options.onNavigateAway?.(origin);
+                complete(false);
+                return;
+              }
+              this.current.native_open_state = "ready";
+              complete(true);
+            }, error => {
+              if (current()) { this.current.native_open_state = "failed"; this.report(error, context); }
+              complete(false);
+            });
+          };
+          if (deferred) {
+            if (typeof retained.router.subscribe === "function") pending.unsubscribe = retained.router.subscribe(state => {
+              if (current() && !pending.started && (state.location !== originLocation || state.navigation?.state && state.navigation.state !== "idle" && state.navigation.location?.pathname !== path)) {
+                const origin = { ...this.current };
+                this.leave();
+                this.options.onNavigateAway?.(origin);
+              }
+            });
+            const afterPaint = () => { if (current()) pending.timeout = root.setTimeout(navigate, 0); else complete(false); };
+            if (typeof root.requestAnimationFrame === "function") pending.frame = root.requestAnimationFrame(afterPaint);
+            else pending.timeout = root.setTimeout(afterPaint, 0);
+          } else navigate();
+        });
+        if (synchronousFailure) return false;
+        return true;
+      },
+      waitRetainedNavigation() { return retainedNavigationPromise; },
+      pinRetained(value = this.current) {
+        const context = flattenContext(value);
+        if (this.disposed || !context.thread_id || !context.project_id || !["charter", "planning", "work"].includes(context.kind)) return false;
+        const path = "/local/" + encodeURIComponent(context.thread_id);
+        const runtime = nativeNavigationRuntime();
+        const view = runtime.retained?.views.find(view => view.route.pathname === path && view.route.routeKind === "local-thread");
+        if (!view || !retainedExpirySlot(runtime.retainedFiber, view.key)) return false;
+        let pin = root[RETAINED_PIN_KEY];
+        if (pin?.key === view.key && pin.path === path) return refreshRetainedPin(pin);
+        clearRetainedPin();
+        pin = { active: true, key: view.key, path, lastUsed: view.lastUsed, slots: new Map(), ages: new Map(), refreshing: false };
+        root[RETAINED_PIN_KEY] = pin;
+        if (!refreshRetainedPin(pin)) { clearRetainedPin(false); return false; }
+        if (typeof root.MutationObserver === "function" && root.document.documentElement) {
+          pin.observer = new root.MutationObserver(() => {
+            if (!pin.active || pin.refreshScheduled) return;
+            pin.refreshScheduled = true;
+            const refresh = () => {
+              pin.refreshScheduled = false;
+              pin.refreshFrame = pin.refreshTimeout = null;
+              refreshRetainedPin(pin);
+            };
+            if (typeof root.requestAnimationFrame === "function") pin.refreshFrame = root.requestAnimationFrame(refresh);
+            else pin.refreshTimeout = root.setTimeout(refresh, 0);
+          });
+          pin.observer.observe(root.document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-app-shell-active-page"] });
+        }
+        if (typeof root.setInterval === "function") pin.timer = root.setInterval(() => refreshRetainedPin(pin), 30_000);
+        return true;
       },
       async beginThread(message) {
         const context = { ...this.current };
@@ -839,6 +1092,7 @@
         }
       },
       leave(preserveNative = false) {
+        cancelRetainedNavigation();
         const generation = ++navigationGeneration;
         this.forgetHistory();
         if (host && originalNativeDraft && this.current?.client_draft_id) {
@@ -893,6 +1147,9 @@
       mount: client.open.bind(client), open: client.open.bind(client),
       leave: () => client.leave(), destroy: client.destroy.bind(client),
       capture: client.capture.bind(client), restore: client.restore.bind(client),
+      resumeRetained: client.resumeRetained.bind(client),
+      waitRetainedNavigation: client.waitRetainedNavigation.bind(client),
+      pinRetained: client.pinRetained.bind(client), clearRetainedPin,
       capabilities: client.capabilities.bind(client), ownsRoute: client.ownsRoute.bind(client),
       inspectLayout: client.inspectLayout.bind(client),
       getCurrentContext: client.getCurrentContext.bind(client),
