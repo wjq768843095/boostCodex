@@ -2565,6 +2565,9 @@ var BetterCodexInjected = (() => {
         .better-codex-inline-heading svg { width: 16px; height: 16px; flex-shrink: 0; }
         .better-codex-inline-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
         .better-codex-inline-tabs { display: flex; flex-shrink: 0; gap: 4px; margin-inline-start: auto; }
+        [data-project-charter-confirm] { background: #2563eb !important; border-color: #2563eb !important; color: #fff !important; }
+        [data-project-charter-confirm]:not(:disabled):hover { background: #1d4ed8 !important; border-color: #1d4ed8 !important; }
+        [data-project-charter-confirm]:focus-visible { outline: 2px solid #60a5fa !important; outline-offset: 2px; }
         .bc-planning-stage-tabs { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--bc-color-hairline); border-radius: 9px; background: var(--bc-color-hover); width: fit-content; max-width: 100%; margin: 12px 0 16px; }
         .bc-planning-stage-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 14px; border: 0; border-radius: 6px; background: transparent; color: var(--bc-color-text-muted); font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; }
         .bc-planning-stage-tabs button[aria-selected="true"] { background: var(--bc-color-surface-raised); color: var(--bc-color-text); box-shadow: 0 1px 3px #0002; }
