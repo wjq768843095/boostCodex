@@ -2612,6 +2612,10 @@ var BetterCodexInjected = (() => {
         .better-codex-inline-details { position: absolute; top: 58px; right: 0; bottom: 0; width: var(--bc-inline-details-width, 360px); border-left: 1px solid var(--bc-color-hairline); background: var(--bc-color-canvas); overflow: auto; overscroll-behavior: contain; pointer-events: auto; box-sizing: border-box; }
         .better-codex-inline-details[hidden], .better-codex-inline-status[hidden] { display: none; }
         .better-codex-inline-details .bc-native-planning .better-codex-project-plan-item { display: block !important; }
+        #better-codex-panel .better-codex-inline-details .better-codex-project-plan-scroll { overflow: visible; overscroll-behavior: auto; }
+        #better-codex-panel .better-codex-inline-details .better-codex-project-plan-item > .bc-planning-fold { color: var(--bc-color-ink); }
+        #better-codex-panel .better-codex-inline-details .better-codex-project-plan-item > .bc-planning-fold > summary { color: var(--bc-color-ink); }
+
         .better-codex-inline-details .bc-planning-fold > summary { width: 100%; box-sizing: border-box; }
         .better-codex-inline-details .bc-planning-fold > summary > label { display: flex; align-items: center; gap: 8px; }
         .better-codex-inline-details .bc-planning-fold > summary > label input { flex: 0 0 auto; }
