@@ -115,7 +115,7 @@ for (const name of ['nativeWorkspaceParams', 'nativeExplicitParams', 'resumePers
   state.planningContexts.p.tasks = [{ id: 'issue-two', status: 'in_progress' }];
   const runningMarkup = context.projectPlanningMarkup({ id: 'p' }, { inline: true });
   assert(runningMarkup.includes('开发任务 · 进行中'));
-  assert(runningMarkup.includes('data-plan-convert-item="one"'));
+  assert(!runningMarkup.includes('data-plan-convert-item='), 'conversion requires the explicit checkbox selection');
   assert(runningMarkup.includes('待转开发'));
   state.planningContexts.p.tasks[0].status = 'done';
   assert(context.projectPlanningMarkup({ id: 'p' }).includes('开发任务 · 已完成'));

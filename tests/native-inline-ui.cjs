@@ -294,6 +294,16 @@ class NodeFixture {
   assert.equal(conversationCalls.find(call => call.url.endsWith('/select')).body.conversation_id, 'A');
   assert.notEqual(conversationCtx.inlineConversationKey({ project_id: 'p1', kind: 'charter', conversation_id: 'A' }), conversationCtx.inlineConversationKey({ project_id: 'p1', kind: 'charter', conversation_id: 'B' }));
   assert.match(conversationCtx.inlineConversationQuery({ project_id: 'p1', kind: 'charter', conversation_id: 'A' }), /conversation_id=A/);
+  const originalRows = conversationRows;
+  conversationRows = [{ conversation_id: 'A', kind: 'charter', selected: false }, { conversation_id: 'running-plan', kind: 'planning', selected: true, status: 'running' }, { conversation_id: 'work-chat', kind: 'work', selected: true }];
+  conversationCtx.inlineConversation = { target: { project_id: 'p1', kind: 'work', issue_id: 'task', conversation_id: 'work-chat' } };
+  const selectionCount = conversationCalls.filter(call => call.url.endsWith('/select')).length;
+  await conversationCtx.openProjectNativeSession('p1', '');
+  assert.equal(conversationOpens.at(-1).kind, 'planning', 'generic project planning entry follows the selected planning stage rather than stale charter memory');
+  assert.equal(conversationOpens.at(-1).conversation_id, 'running-plan');
+  assert.equal(conversationCalls.filter(call => call.url.endsWith('/select')).length, selectionCount, 'browsing the running selected plan does not request a forbidden selection switch');
+  assert(!conversationCtx.state.nativeConversations.p1.some(row => row.kind === 'work'), 'planning navigation cannot pick a work conversation');
+  conversationRows = originalRows;
   conversationCtx.inlineConversation = { target: { project_id: 'p1', kind: 'charter', conversation_id: 'A' }, binding: { thread_id: 'thread-A' }, expected_revision: 5 };
   conversationCtx.state.nativeThreadLinks['thread-A'] = { project_id: 'p1', kind: 'charter', conversation_id: 'A' };
   const interactionButton = selector => ({ dataset: {}, matches: value => value === selector, closest: () => null });

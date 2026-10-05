@@ -2629,6 +2629,7 @@ var BetterCodexInjected = (() => {
         .bc-project-work-views button { padding: 6px 12px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
         .bc-project-work-views button[aria-current="page"] { background: var(--bc-color-control); font-weight: 600; }
         .better-codex-inline-heading-actions .bc-project-work-views { margin: 0; }
+        #better-codex-panel input[data-plan-item] { appearance: auto !important; display: inline-block !important; position: static !important; width: 18px !important; height: 18px !important; min-width: 18px; flex: 0 0 18px; margin: 0 8px 0 0 !important; padding: 0 !important; opacity: 1 !important; visibility: visible !important; pointer-events: auto !important; accent-color: var(--bc-color-accent); }
         .bc-planning-fold { min-width: 0; width: 100%; }
         .bc-planning-fold > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 0; cursor: pointer; list-style: none; font-weight: 600; }
         .bc-planning-fold > summary::-webkit-details-marker { display: none; }
@@ -7647,14 +7648,15 @@ var BetterCodexInjected = (() => {
       const chapters = sections.map((item, index) => '<section class="better-codex-project-plan-section" id="bc-charter-' + index + '"><header><strong>' + escapeHtml2(item.title || item.label || sectionNames[item.key] || "项目章节") + '</strong></header>' + documentTextMarkup(item.content || item.markdown || item.text || item.value || item.body) + '</section>').join("");
       const document = chapters || (charter.markdown ? documentTextMarkup(charter.markdown) : '<div class="better-codex-project-dashboard-empty">' + te("在总纲会话中确认项目目标、范围、架构和验收标准。") + '</div>');
       const items = Array.isArray(plan.items) ? plan.items.map((item) => ({ ...item, issue_id: item.issue_id || plan.issue_links?.find((link) => link.item_id === item.id)?.issue_id })) : [];
-      const selected = state.planSelections?.[project.id] || [];
+      const selected = (state.planSelections?.[project.id] || []).filter(id => items.some(item => item.id === id && !item.issue_id && !context?.planning_links?.some(link => link.item_id === id && link.issue_id)));
+      if (state.planSelections?.[project.id]) state.planSelections[project.id] = selected;
       const taskRows = items.map((item) => {
         const link = context?.planning_links?.find(candidate => candidate.item_id === item.id);
         const issueId = item.issue_id || link?.issue_id;
         const issue = context?.tasks?.find(candidate => candidate.id === issueId) || state.projectIssues?.find(candidate => candidate.id === issueId) || state.issues?.find(candidate => candidate.id === issueId);
         const workState = issue?.archived_at || link?.archived ? "已归档" : statusLabels[issue?.status || link?.status] || "待规划";
-        const action = issueId ? '<button type="button" data-inline-work-task="' + escapeHtml2(issueId) + '">' + te("开发任务") + ' · ' + te(workState) + '</button>' : '<button type="button" data-plan-convert="' + escapeHtml2(project.id) + '" data-plan-convert-item="' + escapeHtml2(item.id) + '">' + te("转开发任务") + '</button>';
-        return '<article class="better-codex-project-plan-item">' + (options.inline ? '<details class="bc-planning-fold" data-planning-fold="task:' + escapeHtml2(project.id) + ':' + escapeHtml2(item.id) + '"><summary>' : '') + '<label><input type="checkbox" data-plan-item="' + escapeHtml2(item.id) + '" data-plan-project="' + escapeHtml2(project.id) + '"' + (issueId ? ' disabled' : '') + (selected.includes(item.id) ? ' checked' : '') + '><strong>' + escapeHtml2((item.id && !(item.title || item.name || "").startsWith(item.id) ? item.id + " · " : "") + (item.title || item.name || "任务")) + '</strong></label><span class="better-codex-project-plan-status">' + te(issueId ? "已转开发" : "待转开发") + '</span>' + (options.inline ? '</summary><div class="bc-planning-fold-body">' : '') + documentTextMarkup(item.goal || item.description || item.summary) + planItemDetailsMarkup(item) + issuePlanDetailMarkup(item) + '<footer>' + (issueId ? '<span>' + te("已关联开发任务") + '</span>' : '') + action + '</footer>' + (options.inline ? '</div></details>' : '') + '</article>';
+        const action = issueId ? '<button type="button" data-inline-work-task="' + escapeHtml2(issueId) + '">' + te("开发任务") + ' · ' + te(workState) + '</button>' : '';
+        return '<article class="better-codex-project-plan-item">' + (options.inline ? '<details class="bc-planning-fold" data-planning-fold="task:' + escapeHtml2(project.id) + ':' + escapeHtml2(item.id) + '"><summary>' : '') + '<label><input type="checkbox" aria-label="' + te("选择任务") + ' ' + escapeHtml2(item.id) + '" data-plan-item="' + escapeHtml2(item.id) + '" data-plan-project="' + escapeHtml2(project.id) + '"' + (issueId ? ' disabled' : '') + (selected.includes(item.id) ? ' checked' : '') + '><strong>' + escapeHtml2((item.id && !(item.title || item.name || "").startsWith(item.id) ? item.id + " · " : "") + (item.title || item.name || "任务")) + '</strong></label><span class="better-codex-project-plan-status">' + te(issueId ? "已转开发" : "待转开发") + '</span>' + (options.inline ? '</summary><div class="bc-planning-fold-body">' : '') + documentTextMarkup(item.goal || item.description || item.summary) + planItemDetailsMarkup(item) + issuePlanDetailMarkup(item) + '<footer>' + (issueId ? '<span>' + te("已关联开发任务") + '</span>' : '') + action + '</footer>' + (options.inline ? '</div></details>' : '') + '</article>';
       }).join("");
       const warningLabels = { missing_scope: "请补充任务范围", missing_acceptance: "请补充验收标准", missing_deliverables: "请补充任务产物", missing_manual_steps: "请补充人工验收步骤", missing_directories: "请明确任务涉及的目录" };
       const warnings = (plan.validation?.warnings || plan.warnings || []).filter(warning => warningLabels[warning.code] && items.some(item => item.id === warning.item_id)).map(warning => warningLabels[warning.code] + " · " + warning.item_id);
@@ -7677,17 +7679,19 @@ var BetterCodexInjected = (() => {
       const result = await api("/api/native-conversations/list?project_id=" + encodeURIComponent(projectId), { passive: Boolean(options.background) });
       state.nativeConversations ||= {};
       state.nativeConversationSelections ||= {};
-      state.nativeConversations[projectId] = Array.isArray(result.conversations) ? result.conversations : [];
+      state.nativeConversations[projectId] = Array.isArray(result.conversations) ? result.conversations.filter(item => item.kind === "charter" || item.kind === "planning") : [];
       state.nativeConversationSelections[projectId] = result.selected_conversation_id || "";
       return state.nativeConversations[projectId];
     }
     async function openProjectNativeSession(projectId, kind, conversationId = "") {
       const request = ++inlineConversationNavigationRequest;
-      const stage = kind === "planning" ? "planning" : "charter";
       const conversations = await loadProjectNativeConversations(projectId);
       if (request !== inlineConversationNavigationRequest || destroyed) return { opened: false, reason: "navigation_changed" };
+      const explicit = conversationId ? conversations.find(item => item.conversation_id === conversationId) : null;
+      const selected = conversations.find(item => item.selected);
+      const stage = ["charter", "planning"].includes(kind) ? kind : explicit?.kind || selected?.kind || readProjectView(projectId).stage || "charter";
       const remembered = readProjectView(projectId).conversations?.[stage];
-      const conversation = conversationId ? conversations.find(item => item.conversation_id === conversationId) : conversations.find(item => item.kind === stage && item.conversation_id === remembered) || conversations.find(item => (!kind || item.kind === stage) && item.selected) || conversations.find(item => item.kind === stage);
+      const conversation = conversationId ? explicit : conversations.find(item => item.kind === stage && item.conversation_id === remembered) || conversations.find(item => item.kind === stage && item.selected) || conversations.find(item => item.kind === stage);
       if (conversation && !conversation.selected) await api("/api/native-conversations/select", { method: "POST", body: JSON.stringify({ project_id: projectId, conversation_id: conversation.conversation_id }) });
       if (request !== inlineConversationNavigationRequest || destroyed) return { opened: false, reason: "navigation_changed" };
       return openInlineConversation({ project_id: projectId, kind: conversation?.kind || stage, ...(conversation ? { conversation_id: conversation.conversation_id } : {}) });
@@ -8004,6 +8008,7 @@ var BetterCodexInjected = (() => {
       if (nativeSession) return nativeSession.disabled ? void 0 : void perform(() => openProjectNativeSession(nativeSession.dataset.projectId, nativeSession.dataset.projectNativeSession));
       const planItem = event.target.closest("[data-plan-item]");
       if (planItem) {
+        if (planItem.disabled) return;
         state.planSelections ||= {};
         const selected = new Set(state.planSelections[planItem.dataset.planProject] || []);
         if (planItem.checked) selected.add(planItem.dataset.planItem); else selected.delete(planItem.dataset.planItem);
@@ -8015,9 +8020,12 @@ var BetterCodexInjected = (() => {
       const convert = event.target.closest("[data-plan-convert]");
       if (convert && !convert.disabled) return void perform(async () => {
         const projectId = convert.dataset.planConvert;
+        const context = state.planningContexts?.[projectId];
+        const itemIds = (state.planSelections?.[projectId] || []).filter(id => context?.plan?.items?.some(item => item.id === id && !item.issue_id) && !context?.plan?.issue_links?.some(link => link.item_id === id && link.issue_id) && !context?.planning_links?.some(link => link.item_id === id && link.issue_id));
+        if (!itemIds.length) { convert.disabled = true; return; }
         convert.disabled = true;
         try {
-          await api("/api/projects/" + encodeURIComponent(projectId) + "/plan/convert", { method: "POST", body: JSON.stringify({ expected_revision: state.planningContexts?.[projectId]?.plan?.revision, item_ids: convert.dataset.planConvertItem ? [convert.dataset.planConvertItem] : state.planSelections?.[projectId] || [] }) });
+          await api("/api/projects/" + encodeURIComponent(projectId) + "/plan/convert", { method: "POST", body: JSON.stringify({ expected_revision: state.planningContexts?.[projectId]?.plan?.revision, item_ids: itemIds }) });
           state.planSelections[projectId] = [];
           await Promise.all([loadProjects(), loadIssues()]);
           if (inlineConversation) await reloadInlineConversationContext({ background: false });
