@@ -2008,6 +2008,16 @@ var BetterCodexInjected = (() => {
       "更多": "More",
       "更多功能": "More features",
       "Codex 额度": "Codex usage",
+      "已归档聊天": "Archived chats",
+      "用量加载中…": "Loading usage…",
+      "用量暂不可用": "Usage unavailable",
+      "点击刷新用量": "Click to refresh usage",
+      "重置时间": "Resets at",
+      "剩余": "Remaining",
+      "每周": "Weekly",
+      "天": " days",
+      "小时": "h",
+      "分钟": "m",
       "查看 Codex 额度": "View Codex usage",
       "切换为深色主题": "Switch to dark theme",
       "切换为浅色主题": "Switch to light theme",
@@ -3085,7 +3095,60 @@ var BetterCodexInjected = (() => {
       nativeReturnEntry.hidden = active || !context;
       if (nativeReturnEntry.parentElement !== parent || nativeReturnEntry.previousElementSibling !== projectsEntry) projectsEntry.after(nativeReturnEntry);
     }
+    let titlebarUsageTimer = null;
+    let titlebarUsagePending = false;
+    function ensureTitlebarActions() {
+      if (HOST_KIND === "web") return;
+      const help = document.getElementById("application-menu-trigger-help-menu");
+      if (!help) return;
+      let group = document.getElementById("better-codex-titlebar-actions");
+      if (!group) {
+        group = document.createElement("div");
+        group.id = "better-codex-titlebar-actions";
+        group.setAttribute(OWNED, "true");
+        group.className = "no-drag";
+        group.style.cssText = "display:flex;align-items:center;gap:8px;white-space:nowrap;-webkit-app-region:no-drag";
+        const archive = document.createElement("button");
+        archive.type = "button";
+        archive.className = help.className;
+        archive.textContent = t("已归档聊天");
+        archive.addEventListener("click", () => {
+          close();
+          window.postMessage({ type: NAVIGATION.messageType, path: "/settings/data-controls" }, window.location.origin);
+        });
+        const usage = document.createElement("button");
+        usage.type = "button";
+        usage.className = help.className;
+        usage.dataset.titlebarUsage = "true";
+        usage.textContent = t("用量加载中…");
+        usage.addEventListener("click", () => void refreshTitlebarUsage());
+        group.append(archive, usage);
+        void refreshTitlebarUsage(group);
+        if (titlebarUsageTimer === null) titlebarUsageTimer = setInterval(() => void refreshTitlebarUsage(), 60000);
+      }
+      if (help.nextElementSibling !== group) help.after(group);
+    }
+    async function refreshTitlebarUsage(root = document.getElementById("better-codex-titlebar-actions")) {
+      if (titlebarUsagePending || destroyed || !root) return;
+      titlebarUsagePending = true;
+      const output = root.querySelector("[data-titlebar-usage]");
+      try {
+        const result = await api("/api/account/usage", { passive: true });
+        const windows = [result.usage?.primary, result.usage?.secondary].filter(Boolean);
+        const labels = windows.map(item => {
+          const mins = item.windowDurationMins;
+          const period = mins === 10080 ? t("每周") : mins % 1440 === 0 ? mins / 1440 + t("天") : mins % 60 === 0 ? mins / 60 + t("小时") : mins + t("分钟");
+          return period + " " + Math.max(0, Math.min(100, item.remainingPercent)) + "%";
+        });
+        output.textContent = labels.length ? t("剩余") + "：" + labels.join(" · ") : t("用量暂不可用");
+        output.title = windows.map(item => t("重置时间") + "：" + new Date(item.resetsAt * 1000).toLocaleString()).join("\n") || t("点击刷新用量");
+      } catch {
+        output.textContent = t("用量暂不可用");
+        output.title = t("点击刷新用量");
+      } finally { titlebarUsagePending = false; }
+    }
     function ensureDesktopEntries() {
+      ensureTitlebarActions();
       const rail = navigationRail();
       const launcher = rail ? Array.from(rail.querySelectorAll("button")).find(nativeLauncher) : null;
       const reference = railReferenceButton();
@@ -12854,6 +12917,8 @@ var BetterCodexInjected = (() => {
       }, 50);
     }
     function destroy() {
+      if (titlebarUsageTimer !== null) clearInterval(titlebarUsageTimer);
+      titlebarUsageTimer = null;
       if (destroyed) return;
       destroyed = true;
       releaseProjectSurfaceCache();
