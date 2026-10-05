@@ -311,3 +311,5 @@ Skill 支持通用/项目归属、项目范围筛选、从托管或外部 Skill 
 - 会话打开和用户再次提交均会先核对未知首发；打开只恢复元数据，不创建新线程、不发模型请求。后续仅转交用户新提交的一条消息；旧 awaitingFirstTurn 和 operation 清除。已有消息、正在执行、读取失败、资料不完整或核对中出现真实 turn，均保留未知状态。错误提示显示业务中文。
 - 全部隔离测试入口通过；增加 allocated/bound、work/charter、旧 leader、原 worker/catalog 读取、读取前后 busy、已有 turn、读取竞态、版本/范围不匹配、重复恢复等后端用例，以及打开恢复、再次发送恢复、拒绝未知证据等界面用例。
 - 实际只读核对截图失败线程：原生 thread/read 返回 idle、完整 turns 数为 0；对应 operation 为 native_operation_timeout，原 binding 保留。核对期间未发送业务模型请求。当前另一个总纲线程仍有 inProgress turn，自动应用等待空闲，未中断该线程。实际解除阻塞及源码生效结果待更新后记录。
+- 实际阻塞已单独修复：再次核对完整空线程及无在途请求后，在权威数据库事务内严格检查原 operation、任务版本/状态、原 binding、会话及执行活动，先保存单记录元数据恢复备份，再以 request_id/thread_id/updated_at/status 的条件更新且影响恰好 1 条，将该坏发送预留置 failed/native_recovered_not_sent。没有覆盖数据库、修改任务/聊天、关闭其他会话或补发消息。备份保存在权威数据目录 backups/native-operation-repair-1791205847600.json。
+- 修复后通过当前实际 Runtime 的 context 接口回读：mode=thread、原线程 01a10c1b-c051-7791-ba0d-68bf6b510798、binding.status=idle、read_only=false、pending_operation=null。原工作会话已解除元数据阻塞。长期恢复代码仍待运行中的总纲会话结束后自动应用；真实消息发送由用户回到原会话手动提交验证。
