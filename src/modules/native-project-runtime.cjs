@@ -336,7 +336,13 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     else throw Error('tool_not_found');
     publishChange(); return value;
   }
-  const conversations = createNativeConversationRuntime({ store, planning, home, context, invokeTool, onProjectEvent: handleProjectEvent, publishChange });
+  const conversations = createNativeConversationRuntime({ store, planning, home, context, invokeTool,
+    threadAction:async(threadIds,action,hostId)=>{
+      if (hostId!=='local') throw Error('native_host_mismatch');
+      if (!threadIds.every(id=>/^[a-f0-9-]{36}$/i.test(id))) throw Error('invalid_thread_id');
+      if (typeof worker.sessionRelay?.threadAction!=='function') throw Error('native_archive_unavailable');
+      return worker.sessionRelay.threadAction(threadIds,action);
+    },onProjectEvent: handleProjectEvent, publishChange });
   return { planning, skills, conversations, context, handle, startSession, handleProjectEvent, commandReceipt, enrichIssue, setIssueSkill, findSkill, assertSkill, assertSkillPaths, refreshSkillExports, activeTurns };
 }
 

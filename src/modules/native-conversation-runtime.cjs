@@ -11,8 +11,9 @@ function ensurePlanningConversationTables(db) {
     kind TEXT NOT NULL CHECK(kind IN ('charter','planning')), title TEXT NOT NULL,
     thread_id TEXT UNIQUE, host_id TEXT NOT NULL DEFAULT 'local', status TEXT NOT NULL DEFAULT 'draft',
     last_error TEXT, revision INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 0,
-    selected INTEGER NOT NULL DEFAULT 0, legacy_scope TEXT UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    selected INTEGER NOT NULL DEFAULT 0, legacy_scope TEXT UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT
   ); CREATE UNIQUE INDEX IF NOT EXISTS project_native_conversation_selected ON project_native_conversations(project_id) WHERE selected=1;`);
+  if (!db.prepare('PRAGMA table_info(project_native_conversations)').all().some(column=>column.name==='archived_at')) db.exec('ALTER TABLE project_native_conversations ADD COLUMN archived_at TEXT');
 }
 function ensureConversationTables(db) {
   ensurePlanningConversationTables(db);
@@ -62,8 +63,9 @@ function ensureConversationTables(db) {
   );`);
 }
 
-function createNativeConversationRuntime({ store, planning, home, context, invokeTool, onProjectEvent = () => {}, publishChange = () => {}, recover = true }) {
+function createNativeConversationRuntime({ store, planning, home, context, invokeTool, threadAction, onProjectEvent = () => {}, publishChange = () => {}, recover = true }) {
   const db = store.db, now = () => new Date().toISOString();
+  const archiving = new Map();
   const fail = code => { throw Object.assign(new Error(code), { code }); };
   const text = (value, name) => { if (typeof value !== 'string' || !value.trim() || value.length > 200 || value.includes('\0')) fail('invalid_' + name); return value.trim(); };
   const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -87,11 +89,11 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
   const assertWritable = args => {if (hasHistory(args)) fail('native_history_read_only');};
   const safeIdentifier = value => typeof value==='string' && Boolean(value.trim()) && value.length<=200 && !value.includes('\0') && value===value.trim();
   function defaultConversation(projectId,kind) {
-    const selected=db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND kind=? AND selected=1').get(projectId,kind);
+    const selected=db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND kind=? AND selected=1 AND archived_at IS NULL').get(projectId,kind);
     if (selected) return selected;
     const current=planning.getSession(projectId,kind);
-    if (current) return db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=?').get(current.thread_id) || null;
-    return db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND kind=? ORDER BY updated_at DESC,created_at DESC,conversation_id LIMIT 1').get(projectId,kind) || null;
+    if (current) return db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=? AND archived_at IS NULL').get(current.thread_id) || null;
+    return db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND kind=? AND archived_at IS NULL ORDER BY updated_at DESC,created_at DESC,conversation_id LIMIT 1').get(projectId,kind) || null;
   }
   function insertConversation(projectId,kind,input={}) {
     const count=db.prepare('SELECT COUNT(*) AS count FROM project_native_conversations WHERE project_id=? AND kind=?').get(projectId,kind).count;
@@ -209,6 +211,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const project = store.getProject(projectId); if (!project) fail('project_not_found');
     const selected=args.conversation_id ? conversation(text(args.conversation_id,'conversation_id')) : null;
     if (args.conversation_id && (!selected || selected.project_id!==projectId)) fail('conversation_project_mismatch');
+    if (selected?.archived_at) fail('native_conversation_archived');
     const kind=args.kind || selected?.kind;
     if (!['charter','planning','work'].includes(kind)) fail('invalid_session_kind');
     if (selected && selected.kind!==kind) fail('conversation_kind_mismatch');
@@ -236,7 +239,8 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     return value.conversation ? workBinding(value.conversation) : workSessionMetadata(issueSession(value.issue.id));
   }
   function assertSelectionFree(projectId,nextId) {
-    for (const row of db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND conversation_id!=?').all(projectId,nextId || '')) {
+    if ([...archiving.values()].some(row=>row.project_id===projectId)) fail('native_conversation_busy');
+    for (const row of db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND conversation_id!=? AND archived_at IS NULL').all(projectId,nextId || '')) {
       if (pending('conversation:'+row.conversation_id) || row.status==='running' || row.thread_id && hasTable('project_native_activity') && db.prepare("SELECT 1 FROM project_native_activity WHERE thread_id=? AND status='running'").get(row.thread_id)) fail('native_conversation_busy');
     }
   }
@@ -248,7 +252,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
   }
   function listConversations(projectId) {
     if (!store.getProject(text(projectId,'project_id'))) fail('project_not_found');
-    const rows=db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? ORDER BY selected DESC,created_at DESC,conversation_id').all(projectId).map(display);
+    const rows=db.prepare('SELECT * FROM project_native_conversations WHERE project_id=? AND archived_at IS NULL ORDER BY selected DESC,created_at DESC,conversation_id').all(projectId).map(display);
     return {conversations:rows,selected_conversation_id:rows.find(row=>row.selected)?.conversation_id || null};
   }
   function workHistory(row,issue) {
@@ -353,6 +357,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const row=value.conversation;
     if (!row) fail('native_conversation_not_found');
     if (args.expected_revision!==undefined && args.expected_revision!==row.revision) fail('version_conflict');
+    if (!value.issue && [...archiving.values()].some(entry=>entry.project_id===value.project.id)) fail('native_conversation_busy');
     if (value.issue) {
       if (row.status==='closed') fail('native_history_read_only');
       if (row.selected) return {conversation:display(row)};
@@ -564,6 +569,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     const recorded = db.prepare('SELECT * FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL').get(threadId);
     const projectConversation=db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=?').get(threadId);
     if (projectConversation) {
+      if (projectConversation.archived_at) fail('native_conversation_archived');
       if (projectConversation.host_id!==hostId) fail('native_host_mismatch');
       if (recorded && (recorded.project_id!==projectConversation.project_id || recorded.kind!==projectConversation.kind)) fail('session_thread_mismatch');
       return {...projectConversation,issue_id:null};
@@ -603,7 +609,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
       if (previous && (previous.project_id!==value.project_id || previous.kind!==value.kind || previous.issue_id!==value.issue_id)) {result.delete(key);conflicts.add(key);return;}
       result.set(key,value);
     };
-    for (const session of db.prepare("SELECT * FROM project_native_conversations WHERE thread_id IS NOT NULL AND status!='closed'").all()) add(session,session.project_id,session.kind,null);
+    for (const session of db.prepare("SELECT * FROM project_native_conversations WHERE thread_id IS NOT NULL AND status!='closed' AND archived_at IS NULL").all()) add(session,session.project_id,session.kind,null);
     for (const session of db.prepare("SELECT * FROM issue_native_conversations WHERE thread_id IS NOT NULL AND status!='closed'").all()) {
       const issue=store.getIssue(session.issue_id);
       if (issue && !issue.archived_at && nativeOwned(issue)) add(session,session.project_id,'work',session.issue_id);
@@ -722,7 +728,67 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
       }
     }); publishChange(); return readContext({...args,...(nextId?{conversation_id:nextId}:{})});
   }
-  function blockingStatus() { recoverStale(); return {pending_bindings:db.prepare(`SELECT COUNT(*) AS count FROM native_conversation_operations WHERE status IN ('prepared','allocated','bound')`).get().count}; }
+  async function archiveConversation(args) {
+    assertWritable(args);
+    const projectId=text(args.project_id,'project_id'), identifier=text(args.conversation_id,'conversation_id');
+    if (!store.getProject(projectId)) fail('project_not_found');
+    const row=conversation(identifier);
+    if (!row || row.project_id!==projectId) fail('conversation_project_mismatch');
+    if (row.kind==='work') fail('invalid_session_kind');
+    if (args.kind && args.kind!==row.kind) fail('conversation_kind_mismatch');
+    if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision<0) fail('invalid_expected_revision');
+    const result=()=>{const list=listConversations(projectId);return {archived_conversation_id:identifier,selected_conversation_id:list.selected_conversation_id,conversation:list.conversations.find(entry=>entry.selected) || null};};
+    // A completed archive can be retried after the client loses the response.
+    if (row.archived_at) return result();
+    if (args.expected_revision!==row.revision) fail('version_conflict');
+    const assertIdle=current=>{
+      if (pending('conversation:'+identifier) || ['running','active','starting'].includes(current.status) ||
+        current.thread_id && (hasTable('project_native_activity') && db.prepare("SELECT 1 FROM project_native_activity WHERE thread_id=? AND status='running'").get(current.thread_id) ||
+        hasTable('project_native_commands') && db.prepare("SELECT 1 FROM project_native_commands WHERE thread_id=? AND status IN ('pending','claimed')").get(current.thread_id))) fail('native_conversation_busy');
+    };
+    if (archiving.has(identifier)) fail('native_conversation_busy');
+    assertIdle(row);
+    if (row.selected) assertSelectionFree(projectId,identifier);
+    if (row.thread_id && typeof threadAction!=='function') fail('native_archive_unavailable');
+    backup({project:{id:projectId},kind:row.kind,scope_key:'conversation:'+identifier},display(row));
+    archiving.set(identifier,row);
+    try {
+      if (row.thread_id) {
+        try { await threadAction([row.thread_id],'archive',row.host_id); }
+        catch(error) {
+          const message=String(error.code || error.message || error).toLowerCase();
+          if (!message.includes('already archived') && !message.includes('thread_archived')) throw error;
+        }
+      }
+      transaction(()=>{
+        const current=conversation(identifier);
+        if (current.archived_at) return;
+        if (current.revision!==args.expected_revision) fail('version_conflict');
+        assertIdle(current);
+        const timestamp=now();
+        if (current.thread_id) {
+          if (!db.prepare('SELECT 1 FROM native_conversation_history WHERE project_id=? AND kind=? AND thread_id=?').get(projectId,current.kind,current.thread_id)) {
+            db.prepare('INSERT INTO native_conversation_history(id,project_id,kind,issue_id,thread_id,binding_json,archived_at) VALUES(?,?,?,NULL,?,?,?)')
+              .run(randomUUID(),projectId,current.kind,current.thread_id,JSON.stringify(display(current)),timestamp);
+          }
+          db.prepare('UPDATE native_conversation_bindings SET archived_at=? WHERE thread_id=? AND project_id=? AND kind=?').run(timestamp,current.thread_id,projectId,current.kind);
+          db.prepare('DELETE FROM project_native_sessions WHERE project_id=? AND kind=? AND thread_id=?').run(projectId,current.kind,current.thread_id);
+        }
+        db.prepare("UPDATE project_native_conversations SET archived_at=?,status='closed',selected=0,revision=revision+1,updated_at=? WHERE conversation_id=?")
+          .run(timestamp,timestamp,identifier);
+        if (current.selected) {
+          const next=db.prepare("SELECT * FROM project_native_conversations WHERE project_id=? AND archived_at IS NULL ORDER BY CASE WHEN status='closed' THEN 1 ELSE 0 END,created_at DESC,conversation_id LIMIT 1").get(projectId);
+          if (next) {
+            db.prepare("UPDATE project_native_conversations SET selected=1,status=CASE WHEN status='closed' THEN 'ready' ELSE status END,updated_at=? WHERE conversation_id=?").run(timestamp,next.conversation_id);
+            mirrorConversation(conversation(next.conversation_id));
+            if (next.thread_id) db.prepare('UPDATE native_conversation_bindings SET archived_at=NULL WHERE thread_id=? AND project_id=? AND kind=?').run(next.thread_id,projectId,next.kind);
+          }
+        }
+      });
+      publishChange();return result();
+    } finally { archiving.delete(identifier); }
+  }
+  function blockingStatus() { recoverStale(); return {pending_bindings:db.prepare(`SELECT COUNT(*) AS count FROM native_conversation_operations WHERE status IN ('prepared','allocated','bound')`).get().count+archiving.size}; }
   async function handle({url,method,request,response,readBody,sendJson}) {
     if (!url.pathname.startsWith('/api/native-conversations/')) return false;
     const endpoint = url.pathname.slice('/api/native-conversations/'.length);
@@ -742,10 +808,11 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
       else if (endpoint === 'restart') result = restart(args);
       else if (endpoint === 'create') result = createConversation(args);
       else if (endpoint === 'select') result = selectConversation(args);
+      else if (endpoint === 'archive') result = await archiveConversation(args);
       else {sendJson(response,404,{error:'not_found'});return true;}
     } else {sendJson(response,404,{error:'not_found'});return true;}
     sendJson(response,200,result);return true;
   }
-  return {readContext,prepare,bind,receipt,tool,restart,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings,listConversations,listWorkConversations,createConversation,selectConversation,trustedBinding,handleWorkEvent,migrateWorkConversations};
+  return {readContext,prepare,bind,receipt,tool,restart,archiveConversation,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings,listConversations,listWorkConversations,createConversation,selectConversation,trustedBinding,handleWorkEvent,migrateWorkConversations};
 }
 module.exports = {ensureConversationTables,ensurePlanningConversationTables,createNativeConversationRuntime};

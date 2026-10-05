@@ -71213,6 +71213,8 @@ function errorCode4(error2) {
   return message;
 }
 function errorStatus(code2) {
+  if (code2 === 'native_archive_unavailable') return 503;
+  if (code2 === 'native_conversation_archived') return 409;
   if (code2 === 'native_history_read_only') return 403;
   if (code2 === 'native_history_scope_mismatch') return 409;
   if (["native_operation_not_found"].includes(code2)) return 404;

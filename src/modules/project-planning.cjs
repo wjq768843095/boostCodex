@@ -98,7 +98,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     return session;
   }
   function getSessionByThread(threadId) {
-    return db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=?').get(threadId) ||
+    return db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=? AND archived_at IS NULL').get(threadId) ||
       db.prepare('SELECT * FROM project_native_sessions WHERE thread_id=?').get(threadId) || null;
   }
 
@@ -111,7 +111,8 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     if (current && current.thread_id !== threadId) fail('session_thread_mismatch');
     const elsewhere = db.prepare('SELECT project_id,kind FROM project_native_sessions WHERE thread_id=?').get(threadId);
     if (elsewhere && (elsewhere.project_id !== args.project_id || elsewhere.kind !== args.kind)) fail('session_thread_mismatch');
-    const historical=db.prepare('SELECT project_id,kind FROM project_native_conversations WHERE thread_id=?').get(threadId);
+    const historical=db.prepare('SELECT project_id,kind,archived_at FROM project_native_conversations WHERE thread_id=?').get(threadId);
+    if (historical?.archived_at) fail('native_conversation_archived');
     if (historical && (historical.project_id!==args.project_id || historical.kind!==args.kind)) fail('session_thread_mismatch');
     const status = args.status === undefined ? (current?.status || 'ready') : string(args.status, 'session_status', true);
     if (!['ready','idle','running','failed','interrupted','closed'].includes(status)) fail('invalid_session_status');

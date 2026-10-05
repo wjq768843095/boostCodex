@@ -44,6 +44,14 @@ async function main() {
   const opened = await api('/api/projects/' + project.id + '/native-session', 'POST', { kind: 'charter', request_id: randomUUID() }); assert.equal(opened.status, 202, JSON.stringify(opened.value));
   assert.equal(opened.value.command,null); assert.equal(opened.value.session,null); assert.equal(opened.value.mode,'draft'); assert.equal(Object.hasOwn(opened.value,'prompt'),false);
   const emptyConversations=await api('/api/native-conversations/list?project_id='+project.id);assert.equal(emptyConversations.status,200);assert.equal(emptyConversations.value.conversations.length,0);
+  const discarded=(await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'charter'})).value.conversation;
+  const archiveDraftArgs={project_id:project.id,conversation_id:discarded.conversation_id,expected_revision:discarded.revision};
+  const archivedDraft=await api('/api/native-conversations/archive','POST',archiveDraftArgs);
+  assert.equal(archivedDraft.status,200,JSON.stringify(archivedDraft.value));assert.equal(archivedDraft.value.archived_conversation_id,discarded.conversation_id);
+  assert.equal(archivedDraft.value.selected_conversation_id,null);assert.equal(archivedDraft.value.conversation,null);
+  assert.equal((await api('/api/native-conversations/list?project_id='+project.id)).value.conversations.length,0);
+  assert.equal((await api('/api/native-conversations/archive','POST',archiveDraftArgs)).status,200,'lost archive responses are retryable');
+  assert.equal((await api('/api/native-conversations/select','POST',{project_id:project.id,conversation_id:discarded.conversation_id})).status,409,'archived entries cannot be reselected');
   const firstConversation=await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'charter',title:'需求总纲'});
   const secondConversation=await api('/api/native-conversations/create','POST',{project_id:project.id,kind:'charter',title:'架构核对'});
   assert.equal(firstConversation.status,200);assert.equal(secondConversation.status,200);assert.equal(secondConversation.value.conversation.thread_id,null);

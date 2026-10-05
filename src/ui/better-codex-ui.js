@@ -2598,6 +2598,11 @@ var BetterCodexInjected = (() => {
         .bc-planning-conversation-row > span { display: flex; align-items: center; gap: 8px; min-width: 0; }
         .bc-planning-conversation-row strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
         .bc-planning-conversation-row small { display: block; margin-top: 5px; color: var(--bc-color-text-muted); padding-left: 24px; font-size: 11px; }
+        .bc-planning-conversation-item { display: flex; align-items: center; gap: 3px; }
+        .bc-planning-conversation-item .bc-planning-conversation-row { flex: 1; min-width: 0; }
+        .bc-planning-conversation-archive { flex-shrink: 0; padding: 6px; border: 0; border-radius: 5px; background: transparent; color: var(--bc-color-text-muted); font: inherit; font-size: 11px; cursor: pointer; }
+        .bc-planning-conversation-archive:hover, .bc-planning-conversation-archive:focus-visible { background: var(--bc-color-hover); color: var(--bc-color-text); }
+        .bc-planning-conversation-archive:disabled { opacity: .45; cursor: default; }
         .bc-work-conversation-group + .bc-work-conversation-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--bc-color-hairline); }
         .bc-work-conversation-group > strong { display: block; padding: 4px 8px; overflow-wrap: anywhere; font-size: 12px; }
         .bc-work-conversation-history { margin-left: 8px; width: calc(100% - 8px); }
@@ -4374,6 +4379,9 @@ var BetterCodexInjected = (() => {
       if (["runtime_response_invalid", "invalid_projects_response", "invalid_issues_response", "invalid_agents_response"].includes(value)) return t("列表数据暂时无法读取，请稍后重试。");
       if (value === "issue_archived") return t("该会话对应的 Issue 已归档，请先取消归档。");
       if (value === "issue_not_archived") return t("该任务尚未归档。");
+      if (["native_conversation_busy", "native_operation_busy", "native_outcome_unknown"].includes(value)) return t("会话仍在处理消息，请等待完成后再归档。");
+      if (["native_archive_unavailable", "session_host_unavailable", "session_host_timeout", "session_host_thread_action_unavailable", "native_host_mismatch"].includes(value)) return t("暂时无法归档会话，请稍后重试。");
+      if (value === "native_conversation_archived") return t("该会话已归档，请选择其他会话。");
       if (["project_planning_busy", "project_planning_agent_locked", "project_planning_unavailable", "project_planning_invalid_output", "project_planning_session_missing"].includes(value)) return projectPlanningErrorLabel(value);
       if (["project_overview_timeout", "project_overview_unavailable", "project_document_invalid_output", "remote_command_timeout", "workspace_missing"].includes(value)) return projectDocumentErrorLabel(value);
       if (value === "version_conflict" || value === "queued_reply_update_conflict") return t("内容刚刚发生变化，请稍后重试。");
@@ -6287,6 +6295,11 @@ var BetterCodexInjected = (() => {
       const projectRow = target.closest("[data-project-id]");
       if (projectRow && target.closest(".bc-planning-projects")) return void perform(() => openProjectDetail(projectRow.dataset.projectId));
       if (target.matches("[data-project-sidebar-create]")) return openCreateProjectDialog();
+      if (target.matches("[data-planning-archive]")) return target.disabled ? void 0 : void perform(async () => {
+        target.disabled = true;
+        try { await archiveProjectNativeConversation(inlineConversationTarget().project_id, target.dataset.planningArchive); }
+        finally { if (target.isConnected) target.disabled = false; }
+      });
       if (target.matches("[data-planning-conversation]")) return target.disabled ? void 0 : void perform(() => openProjectNativeSession(inlineConversationTarget().project_id, "", target.dataset.planningConversation));
       if (target.matches("[data-work-conversation]")) return void perform(() => target.dataset.workHistory ? openInlineConversation({ project_id: inlineConversationTarget().project_id, kind: "work", issue_id: target.dataset.workConversation, ...(target.dataset.workConversationId ? { conversation_id: target.dataset.workConversationId } : {}), history_id: target.dataset.workHistory }) : openIssueNativeConversation({ project_id: inlineConversationTarget().project_id, id: target.dataset.workConversation }, target.dataset.workConversationId || ""));
       if (target.matches("[data-work-create]")) return void perform(async () => {
@@ -7696,11 +7709,32 @@ var BetterCodexInjected = (() => {
       if (request !== inlineConversationNavigationRequest || destroyed) return { opened: false, reason: "navigation_changed" };
       return openInlineConversation({ project_id: projectId, kind: conversation?.kind || stage, ...(conversation ? { conversation_id: conversation.conversation_id } : {}) });
     }
+    async function archiveProjectNativeConversation(projectId, conversationId) {
+      const row = state.nativeConversations?.[projectId]?.find(item => item.conversation_id === conversationId);
+      if (!row) return;
+      const originKey = inlineConversationKey(inlineConversation);
+      const navigationRequest = inlineConversationNavigationRequest;
+      await api("/api/native-conversations/archive", { method: "POST", body: JSON.stringify({ project_id: projectId, conversation_id: conversationId, expected_revision: row.revision }) });
+      const rows = await loadProjectNativeConversations(projectId);
+      const view = readProjectView(projectId);
+      if (view.conversations?.[row.kind] === conversationId) delete view.conversations[row.kind];
+      if (view.target?.conversation_id === conversationId) delete view.target;
+      try { localStorage.setItem("better-codex-project-view:" + projectId, JSON.stringify(view)); } catch {}
+      if (row.thread_id && state.nativeThreadLinks) delete state.nativeThreadLinks[row.thread_id];
+      registerInlineConversationBindings();
+      if (destroyed || !inlineConversation || originKey !== inlineConversationKey(inlineConversation) || navigationRequest !== inlineConversationNavigationRequest) return;
+      const current = inlineConversationTarget();
+      if (current.project_id !== projectId) return;
+      if (current.conversation_id !== conversationId) { renderInlineConversation(); return; }
+      const next = rows.find(item => item.kind === row.kind && item.selected) || rows.find(item => item.kind === row.kind) || rows.find(item => item.selected) || rows[0];
+      if (next) await openProjectNativeSession(projectId, next.kind, next.conversation_id);
+      else await openInlineConversation({ project_id: projectId, kind: row.kind });
+    }
     function planningConversationListMarkup() {
       const target = inlineConversationTarget();
       const rows = state.nativeConversations?.[target.project_id] || [];
       const planningAvailable = inlineConversation.planning_available === true || inlineConversation.context?.charter?.status === "confirmed";
-      const rowMarkup = rows.length ? rows.map(item => '<button type="button" class="bc-planning-conversation-row' + (item.conversation_id === target.conversation_id ? ' is-active' : '') + '" data-planning-conversation="' + escapeHtml2(item.conversation_id) + '" aria-current="' + String(item.conversation_id === target.conversation_id) + '"' + (item.kind === "planning" && !item.thread_id && !planningAvailable ? ' disabled' : '') + '><span>' + icon(item.kind === "planning" ? "board" : "docs") + '<strong>' + escapeHtml2(item.title || t(item.kind === "planning" ? "任务规划" : "项目总纲")) + '</strong></span><small>' + te(item.kind === "planning" ? "任务规划" : "总纲") + ' · ' + te(["closed", "archived"].includes(item.status) ? "历史会话" : item.thread_id ? "已有会话" : "草稿") + '</small></button>').join("") : ["charter", "planning"].map(kind => '<button type="button" class="bc-planning-conversation-row' + (target.kind === kind ? ' is-active' : '') + '" data-inline-stage="' + kind + '"' + (kind === "planning" && !planningAvailable ? ' disabled' : '') + '><span>' + icon(kind === "planning" ? "board" : "docs") + '<strong>' + te(kind === "planning" ? "任务规划会话" : "总纲会话") + '</strong></span><small>' + te("草稿") + '</small></button>').join("");
+      const rowMarkup = rows.length ? rows.map(item => '<div class="bc-planning-conversation-item"><button type="button" class="bc-planning-conversation-row' + (item.conversation_id === target.conversation_id ? ' is-active' : '') + '" data-planning-conversation="' + escapeHtml2(item.conversation_id) + '" aria-current="' + String(item.conversation_id === target.conversation_id) + '"' + (item.kind === "planning" && !item.thread_id && !planningAvailable ? ' disabled' : '') + '><span>' + icon(item.kind === "planning" ? "board" : "docs") + '<strong>' + escapeHtml2(item.title || t(item.kind === "planning" ? "任务规划" : "项目总纲")) + '</strong></span><small>' + te(item.kind === "planning" ? "任务规划" : "总纲") + ' · ' + te(["closed", "archived"].includes(item.status) ? "历史会话" : item.thread_id ? "已有会话" : "草稿") + '</small></button><button type="button" class="bc-planning-conversation-archive" data-planning-archive="' + escapeHtml2(item.conversation_id) + '" aria-label="' + te("归档") + ' ' + escapeHtml2(item.title || t("会话")) + '">' + te("归档") + '</button></div>').join("") : ["charter", "planning"].map(kind => '<button type="button" class="bc-planning-conversation-row' + (target.kind === kind ? ' is-active' : '') + '" data-inline-stage="' + kind + '"' + (kind === "planning" && !planningAvailable ? ' disabled' : '') + '><span>' + icon(kind === "planning" ? "board" : "docs") + '<strong>' + te(kind === "planning" ? "任务规划会话" : "总纲会话") + '</strong></span><small>' + te("草稿") + '</small></button>').join("");
       return '<header><strong>' + te("规划会话") + '</strong></header><div class="bc-planning-conversation-create"><button type="button" data-planning-create="charter">' + icon("plus") + te("新建总纲会话") + '</button><button type="button" data-planning-create="planning"' + (!planningAvailable ? ' disabled' : '') + '>' + icon("plus") + te("新建任务规划") + '</button></div><nav aria-label="' + te("项目规划会话") + '">' + rowMarkup + '</nav>';
     }
     function projectDashboardMarkup(project, issues, issuesLoading, paths) {
