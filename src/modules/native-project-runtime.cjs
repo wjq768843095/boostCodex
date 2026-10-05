@@ -337,6 +337,13 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     publishChange(); return value;
   }
   const conversations = createNativeConversationRuntime({ store, planning, home, context, invokeTool,
+    readThread:async(threadId,hostId)=>{
+      if (hostId!=='local') throw Error('native_host_mismatch');
+      if (!/^[a-f0-9-]{36}$/i.test(threadId)) throw Error('invalid_thread_id');
+      if (typeof worker.sessionRelay?.semanticRequest!=='function') throw Error('native_recovery_unavailable');
+      const response=await worker.sessionRelay.semanticRequest('thread/read',{threadId,includeTurns:true});
+      return response?.result;
+    },
     threadAction:async(threadIds,action,hostId)=>{
       if (hostId!=='local') throw Error('native_host_mismatch');
       if (!threadIds.every(id=>/^[a-f0-9-]{36}$/i.test(id))) throw Error('invalid_thread_id');

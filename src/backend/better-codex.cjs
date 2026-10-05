@@ -75000,7 +75000,7 @@ var AppServerSessionWorker = class {
     });
   }
   async semanticRequest(method, params, timeout = 8e3) {
-    const methods = ["model/list", "skills/list", "app/installed", "app/list", "plugin/installed", "mcpServerStatus/list", "fuzzyFileSearch"];
+    const methods = ["model/list", "skills/list", "app/installed", "app/list", "plugin/installed", "mcpServerStatus/list", "fuzzyFileSearch", "thread/read"];
     if (!methods.includes(method)) throw new Error("semantic_method_not_allowed");
     if (!this.child || !this.appServerReady) throw new Error("app_server_unavailable");
     const result2 = await this.request(method, params, timeout);
@@ -75813,6 +75813,18 @@ var RuntimeSessionRelay = class {
     return this.catalog.threadAction(threadIds, action);
   }
   async semanticRequest(method, params, timeout = 8e3) {
+    if (method === "thread/read") {
+      const threadId = sessionId(params?.threadId);
+      if (!threadId || params?.includeTurns !== true) throw new Error("invalid_thread_id");
+      const owner = this.threadWorkers.get(threadId);
+      if (owner) {
+        await owner.waitUntilReady(timeout);
+        if (owner.busyForThread(threadId)) throw new Error("native_recovery_busy");
+        const response = await owner.semanticRequest(method, params, timeout);
+        if (owner.busyForThread(threadId)) throw new Error("native_recovery_busy");
+        return response;
+      }
+    }
     await this.catalog.waitUntilReady(timeout);
     return this.catalog.semanticRequest(method, params, timeout);
   }

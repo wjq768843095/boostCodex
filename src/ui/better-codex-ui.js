@@ -2551,6 +2551,10 @@ var BetterCodexInjected = (() => {
         [data-better-codex-native-preview="true"] > * { display: var(--bc-native-retained-display, block) !important; }
         [data-better-codex-native-preview-obscured="true"] { visibility: hidden !important; }
         [data-better-codex-inline-content="true"] { position: absolute !important; left: var(--bc-inline-nav-space, 0px) !important; right: calc(var(--bc-inline-details-space, 0px) + var(--bc-inline-native-panel-width, 0px)) !important; top: 98px !important; bottom: 0 !important; width: auto !important; max-width: none !important; height: auto !important; min-height: 0 !important; margin: 0 !important; pointer-events: auto !important; }
+        [data-better-codex-inline-content="true"]:not([data-app-shell-right-panel-full-width="true"]) { overflow-x: auto !important; overflow-y: hidden !important; scrollbar-width: auto; }
+        [data-better-codex-inline-content="true"]:not([data-app-shell-right-panel-full-width="true"]) > [data-app-shell-thread-edge-divider] { width: 100% !important; min-width: 360px !important; max-width: none !important; align-self: flex-start !important; box-sizing: border-box; }
+        [data-better-codex-inline-content="true"]::-webkit-scrollbar { height: 12px; }
+        [data-better-codex-inline-content="true"]::-webkit-scrollbar-thumb { background: var(--bc-color-hairline); border: 3px solid var(--bc-color-canvas); border-radius: 6px; }
         [data-better-codex-native-panel="true"] { position: absolute !important; top: 98px !important; right: var(--bc-inline-details-space, 0px) !important; bottom: 0 !important; width: var(--bc-inline-native-panel-width, 0px) !important; max-width: calc(100% - var(--bc-inline-nav-space, 0px) - var(--bc-inline-details-space, 0px)) !important; height: auto !important; z-index: 34 !important; }
         [data-better-codex-planning-native-hidden="true"] { display: none !important; }
         [data-better-codex-planning-native-rail="true"] { width: 52px !important; min-width: 52px !important; max-width: 52px !important; flex-basis: 52px !important; }

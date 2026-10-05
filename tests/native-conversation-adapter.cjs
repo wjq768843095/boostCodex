@@ -150,6 +150,57 @@ function fixture(config = {}) {
 
 (async () => {
   {
+    let restored;
+    const f = fixture({ api: (url, body) => {
+      if (url.endsWith('/recover')) {
+        assert.equal(body.request_id, 'lost-first-send');
+        assert.equal(body.expected_revision, 1, 'recovery uses the lost operation revision');
+        restored = f.remember(f.context({ kind: 'work', issue_id: 'recovery-task', conversation_id: 'recovery-conversation', thread_id: 'existing-empty-thread', mode: 'thread', expected_revision: 7, pending_operation: null }));
+        return { ...restored, recovered: true };
+      }
+    } });
+    const operation = { request_id: 'lost-first-send', status: 'outcome_unknown', thread_id: 'existing-empty-thread', expected_revision: 1 };
+    const opened = await f.adapter.open(f.context({ kind: 'work', issue_id: 'recovery-task', conversation_id: 'recovery-conversation', expected_revision: 7, pending_operation: operation }));
+    assert.equal(opened.mode, 'thread');
+    assert.equal(f.nativeRoute(), '/local/existing-empty-thread');
+    assert.equal(f.sent.length, 0, 'reopening restores the existing empty thread without replaying input');
+    assert.equal(f.http.length, 1, 'opening only asks for evidence-based recovery');
+    f.send('turn/start', { threadId: 'existing-empty-thread', input: [{ type: 'text', text: 'User explicitly sends again' }] }, 'recovered-turn');
+    await settle(() => f.sent.length === 1);
+    assert.equal(f.sent[0].request.method, 'turn/start');
+    assert.equal(f.http.filter(x => x.url.endsWith('/prepare')).length, 1);
+    f.reply('recovered-turn', { turn: { id: 'recovered-turn-id' } });
+    await settle(() => f.delivered.some(x => x.message?.id === 'recovered-turn'));
+    f.adapter.destroy();
+  }
+  {
+    const f = fixture({ api: url => { if (url.endsWith('/recover')) throw Error('native_outcome_unknown'); } });
+    const opened = await f.adapter.open(f.context({ kind: 'work', issue_id: 'uncertain-task', pending_operation: { request_id: 'uncertain-send', status: 'outcome_unknown', thread_id: 'uncertain-thread', expected_revision: 1 } }));
+    assert.equal(opened.mode, 'unavailable');
+    assert.equal(f.sent.length, 0, 'uncertain delivery evidence never triggers a replacement or replay');
+    assert(!f.errors.some(x => String(x).includes('native_outcome_unknown')), 'internal recovery codes are not shown to users');
+    f.adapter.destroy();
+  }
+  {
+    const f = fixture({ api: (url, body) => {
+      if (url.endsWith('/recover')) {
+        assert.equal(body.request_id, 'timed-out-bound-send');
+        return { ...f.remember(f.context({ kind: 'work', issue_id: 'bound-recovery-task', thread_id: 'bound-empty-thread', mode: 'thread', pending_operation: null })), recovered: true };
+      }
+    } });
+    const original = f.context({ kind: 'work', issue_id: 'bound-recovery-task', thread_id: 'bound-empty-thread', mode: 'thread' });
+    await f.adapter.open(original);
+    f.remember({ ...original, pending_operation: { request_id: 'timed-out-bound-send', status: 'outcome_unknown', thread_id: 'bound-empty-thread', expected_revision: 0 } });
+    f.send('turn/start', { threadId: 'bound-empty-thread', input: [{ type: 'text', text: 'New explicit user input' }] }, 'new-user-turn');
+    await settle(() => f.sent.length === 1);
+    assert.equal(f.http.filter(x => x.url.endsWith('/recover')).length, 1);
+    assert.equal(f.sent[0].request.id, 'new-user-turn', 'only the new explicit input is forwarded after recovery');
+    assert.equal(f.sent[0].request.params.input[0].text, 'New explicit user input');
+    f.reply('new-user-turn', { turn: { id: 'new-user-turn-id' } });
+    await settle(() => f.delivered.some(x => x.message?.id === 'new-user-turn'));
+    f.adapter.destroy();
+  }
+  {
     const f = fixture({ discovery: true });
     f.nativeElement.isConnected = false;
     await f.adapter.connect();
@@ -681,6 +732,22 @@ function fixture(config = {}) {
     const normal = f.send('thread/start', { cwd: 'D:\\中文项目' }, 'native-same-cwd');
     assert.equal(f.sent.at(-1), normal, 'same cwd outside Better viewport is never intercepted');
     assert.equal(f.away.length, 1); f.adapter.destroy();
+  }
+  {
+    const f = fixture();
+    await f.adapter.open(f.remember(f.context()));
+    const explicit = f.send('turn/start', { threadId: 'explicit-owned-thread', input: [{ type: 'text', text: 'Explicit reserved task input' }] }, 'explicit-reserved-turn', { source: 'better-codex' });
+    assert.equal(f.sent.at(-1), explicit, 'explicit execution keeps its own binding/reservation while a Better draft is visible');
+    const remote = f.send('turn/start', { threadId: 'remote-native-thread', input: [{ type: 'text', text: 'Remote native input' }] }, 'remote-native-turn', { hostId: 'remote-host' });
+    assert.equal(f.sent.at(-1), remote, 'an unrelated host keeps its native first-turn delivery');
+    assert.equal(f.http.length, 0, 'unrelated reservations are neither prepared nor rebound to the visible draft');
+    assert.equal(f.errors.length, 0, 'unrelated native task input does not surface a draft-binding error');
+    f.send('turn/start', { threadId: 'local-unbound-warm', input: [{ type: 'text', text: 'Wrong warm reservation' }] }, 'local-unbound-turn');
+    assert.equal(f.sent.length, 2, 'local ordinary warm input remains blocked until its Better binding exists');
+    assert.equal(f.delivered.at(-1).message.id, 'local-unbound-turn');
+    assert.match(f.delivered.at(-1).message.error.message, /尚未绑定/);
+    f.adapter.destroy();
+    console.log('PASS: draft binding guard preserves explicit reservations and foreign hosts while rejecting unbound local warm turns');
   }
   {
     const f = fixture({ api: (url, body) => { if (url.endsWith('/bind') && body.checkpoint === 'bound') throw Error('binding failure'); } });

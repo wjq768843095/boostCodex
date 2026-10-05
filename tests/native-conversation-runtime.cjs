@@ -9,6 +9,98 @@ const executionHelper=fs.readFileSync(path.join(__dirname,'../src/ui/better-code
 assert(executionHelper,'UI execution state helper must be available for the runtime contract');
 const issueExecutionRunning=vm.runInNewContext('('+executionHelper[0]+')');
 
+async function recoveryFixture({checkpoint='allocated',kind='charter',response,onRead}={}) {
+  const threadId='01a10c1b-c051-7791-ba0d-68bf6b510798',reads=[];
+  let f;
+  f=createFixture({semanticRequest:async(method,params)=>{
+    reads.push({method,params});await onRead?.(f);
+    return {result:response===undefined?{thread:{id:threadId,turns:[],status:{type:'idle'}}}:response};
+  }});
+  const identity={project_id:'p1',kind,request_id:'unknown-first-turn',relay_id:'relay-leader',host_id:'local',expected_revision:0,draft_generation:0};
+  if (kind==='work') {
+    f.store.db.exec("CREATE TABLE issue_sessions(issue_id TEXT PRIMARY KEY,host_id TEXT DEFAULT 'local',thread_id TEXT UNIQUE,status TEXT DEFAULT 'idle',active_turn_id TEXT,active_command_id TEXT,last_turn_id TEXT,created_at TEXT,updated_at TEXT)");
+    f.store.createIssue({id:'recovery-work',projectId:'p1',title:'恢复空会话',description:'只恢复元数据',status:'backlog',agentEnabled:true});
+    identity.issue_id='recovery-work';identity.expected_revision=1;
+  }
+  const post=async(name,args)=>f.api('/api/native-conversations/'+name,'POST',args);
+  await post('prepare',identity);
+  if (checkpoint) await post('bind',{...identity,thread_id:threadId,checkpoint:'allocated'});
+  if (checkpoint==='bound') await post('bind',{...identity,thread_id:threadId,checkpoint:'bound'});
+  f.runtime.conversations.recoverRelay('relay-leader');
+  return {f,identity,threadId,reads,post};
+}
+
+async function runRecovery() {
+  {
+    const backendSource=fs.readFileSync(path.join(__dirname,'../src/backend/better-codex.cjs'),'utf8');
+    const nativeReadMethod=backendSource.match(/async semanticRequest\(method, params, timeout = 8e3\) \{\n    if \(method === "thread\/read"\) \{[\s\S]*?\n  \}(?=\n  async handoffThread)/);
+    assert(nativeReadMethod,'native recovery reads must use the original thread worker when it exists');
+    const method=vm.runInNewContext('({'+nativeReadMethod[0]+'}).semanticRequest',{Error,sessionId:id=>/^[a-f0-9-]{36}$/i.test(id || '')?id:null});
+    const threadId='01a10c1b-c051-7791-ba0d-68bf6b510798',calls=[];
+    let busy=false;
+    const owner={waitUntilReady:async()=>{},busyForThread:()=>busy,semanticRequest:async(method,params)=>{calls.push({method,params});return {result:{thread:{id:threadId,turns:[]}}};}};
+    const catalog={waitUntilReady:async()=>{},semanticRequest:async()=>{calls.push({catalog:true});return {result:{thread:{id:threadId,turns:[]}}};}};
+    const relay={threadWorkers:new Map([[threadId,owner]]),catalog};
+    await method.call(relay,'thread/read',{threadId,includeTurns:true});assert.equal(calls.length,1);assert(!calls[0].catalog,'unmaterialized original thread reads stay with their owning process');
+    busy=true;await assert.rejects(method.call(relay,'thread/read',{threadId,includeTurns:true}),/native_recovery_busy/);assert.equal(calls.length,1,'pending original requests block empty-history repair');
+    busy=false;owner.semanticRequest=async()=>{busy=true;return {result:{thread:{id:threadId,turns:[]}}};};
+    await assert.rejects(method.call(relay,'thread/read',{threadId,includeTurns:true}),/native_recovery_busy/);
+    relay.threadWorkers.clear();await method.call(relay,'thread/read',{threadId,includeTurns:true});assert.equal(calls.at(-1).catalog,true,'durable threads without an owner are read through the catalog');
+    await assert.rejects(method.call(relay,'thread/read',{threadId,includeTurns:false}),/invalid_thread_id/);
+  }
+  for (const [kind,checkpoint] of [['charter','allocated'],['charter','bound'],['work','allocated'],['work','bound']]) {
+    const {f,identity,threadId,reads,post}=await recoveryFixture({kind,checkpoint});
+    try {
+      const restored=(await post('recover',identity)).value;
+      assert.equal(restored.recovered,true);assert.equal(restored.operation.status,'failed');assert.equal(restored.operation.error,'native_recovered_not_sent');
+      assert.equal(restored.thread_id,threadId,'recovery binds the original allocated thread instead of creating another');
+      assert.equal(restored.mode,'thread');assert.equal(restored.pending_operation,null);
+      assert.deepEqual(reads,[{method:'thread/read',params:{threadId,includeTurns:true}}]);
+      const replay=(await post('recover',identity)).value;assert.equal(replay.thread_id,threadId);assert.equal(reads.length,1,'metadata repair is idempotent');
+      const next=(await post('prepare',{...identity,request_id:'new-authorized-send',conversation_id:restored.conversation_id,expected_revision:restored.expected_revision})).value;
+      assert.equal(next.operation.thread_id,threadId,'a subsequent explicit user send reserves the existing repaired thread');
+      assert.equal(f.state.wake,0);assert.equal(f.state.dispatch,0,'recovery and prepare never start a model request');
+    } finally {f.cleanup();}
+  }
+  const unsafeResponses=[{thread:{id:'different',turns:[]}},{thread:{id:'01a10c1b-c051-7791-ba0d-68bf6b510798'}},{thread:{id:'01a10c1b-c051-7791-ba0d-68bf6b510798',turns:[{id:'accepted-turn'}]}},{thread:{id:'01a10c1b-c051-7791-ba0d-68bf6b510798',turns:[],status:{type:'active'}}}];
+  for (const response of unsafeResponses) {
+    const {f,identity,post}=await recoveryFixture({response});
+    try {await assert.rejects(post('recover',identity),/native_outcome_unknown/);assert.equal(f.runtime.conversations.operation(identity.request_id).status,'outcome_unknown');}
+    finally {f.cleanup();}
+  }
+  {
+    const {f,identity,reads,post}=await recoveryFixture({checkpoint:null});
+    try {await assert.rejects(post('recover',identity),/native_outcome_unknown/);assert.equal(reads.length,0,'missing thread allocation has no safe read target');}
+    finally {f.cleanup();}
+  }
+  {
+    const {f,identity,reads,post}=await recoveryFixture();
+    try {
+      await assert.rejects(post('recover',{...identity,relay_id:'foreign'}),/session_relay_not_leader/);
+      await assert.rejects(post('recover',{...identity,host_id:'remote'}),/native_operation_identity_mismatch/);
+      await assert.rejects(post('recover',{...identity,project_id:'p2'}),/native_operation_scope_mismatch/);
+      await assert.rejects(post('recover',{...identity,expected_revision:10}),/version_conflict/);
+      assert.equal(reads.length,0,'scope/auth failures occur before native history reads');
+      f.store.nativeSessionProxyIsLeader=id=>id==='replacement-leader';
+      const restored=(await post('recover',{...identity,relay_id:'replacement-leader'})).value;
+      assert.equal(restored.operation.relay_id,'replacement-leader','current leader can verify and repair interrupted previous leader metadata');
+    } finally {f.cleanup();}
+  }
+  {
+    const {f,identity,post}=await recoveryFixture({checkpoint:'bound',onRead:async fixture=>{
+      fixture.runtime.handleProjectEvent('turn/started',{threadId:'01a10c1b-c051-7791-ba0d-68bf6b510798',turn:{id:'late-real-turn'}});
+    }});
+    try {await assert.rejects(post('recover',identity),/native_outcome_unknown/);assert.equal(f.runtime.conversations.operation(identity.request_id).status,'outcome_unknown','native turn observed while the read is in flight prevents recovery');}
+    finally {f.cleanup();}
+  }
+  {
+    const {f,identity,post}=await recoveryFixture({onRead:async()=>{throw Error('host disconnected');}});
+    try {await assert.rejects(post('recover',identity),/host disconnected/);assert.equal(f.runtime.conversations.operation(identity.request_id).status,'outcome_unknown','failed native history read never releases the reservation');}
+    finally {f.cleanup();}
+  }
+  console.log('PASS: unknown first-turn recovery requires authoritative empty native history, restores the same thread, isolates scope/leader and rejects sent, active, missing and racing evidence without model replay');
+}
+
 async function run() {
   const f = createFixture(), {runtime,store,api} = f;
   const request = (project_id,kind,request_id,extra={}) => ({project_id,kind,request_id,relay_id:'relay-leader',host_id:'local',expected_revision:0,draft_generation:0,...extra});
@@ -120,6 +212,7 @@ async function run() {
     store.db.prepare("UPDATE native_conversation_operations SET updated_at='2000-01-01T00:00:00.000Z' WHERE request_id=?").run(timeout.request_id);
     assert.equal(runtime.conversations.blockingStatus().pending_bindings,0);assert.equal(runtime.conversations.operation('timeout').status,'outcome_unknown');
     assert.equal(runtime.planning.listPendingCommands().length,0);assert.equal(f.state.dispatch,0);assert.equal(f.state.wake,0);
+    await runRecovery();
     console.log('PASS: inline read-only opening, first-send allocation/binding, trusted idempotent tools, confirmation, generation/history, ordinary reply semantics and disconnect/timeout reservations');
   } finally {f.cleanup();}
 }

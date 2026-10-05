@@ -63,7 +63,7 @@ function ensureConversationTables(db) {
   );`);
 }
 
-function createNativeConversationRuntime({ store, planning, home, context, invokeTool, threadAction, onProjectEvent = () => {}, publishChange = () => {}, recover = true }) {
+function createNativeConversationRuntime({ store, planning, home, context, invokeTool, threadAction, readThread, onProjectEvent = () => {}, publishChange = () => {}, recover = true }) {
   const db = store.db, now = () => new Date().toISOString();
   const archiving = new Map();
   const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -565,6 +565,62 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     db.prepare('UPDATE native_conversation_operations SET status=?,turn_id=?,error=?,updated_at=? WHERE request_id=?').run(status,args.turn_id || saved.turn_id || null,args.error || null,now(),saved.request_id);
     publishChange(); return {operation:operation(saved.request_id)};
   }
+  async function recoverOperation(args) {
+    assertWritable(args);
+    const auth=identity(args),saved=operation(auth.request_id);
+    if (!saved) fail('native_operation_not_found');
+    if (saved.host_id!==auth.host_id) fail('native_operation_identity_mismatch');
+    if (args.expected_revision!==saved.expected_revision) fail('version_conflict');
+    if (args.project_id!==saved.project_id || args.kind!==saved.kind || args.issue_id!==undefined && args.issue_id!==saved.issue_id || args.conversation_id!==undefined && args.conversation_id!==saved.conversation_id) fail('native_operation_scope_mismatch');
+    const result=()=>({...readContext({...args,...(saved.conversation_id?{conversation_id:saved.conversation_id}:{})}),operation:operation(saved.request_id),recovered:true});
+    if (saved.status==='failed' && saved.error==='native_recovered_not_sent') return result();
+    if (saved.status!=='outcome_unknown' || !saved.thread_id || saved.turn_id) fail('native_outcome_unknown');
+    if (typeof readThread!=='function') fail('native_recovery_unavailable');
+    const assertNotObserved=op=>{
+      const value=target(op),binding=bindingFor(value);
+      if (value.conversation?.status==='closed') fail('native_history_read_only');
+      if (value.issue && busyIssue(value.issue,op.request_id) || !value.issue && binding?.status==='running') fail('native_outcome_unknown');
+      if (binding?.thread_id && binding.thread_id!==op.thread_id) fail('session_thread_mismatch');
+      if (value.conversation?.active_turn_id || value.conversation?.last_turn_id || value.issue && issueSession(value.issue.id)?.last_turn_id || hasTable('project_native_activity') && db.prepare('SELECT 1 FROM project_native_activity WHERE thread_id=? AND turn_id IS NOT NULL').get(op.thread_id)) fail('native_outcome_unknown');
+    };
+    assertNotObserved(saved);
+    // Read the host's full thread directly; the client cannot supply history or
+    // a claim that the native server rejected its original first turn.
+    const native=await readThread(saved.thread_id,saved.host_id);
+    const thread=native?.thread;
+    if (!thread || thread.id!==saved.thread_id || !Array.isArray(thread.turns) || thread.turns.length || thread.ephemeral===true || ['active','running','inProgress'].includes(thread.status?.type || thread.status)) fail('native_outcome_unknown');
+    const recoveredIdentity={project_id:saved.project_id,kind:saved.kind,...(saved.issue_id?{issue_id:saved.issue_id}:{}),...(saved.conversation_id?{conversation_id:saved.conversation_id}:{}),request_id:saved.request_id,expected_revision:saved.expected_revision,host_id:saved.host_id,relay_id:auth.relay_id,thread_id:saved.thread_id};
+    transaction(()=>{
+      const current=operation(saved.request_id);
+      if (current.status!=='outcome_unknown' || current.updated_at!==saved.updated_at || current.thread_id!==saved.thread_id || current.turn_id) fail('native_outcome_unknown');
+      assertNotObserved(current);
+      // A new leader can repair the previous leader's metadata only after the
+      // native read established that this existing thread has never had a turn.
+      db.prepare('UPDATE native_conversation_operations SET relay_id=? WHERE request_id=?').run(auth.relay_id,saved.request_id);
+    });
+    try {
+      if (bindingFor(target(saved))?.thread_id===saved.thread_id) {
+        // An already-bound first send increased its conversation revision. Its
+        // durable binding is proof of that checkpoint; do not bind it again at
+        // the operation's older revision or rewrite the current conversation.
+        db.prepare("UPDATE native_conversation_operations SET status='bound' WHERE request_id=? AND status='outcome_unknown'").run(saved.request_id);
+      } else {
+        bind({...recoveredIdentity,checkpoint:'allocated'});
+        bind({...recoveredIdentity,checkpoint:'bound'});
+      }
+      transaction(()=>{
+        const current=operation(saved.request_id);
+        if (current.status!=='bound' || current.thread_id!==saved.thread_id || current.turn_id) fail('native_outcome_unknown');
+        assertNotObserved(current);
+        db.prepare("UPDATE native_conversation_operations SET status='failed',error='native_recovered_not_sent',updated_at=? WHERE request_id=?").run(now(),saved.request_id);
+      });
+    } catch(error) {
+      const current=operation(saved.request_id);
+      if (['allocated','bound'].includes(current?.status) && !current.turn_id) db.prepare("UPDATE native_conversation_operations SET status='outcome_unknown',error='native_recovery_incomplete',updated_at=? WHERE request_id=?").run(now(),saved.request_id);
+      throw error;
+    }
+    publishChange();return result();
+  }
   function trustedBinding(threadId, hostId) {
     const recorded = db.prepare('SELECT * FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL').get(threadId);
     const projectConversation=db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=?').get(threadId);
@@ -804,6 +860,7 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
       if (endpoint === 'prepare') result = prepare(args);
       else if (endpoint === 'bind') result = bind(args);
       else if (endpoint === 'receipt') result = receipt(args);
+      else if (endpoint === 'recover') result = await recoverOperation(args);
       else if (endpoint === 'tool') result = await tool(args);
       else if (endpoint === 'restart') result = restart(args);
       else if (endpoint === 'create') result = createConversation(args);
@@ -813,6 +870,6 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     } else {sendJson(response,404,{error:'not_found'});return true;}
     sendJson(response,200,result);return true;
   }
-  return {readContext,prepare,bind,receipt,tool,restart,archiveConversation,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings,listConversations,listWorkConversations,createConversation,selectConversation,trustedBinding,handleWorkEvent,migrateWorkConversations};
+  return {readContext,prepare,bind,receipt,recoverOperation,tool,restart,archiveConversation,handle,busyIssue,operation,pending,blockingStatus,recoverRelay,recoverStale,listBindings,listConversations,listWorkConversations,createConversation,selectConversation,trustedBinding,handleWorkEvent,migrateWorkConversations};
 }
 module.exports = {ensureConversationTables,ensurePlanningConversationTables,createNativeConversationRuntime};

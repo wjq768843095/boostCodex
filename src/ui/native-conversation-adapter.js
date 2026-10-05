@@ -27,6 +27,8 @@
   const messageBody = value => value?.message || value?.response;
   const errorText = error => {
     const value = String(error?.message || error || "原生会话暂时无法打开");
+    if (value === "native_outcome_unknown") return "上次发送结果仍在核对，请稍后重试。";
+    if (value === "native_recovery_unavailable") return "暂时无法核对会话，请稍后重试。";
     return ({ skill_project_mismatch: "此 Skill 仅适用于它所属的项目，请重新选择。", skill_project_root_shared: "项目目录与其他项目重叠，请选择独立目录后重试。", skill_project_not_found: "项目目录暂时无法访问，请检查项目设置。", skill_export_path_conflict: "此 Skill 暂时无法使用，请检查保存位置。", issue_execution_running: "任务正在执行，请等待完成后再发送。" })[value] || value;
   };
   const uuid = () => root.crypto.randomUUID();
@@ -544,7 +546,7 @@
       }
       if (message?.type === "mcp-request" && method === "turn/start") {
         const scope = hub.threads.get(threadKey(message.hostId, request.params?.threadId));
-        if (client && !client.current.thread_id && !scope) {
+        if (client && message.source !== "better-codex" && (message.hostId || LOCAL) === client.current.host_id && !client.current.thread_id && !scope) {
           // A native warm reservation must never become a Better Codex binding.
           hub.deliver(responseError(message, "当前会话尚未绑定，请重新发送"));
           client.report(Error("当前会话尚未绑定，请重新发送"));
@@ -621,6 +623,16 @@
     return post(scope, "receipt", { ...operationIdentity(scope), thread_id: scope.context.thread_id || undefined, status, ...values });
   }
 
+  async function recoverPending(hub, client, context) {
+    const operation = context.pending_operation;
+    if (readOnly(context) || operation?.status !== "outcome_unknown" || !operation.thread_id) return { context, recovered: false };
+    const scope = { hub, client, context, operation };
+    const result = await post(scope, "recover", operationIdentity(scope));
+    assertReturnedTarget(context, result); assertReturnedTarget(context, result?.target);
+    if (!result?.recovered) throw Error("上次发送结果仍在核对，请稍后重试。");
+    return { context: refreshedContext(context, result), recovered: true };
+  }
+
   async function beginTurn(hub, threadScope, message) {
     if (readOnly(threadScope.context)) { hub.deliver(responseError(message, "此会话仅供查看，请选择当前工作会话")); return; }
     const key = requestKey(message.hostId, message.request.id);
@@ -639,9 +651,12 @@
       if (target.history_id) query.set("history_id", target.history_id);
       const latest = await client.options.api(API_ROOT + "context?" + query);
       assertReturnedTarget(target, latest); assertReturnedTarget(target, latest?.target);
-      const context = refreshedContext(target, latest);
+      let context = refreshedContext(target, latest);
       assertReturnedTarget(target, context);
       if (readOnly(context)) throw Error("此会话仅供查看，请选择当前工作会话");
+      const recovery = await recoverPending(hub, client, context);
+      context = recovery.context;
+      if (recovery.recovered) { scope.operation = null; threadScope.operation = null; threadScope.awaitingFirstTurn = false; }
       if (conversationId(target) && conversationId(context) !== conversationId(target)) throw Error("会话资料已更新，请重新打开会话");
       if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
       scope.context = context;
@@ -900,7 +915,7 @@
       async open(value, restored) {
         cancelRetainedNavigation();
         const generation = ++navigationGeneration;
-        const context = flattenContext(value);
+        let context = flattenContext(value);
         if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id) throw Error("项目会话资料不完整");
         if (context.conversation_id && typeof context.conversation_id !== "string") throw Error("项目会话资料不完整");
         if (context.history_id && (context.kind !== "work" || typeof context.history_id !== "string" || !context.thread_id)) throw Error("历史会话资料不完整");
@@ -914,6 +929,9 @@
         try {
           await this.ensureHost();
           if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
+          context = (await recoverPending(hub, this, context)).context;
+          if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
+          this.current = context;
           if (!context.thread_id && context.pending_operation && ["allocated", "outcome_unknown", "prepared"].includes(context.pending_operation.status)) throw Error("上次会话连接尚待核对，请恢复后再发送");
           if (context.thread_id) {
             const scope = { hub, client: this, context: { ...context }, operation: null };

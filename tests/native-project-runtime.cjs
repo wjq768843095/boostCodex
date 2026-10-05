@@ -16,7 +16,7 @@ function workEvidence(context) {
   return match[1].split('\n').map(line=>line.slice(2)).join('\n');
 }
 
-function createFixture({threadAction}={}) {
+function createFixture({threadAction,semanticRequest}={}) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'better-codex-native-fixture-'));
   const home = path.join(temporary, 'better-home'), userHome = path.join(temporary, 'user'), codexHome = path.join(temporary, 'codex');
   const roots = [path.join(temporary, 'frontend'),path.join(temporary, 'backend'),path.join(temporary, 'missing')];
@@ -62,7 +62,7 @@ function createFixture({threadAction}={}) {
     }
   };
   const worker = {wake(){state.wake++;throw Error('unexpected_worker_wake');},startIssue(){state.dispatch++;throw Error('unexpected_dispatch');}};
-  if (threadAction) worker.sessionRelay={threadAction};
+  if (threadAction || semanticRequest) worker.sessionRelay={threadAction,semanticRequest};
   const runtime = createNativeProjectRuntime({store,worker,home,userHome,codexHome,publishChange(){state.change++;}});
   store.nativeProjectRuntime = runtime;
   async function api(route,method='GET',body={}) {
