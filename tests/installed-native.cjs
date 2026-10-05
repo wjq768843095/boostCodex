@@ -31,7 +31,7 @@ async function main() {
   const skills = await nativeRequest('skills/list', { cwds:[lib.ROOT],forceReload:true }, `({skills:(result.data||[]).flatMap(entry=>entry.skills||[]).filter(skill=>skill.name.startsWith('better-codex-')).map(skill=>({name:skill.name,path:skill.path,enabled:skill.enabled})),errors:(result.data||[]).flatMap(entry=>entry.errors||[]).map(error=>({path:error.path,message:error.message}))})`);
   const tools = mcp.servers.flatMap(server=>server.tools);
   for (const name of ['project_context_read','project_charter_save','project_charter_confirm','project_plan_save','project_plan_convert']) assert.ok(tools.some(tool=>tool.endsWith(name)), 'native MCP tool missing: '+name);
-  for (const name of ['better-codex-charter','better-codex-plan','better-codex-develop','better-codex-test']) assert.ok(skills.skills.some(skill=>skill.name===name&&skill.enabled!==false),'native Skill missing: '+name);
+  for (const name of ['better-codex-charter','better-codex-charter-review','better-codex-plan','better-codex-task-review','better-codex-develop','better-codex-test']) assert.ok(skills.skills.some(skill=>skill.name===name&&skill.enabled!==false),'native Skill missing: '+name);
   for (const name of ['metadata','facts']) assert.ok(mcp.servers.some(server=>server.charterFields.includes(name)),'native charter field missing: '+name);
   assert.ok(skills.errors.every(error=>!String(error.path||'').includes(path.join('.agents','skills','better-codex-'))),'managed Skills must parse successfully');
   const projects = await lib.api('/api/projects');
@@ -81,7 +81,7 @@ async function main() {
       api.open('agents');await sleep(350);await wait(()=>document.querySelector('#better-codex-panel [data-skill-key="better-codex-charter"]'));
       const panel=document.querySelector('#better-codex-panel');
       const keys=[...panel.querySelectorAll('[data-skill-key]')].map(row=>row.dataset.skillKey);
-      for(const key of ['better-codex-develop','better-codex-test'])if(!keys.includes(key))throw Error('installed work Skill missing: '+key);
+      for(const key of ['better-codex-develop','better-codex-test','better-codex-charter-review','better-codex-task-review'])if(!keys.includes(key))throw Error('installed Skill missing: '+key);
       const firstExternal=keys.findIndex(key=>key.startsWith('external:'));
       const managedFirst=keys.length>0&&!keys[0].startsWith('external:')&&(firstExternal<0||keys.slice(firstExternal).every(key=>key.startsWith('external:')));
       const external=panel.querySelector('[data-skill-key^="external:"]');

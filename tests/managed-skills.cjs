@@ -11,8 +11,9 @@ const home = path.join(temporary, 'data');
 const userHome = path.join(temporary, 'user');
 const root = path.join(userHome, '.agents', 'skills');
 const codexHome = path.join(userHome, '.codex');
-const builtinIds = ['better-codex-charter', 'better-codex-plan', 'better-codex-develop', 'better-codex-test'];
 const addedBuiltinIds = ['better-codex-develop', 'better-codex-test'];
+const reviewBuiltinIds = ['better-codex-charter-review', 'better-codex-task-review'];
+const builtinIds = ['better-codex-charter', 'better-codex-plan', ...addedBuiltinIds, ...reviewBuiltinIds];
 const write = (file, content) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); };
 const snapshot = folder => {
   const files = {};
@@ -39,8 +40,8 @@ try {
   const nativeBefore = snapshot(codexHome);
   const externalBefore = snapshot(path.join(root, 'external'));
   const store = createManagedSkills({ db, home, userHome, codexHome });
-  assert.equal(store.list().managed.length, 5);
-  assert.deepEqual(store.list().managed.filter(skill => skill.builtin).map(skill => skill.name).sort(), ['任务规划', '开发与复核', '测试与验收', '项目总纲']);
+  assert.equal(store.list().managed.length, 7);
+  assert.deepEqual(store.list().managed.filter(skill => skill.builtin).map(skill => skill.name).sort(), ['任务审核', '任务规划', '开发与复核', '总纲审核', '测试与验收', '项目总纲']);
   assert.deepEqual(store.list().managed.filter(skill => skill.builtin).map(skill => skill.id).sort(), [...builtinIds].sort());
   for (const id of builtinIds) {
     assert.equal(store.get(id).scope, 'global');
@@ -69,9 +70,9 @@ try {
   assert.throws(() => store.save({ name: 'bad', slug: '../escape', instructions: 'bad' }), /slug_invalid/);
   assert.throws(() => store.delete('better-codex-charter'), /builtin_skill_delete_forbidden/);
   const first = store.exportOwned();
-  assert.equal(first.exported.length, 5);
+  assert.equal(first.exported.length, 7);
   assert.equal(first.conflicts.length, 0);
-  for (const id of addedBuiltinIds) {
+  for (const id of [...addedBuiltinIds, ...reviewBuiltinIds]) {
     const skill = store.get(id);
     assert.ok(first.exported.includes(id));
     assert.ok(fs.readFileSync(skill.path, 'utf8').includes(skill.instructions));
@@ -82,7 +83,7 @@ try {
   assert.equal(db.prepare('SELECT description FROM agent_profiles WHERE id=?').get('legacy-agent').description, '');
   assert.equal(store.list().external.length, 3);
   const firstFiles = snapshot(root);
-  assert.equal(store.exportOwned().unchanged.length, 5);
+  assert.equal(store.exportOwned().unchanged.length, 7);
   assert.deepEqual(snapshot(root), firstFiles);
   assert.equal(fs.existsSync(path.join(home, 'backups')), false);
   const originalCharter = store.get('better-codex-charter');
@@ -133,7 +134,7 @@ try {
   try {
     const other = createManagedSkills({ db: otherDb, home: path.join(temporary, 'other-data'), userHome, codexHome });
     const before = snapshot(root);
-    assert.equal(other.exportOwned().conflicts.length, 4);
+    assert.equal(other.exportOwned().conflicts.length, 6);
     assert.deepEqual(snapshot(root), before);
   } finally { otherDb.close(); }
   // A hardlink inserted into an owned directory must not cause writes outside it.
@@ -163,14 +164,14 @@ try {
     if (!['EPERM', 'EACCES'].includes(error.code)) throw error;
     console.log('NOTE: symlink creation unavailable; all other ownership invariants tested.');
   }
-  // Adding the execution Skills to an existing two-builtin DB leaves prior state intact.
+  // Adding execution/review Skills to an existing two-builtin DB leaves prior state intact.
   const additionDb = new DatabaseSync(':memory:');
   try {
     const additionHome = path.join(temporary, 'builtin-addition-data');
     const additionUser = path.join(temporary, 'builtin-addition-user');
     const additionRoot = path.join(additionUser, '.agents', 'skills');
     const initial = createManagedSkills({ db: additionDb, home: additionHome, userHome: additionUser });
-    for (const id of addedBuiltinIds) {
+    for (const id of [...addedBuiltinIds, ...reviewBuiltinIds]) {
       additionDb.prepare('DELETE FROM managed_skills WHERE id=?').run(id);
       additionDb.prepare('DELETE FROM managed_skill_settings WHERE key=?').run(`builtin_template_hash:${id}`);
     }
@@ -190,14 +191,16 @@ try {
     write(path.join(additionRoot, 'better-codex-develop', 'SKILL.md'), '---\nname: external-develop\ndescription: User supplied\n---\nExternal development instructions.');
     write(path.join(additionRoot, 'better-codex-develop', 'references', 'user.md'), 'keep external resource');
     fs.mkdirSync(path.join(additionRoot, 'better-codex-test'));
-    const collisionFiles = Object.fromEntries(addedBuiltinIds.map(id => [id, snapshot(path.join(additionRoot, id))]));
+    write(path.join(additionRoot, 'better-codex-charter-review', 'SKILL.md'), '---\nname: external-charter-review\ndescription: User supplied\n---\nExternal review instructions.');
+    fs.mkdirSync(path.join(additionRoot, 'better-codex-task-review'));
+    const collisionFiles = Object.fromEntries([...addedBuiltinIds, ...reviewBuiltinIds].map(id => [id, snapshot(path.join(additionRoot, id))]));
     const upgraded = createManagedSkills({ db: additionDb, home: additionHome, userHome: additionUser });
-    assert.equal(upgraded.list().managed.length, 4);
+    assert.equal(upgraded.list().managed.length, 6);
     for (const row of oldRows) assert.deepEqual(additionDb.prepare('SELECT * FROM managed_skills WHERE id=?').get(row.id), row);
     for (const setting of oldSettings) assert.deepEqual(additionDb.prepare('SELECT * FROM managed_skill_settings WHERE key=?').get(setting.key), setting);
     assert.deepEqual(additionDb.prepare('SELECT * FROM managed_skill_resources ORDER BY skill_id,relative_path').all(), oldResources);
     assert.deepEqual(additionDb.prepare('SELECT * FROM issues').all(), oldIssues);
-    for (const id of addedBuiltinIds) {
+    for (const id of [...addedBuiltinIds, ...reviewBuiltinIds]) {
       const skill = upgraded.get(id);
       assert.equal(skill.builtin, true);
       assert.equal(skill.version, 1);
@@ -206,7 +209,7 @@ try {
       assert.equal(skill.legacy_agent_id, null);
     }
     const collisionExport = upgraded.exportOwned();
-    assert.deepEqual(collisionExport.conflicts.map(item => ({ id: item.id, reason: item.reason })).sort((a, b) => a.id.localeCompare(b.id)), addedBuiltinIds.map(id => ({ id, reason: 'skill_ownership_conflict' })));
+    assert.deepEqual(collisionExport.conflicts.map(item => ({ id: item.id, reason: item.reason })).sort((a, b) => a.id.localeCompare(b.id)), [...addedBuiltinIds, ...reviewBuiltinIds].sort().map(id => ({ id, reason: 'skill_ownership_conflict' })));
     assert.equal(collisionExport.exported.length, 0);
     assert.equal(collisionExport.unchanged.length, 2);
     for (const [id, files] of Object.entries({ ...oldFiles, ...collisionFiles })) assert.deepEqual(snapshot(path.join(additionRoot, id)), files);
@@ -214,19 +217,78 @@ try {
     const stableRows = additionDb.prepare('SELECT * FROM managed_skills ORDER BY id').all();
     const stableSettings = additionDb.prepare('SELECT * FROM managed_skill_settings ORDER BY key').all();
     const reopened = createManagedSkills({ db: additionDb, home: additionHome, userHome: additionUser });
-    assert.deepEqual(reopened.migrate(), { inserted: 0, total: 4, upgraded: [], preserved: ['better-codex-charter'] });
+    assert.deepEqual(reopened.migrate(), { inserted: 0, total: 6, upgraded: [], preserved: ['better-codex-charter'] });
     assert.deepEqual(additionDb.prepare('SELECT * FROM managed_skills ORDER BY id').all(), stableRows);
     assert.deepEqual(additionDb.prepare('SELECT * FROM managed_skill_settings ORDER BY key').all(), stableSettings);
     // Newly registered Skills never adopt untracked custom text as a historical default.
-    for (const id of addedBuiltinIds) {
+    for (const id of [...addedBuiltinIds, ...reviewBuiltinIds]) {
       const custom = reopened.save({ id, name: `用户定制 ${id}`, instructions: `用户 ${id} 工作规则。` });
       additionDb.prepare('DELETE FROM managed_skill_settings WHERE key=?').run(`builtin_template_hash:${id}`);
       assert.ok(reopened.migrate().preserved.includes(id));
       assert.deepEqual(reopened.get(id), custom);
       assert.equal(additionDb.prepare('SELECT value FROM managed_skill_settings WHERE key=?').get(`builtin_template_hash:${id}`), undefined);
     }
-    console.log('PASS: two-builtin DB adds execution Skills idempotently, preserves edited rows/settings/resources/task state, rejects external directory collisions and untracked custom adoption');
+    console.log('PASS: two-builtin DB adds execution/review Skills idempotently, preserves edited rows/settings/resources/task state, rejects external directory collisions and untracked custom adoption');
   } finally { additionDb.close(); }
+  // The four-builtin installation adds only the two review Skills, preserving work choices.
+  const reviewDb = new DatabaseSync(':memory:');
+  try {
+    const reviewHome = path.join(temporary, 'review-addition-data');
+    const reviewUser = path.join(temporary, 'review-addition-user');
+    const reviewRoot = path.join(reviewUser, '.agents', 'skills');
+    const previousBuiltinIds = builtinIds.filter(id => !reviewBuiltinIds.includes(id));
+    const previous = createManagedSkills({ db: reviewDb, home: reviewHome, userHome: reviewUser });
+    for (const id of reviewBuiltinIds) {
+      reviewDb.prepare('DELETE FROM managed_skills WHERE id=?').run(id);
+      reviewDb.prepare('DELETE FROM managed_skill_settings WHERE key=?').run(`builtin_template_hash:${id}`);
+    }
+    for (const id of previousBuiltinIds) previous.save({ id, name: `已定制 ${id}`, description: '现有工作习惯说明', instructions: `用户已调整 ${id} 的规则。` });
+    // Legacy custom text without hash tracking also remains protected on the review upgrade.
+    reviewDb.prepare('DELETE FROM managed_skill_settings WHERE key=?').run('builtin_template_hash:better-codex-develop');
+    reviewDb.prepare('INSERT INTO managed_skill_settings(key,value) VALUES(?,?)').run('user_setting', 'existing-review-preference');
+    reviewDb.exec(`CREATE TABLE issues(id TEXT PRIMARY KEY,skill_id TEXT,status TEXT);
+      INSERT INTO issues VALUES('existing-development','better-codex-develop','running');
+      INSERT INTO issues VALUES('existing-acceptance','better-codex-test','blocked');`);
+    assert.equal(previous.exportOwned().exported.length, 4);
+    const previousRows = reviewDb.prepare('SELECT * FROM managed_skills ORDER BY id').all();
+    const previousSettings = reviewDb.prepare('SELECT * FROM managed_skill_settings ORDER BY key').all();
+    const previousIssues = reviewDb.prepare('SELECT * FROM issues ORDER BY id').all();
+    const previousFiles = Object.fromEntries(previousBuiltinIds.map(id => [id, snapshot(path.join(reviewRoot, id))]));
+    const upgraded = createManagedSkills({ db: reviewDb, home: reviewHome, userHome: reviewUser });
+    const upgradedRows = reviewDb.prepare('SELECT * FROM managed_skills ORDER BY id').all();
+    assert.equal(upgradedRows.length, 6);
+    assert.deepEqual(upgradedRows.filter(row => !reviewBuiltinIds.includes(row.id)), previousRows);
+    assert.deepEqual(upgradedRows.filter(row => reviewBuiltinIds.includes(row.id)).map(row => row.id), reviewBuiltinIds);
+    for (const row of upgradedRows.filter(row => reviewBuiltinIds.includes(row.id))) {
+      assert.equal(row.builtin, 1);
+      assert.equal(row.version, 1);
+      assert.equal(row.scope, 'global');
+      assert.equal(row.project_id, null);
+      assert.equal(row.legacy_agent_id, null);
+      assert.equal(row.name, row.id === 'better-codex-charter-review' ? '总纲审核' : '任务审核');
+      assert.ok(row.instructions.length > 0);
+    }
+    const upgradedSettings = reviewDb.prepare('SELECT * FROM managed_skill_settings ORDER BY key').all();
+    assert.deepEqual(upgradedSettings.filter(setting => !reviewBuiltinIds.some(id => setting.key === `builtin_template_hash:${id}`)), previousSettings);
+    assert.equal(upgradedSettings.length, previousSettings.length + 2);
+    assert.deepEqual(reviewDb.prepare('SELECT * FROM issues ORDER BY id').all(), previousIssues);
+    const exported = upgraded.exportOwned();
+    assert.deepEqual(exported.exported.sort(), [...reviewBuiltinIds].sort());
+    assert.deepEqual(exported.unchanged.sort(), [...previousBuiltinIds].sort());
+    assert.deepEqual(exported.conflicts, []);
+    for (const [id, files] of Object.entries(previousFiles)) assert.deepEqual(snapshot(path.join(reviewRoot, id)), files);
+    for (const id of reviewBuiltinIds) assert.ok(fs.readFileSync(upgraded.get(id).path, 'utf8').includes(upgraded.get(id).instructions));
+    assert.equal(fs.existsSync(path.join(reviewHome, 'backups')), false);
+    const upgradedFiles = snapshot(reviewRoot);
+    const reopened = createManagedSkills({ db: reviewDb, home: reviewHome, userHome: reviewUser });
+    assert.deepEqual(reopened.migrate(), { inserted: 0, total: 6, upgraded: [], preserved: previousBuiltinIds });
+    assert.deepEqual(reviewDb.prepare('SELECT * FROM managed_skills ORDER BY id').all(), upgradedRows);
+    assert.deepEqual(reviewDb.prepare('SELECT * FROM managed_skill_settings ORDER BY key').all(), upgradedSettings);
+    assert.deepEqual(reviewDb.prepare('SELECT * FROM issues ORDER BY id').all(), previousIssues);
+    assert.equal(reopened.exportOwned().unchanged.length, 6);
+    assert.deepEqual(snapshot(reviewRoot), upgradedFiles);
+    console.log('PASS: four-builtin DB adds exactly two review Skills, preserves every prior customized row/settings/task choice/export, and reopens idempotently');
+  } finally { reviewDb.close(); }
   // Upgrade untracked initial defaults by exact known hashes, then track future defaults.
   const upgradeDb = new DatabaseSync(':memory:');
   try {
@@ -250,7 +312,7 @@ try {
     upgradeDb.prepare("DELETE FROM managed_skill_settings WHERE key LIKE 'builtin_template_hash:%'").run();
     upgradeDb.prepare('UPDATE managed_skills SET instructions=? WHERE id=?').run(previousCharter.replace(/\n/g, '\r\n'), 'better-codex-charter');
     upgradeDb.prepare('UPDATE managed_skills SET instructions=? WHERE id=?').run(previousPlan, 'better-codex-plan');
-    assert.equal(upgradeStore.exportOwned().exported.length, 4);
+    assert.equal(upgradeStore.exportOwned().exported.length, 6);
     const upgrade = upgradeStore.migrate();
     assert.deepEqual(upgrade.upgraded.sort(), ['better-codex-charter', 'better-codex-plan']);
     assert.deepEqual(upgrade.preserved, []);
@@ -263,7 +325,7 @@ try {
     assert.equal(Object.keys(upgradeBackups).length, 4);
     assert.ok(Object.values(upgradeBackups).some(content => Buffer.from(content, 'base64').toString('utf8').includes(previousPlan)));
     assert.deepEqual(upgradeStore.migrate().upgraded, []);
-    assert.equal(upgradeStore.exportOwned().unchanged.length, 4);
+    assert.equal(upgradeStore.exportOwned().unchanged.length, 6);
     assert.deepEqual(snapshot(path.join(upgradeHome, 'backups', 'managed-skills')), upgradeBackups);
     // Custom instructions stay untouched; customized names/descriptions survive default updates.
     const customized = upgradeStore.save({ id: 'better-codex-charter', name: '用户总纲名称', description: '用户总纲说明', instructions: '用户定制规则，不能用模板覆盖。' });
@@ -302,7 +364,7 @@ try {
   let includeSharedProject = false;
   const listProjects = () => (includeSharedProject ? ['a', 'b', 'shared'] : ['a', 'b']).map(projectResolver);
   const projectStore = createManagedSkills({ db, home, userHome, codexHome, resolveProject: projectResolver, listProjects });
-  for (const id of addedBuiltinIds) {
+  for (const id of [...addedBuiltinIds, ...reviewBuiltinIds]) {
     const skill = projectStore.get(id);
     for (const projectId of [undefined, 'a', 'b']) {
       assert.ok(projectStore.list({ projectId }).managed.some(item => item.id === id));

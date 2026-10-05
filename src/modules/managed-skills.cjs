@@ -11,7 +11,9 @@ const BUILTINS = [
   { id: 'better-codex-plan', slug: 'better-codex-plan', name: '任务规划',
     historical_hashes: ['b84acbad371210c47765bee025f57f20746655b4944ea4af6542ae5e76658ced'] },
   { id: 'better-codex-develop', slug: 'better-codex-develop', name: '开发与复核', historical_hashes: [] },
-  { id: 'better-codex-test', slug: 'better-codex-test', name: '测试与验收', historical_hashes: [] }
+  { id: 'better-codex-test', slug: 'better-codex-test', name: '测试与验收', historical_hashes: [] },
+  { id: 'better-codex-charter-review', slug: 'better-codex-charter-review', name: '总纲审核', historical_hashes: [] },
+  { id: 'better-codex-task-review', slug: 'better-codex-task-review', name: '任务审核', historical_hashes: [] }
 ];
 const digest = value => createHash('sha256').update(String(value)).digest('hex');
 // The initial shipped defaults predated hash tracking. These exact hashes are the
