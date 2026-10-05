@@ -12,6 +12,7 @@ const tools = ['context_read', 'charter_save', 'charter_confirm', 'plan_save', '
 function fixture(config = {}) {
   const sent = [], delivered = [], http = [], bounds = [], turns = [], errors = [], away = [], routerNavigations = [], retainedViews = [], expiredViews = [], expirySlots = [], animationFrames = new Map();
   const records = new Map();
+  const messageListeners = [];
   const operations = new Map();
   let sequence = 0, nativeRoute = '/index.html';
   let nativeDraft = 'client-new-thread:original-native-draft';
@@ -61,6 +62,9 @@ function fixture(config = {}) {
   }
   const host = { sender, dispatcher, dynamicTools: true, prewarm: true, draftIdentity: true, readDraft: () => nativeDraft, selectDraft: id => { nativeDraft = id; }, isSelectedDraft: (id, context) => nativeDraft === id && composerScope.value.focusComposerNonce === id && nativeRoute === '/projects?projectId=' + context.native_project_id, captureDraft: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument, plain_text_mode: false }), restoreDraft: snapshot => { richDraft = snapshot?.draft; richState = snapshot?.view_state || { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; nativeDocument = snapshot?.document_json || { type: 'doc', content: [] }; } };
   const root = {
+    addEventListener(type, listener, capture = false) { if (type === 'message') messageListeners.push({ listener, capture: capture === true }); },
+    removeEventListener(type, listener, capture = false) { if (type !== 'message') return; const index = messageListeners.findIndex(entry => entry.listener === listener && entry.capture === (capture === true)); if (index >= 0) messageListeners.splice(index, 1); },
+    dispatchEvent(event) { let stopped = false; event.stopImmediatePropagation = () => { stopped = true; }; for (const entry of [...messageListeners].sort((a,b) => Number(b.capture) - Number(a.capture))) { if (stopped) break; entry.listener(event); } return !stopped; },
     crypto: { randomUUID: () => `00000000-0000-0000-0000-${String(++sequence).padStart(12, '0')}` },
     sessionStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
     localStorage: { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) },
@@ -89,7 +93,14 @@ function fixture(config = {}) {
   const reloadSource = () => vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
   reloadSource();
   const key = context => [context.project_id, context.kind, context.issue_id || ''].join(':') + (context.conversation_id ? ':conversation:' + encodeURIComponent(context.conversation_id) : '') + (context.history_id ? ':history:' + encodeURIComponent(context.history_id) : '');
-  const context = (overrides = {}) => ({ project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides });
+  const context = (overrides = {}) => {
+    const value = { project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides };
+    if (value.kind === 'work') {
+      if (!Object.hasOwn(overrides,'task')) value.task={id:value.issue_id,project_id:value.project_id,version:1,title:'当前工作任务',description:'完成本工作项'};
+      if (!Object.hasOwn(overrides,'work_context_text')) value.work_context_text='当前工作任务：'+value.issue_id+'\n任务要求：完成本工作项。';
+    }
+    return value;
+  };
   const remember = value => { records.set(key(value), value); return value; };
   const api = async (url, options) => {
     const body = options?.body ? JSON.parse(options.body) : undefined;
@@ -134,7 +145,7 @@ function fixture(config = {}) {
   const adapter = root.BetterCodexNativeConversation.create(options);
   const send = (method, params, id = 'native-' + ++sequence, rest = {}) => { const message = { type: 'mcp-request', hostId: 'local', request: { id, method, params }, ...rest }; sender.postMessage(message); return message; };
   const reply = (id, result, error) => dispatcher.deliverOrBufferMessage({ type: 'mcp-response', hostId: 'local', message: { id, ...(error ? { error } : { result }) } });
-  return { root, host, nativeElement, controller, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, routerNavigations, retainedViews, expiredViews, expirySlots, animationFrames, paintFrame() { const frames = [...animationFrames]; animationFrames.clear(); for (const [, callback] of frames) callback(); }, originalSend, originalDeliver, operations, reloadSource, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
+  return { root, host, nativeElement, controller, sender, dispatcher, adapter, options, context, remember, send, reply, http, sent, delivered, bounds, turns, errors, away, routerNavigations, retainedViews, expiredViews, expirySlots, animationFrames, messageListeners, paintFrame() { const frames = [...animationFrames]; animationFrames.clear(); for (const [, callback] of frames) callback(); }, originalSend, originalDeliver, operations, reloadSource, nativeRoute: () => nativeRoute, nativeDraft: () => nativeDraft, rich: () => ({ draft: richDraft, view_state: richState, document_json: nativeDocument }), setRich: value => { richDraft = value.draft; richState = value.view_state; nativeDocument = value.document_json; } };
 }
 
 (async () => {
@@ -502,7 +513,8 @@ function fixture(config = {}) {
     const original = f.send('turn/start', { threadId: work.thread_id, input: [{ type: 'text', text: 'Real native follow-up' }] }, 'startup-followup');
     assert.equal(f.sent.length, 0, 'already-open native bound work task must get execution gate even without Better open');
     await settle(() => f.sent.length === 1);
-    assert.equal(f.sent[0], original);
+    assert.equal(f.sent[0].request.params.input, original.request.params.input, 'bound work followup keeps the original native input');
+    assert(Object.values(f.sent[0].request.params.additionalContext).some(entry=>entry.value.includes(work.issue_id)), 'startup registry supplies the bound task context');
     assert.equal(f.http.filter(x => x.url.endsWith('/prepare')).length, 1);
     assert.equal(f.http.find(x => x.url.endsWith('/prepare')).body.expected_revision, 9, 'minimal startup registry refreshes authoritative task version before sending');
     f.adapter.registerBindings([]);
@@ -739,6 +751,84 @@ function fixture(config = {}) {
     assert.equal(f.adapter.capabilities().available, true, 'real mutable native IPC objects are found after a fabricated RPC proxy');
     assert.equal(f.sent.length, 0); assert.equal(f.delivered.length, 0); assert.equal(f.http.length, 0, 'connect only installs hooks');
     f.adapter.destroy(); assert.equal(f.sender.postMessage, f.originalSend);
+  }
+  {
+    const f = fixture();
+    const nativeCalls = [];
+    f.root.addEventListener('message', event => nativeCalls.push(event.data));
+    await f.adapter.connect();
+    const scoped = f.remember(f.context({kind:'work',issue_id:'bound-task',thread_id:'bound-work',mode:'thread'}));
+    await f.adapter.open(scoped);
+    const call = {type:'dynamic-tool-call-requested',hostId:'local',serverRequest:{id:'window-tool',method:'item/tool/call',params:{namespace:null,threadId:'bound-work',callId:'window-call',tool:'better_codex_project_context_read',arguments:{}}}};
+    const dispatch = (data, overrides = {}) => f.root.dispatchEvent({type:'message',data,source:f.root,origin:f.root.location.origin,...overrides});
+    dispatch(call);
+    await settle(()=>f.sent.some(message=>message.response?.id==='window-tool'));
+    assert.equal(nativeCalls.length,0,'capture owns project calls before the independent native namespace executor');
+    assert.equal(f.http.filter(entry=>entry.url.endsWith('/tool')).length,1);
+    assert.equal(f.sent.find(message=>message.response?.id==='window-tool').response.result.success,true);
+    dispatch(call);
+    await settle(()=>f.sent.filter(message=>message.response?.id==='window-tool').length===2);
+    assert.equal(f.http.filter(entry=>entry.url.endsWith('/tool')).length,1,'window replay does not execute twice');
+    const foreign = {...call,serverRequest:{...call.serverRequest,params:{...call.serverRequest.params,tool:'native_tool'}}};
+    dispatch(foreign); dispatch(call,{source:{}}); dispatch(call,{origin:'https://foreign.invalid'});
+    dispatch({...call,hostId:'remote-host'});
+    dispatch({...call,serverRequest:{...call.serverRequest,params:{...call.serverRequest.params,namespace:'codex_app'}}});
+    assert.equal(nativeCalls.length,5,'unrelated tools and foreign envelopes/namespaces remain with native handlers');
+    f.reloadSource();
+    const next = f.root.BetterCodexNativeConversation.create(f.options);
+    await next.open(scoped);
+    assert.equal(f.messageListeners.filter(entry=>entry.capture).length,1,'source reload replaces the project capture listener');
+    f.adapter.destroy(); next.destroy();
+    assert.equal(f.messageListeners.filter(entry=>entry.capture).length,0,'last client release removes the capture listener');
+    dispatch(call); assert.equal(nativeCalls.length,6,'native handling resumes after release');
+    console.log('PASS: real window dynamic-tool routing, null namespace capture, single response, foreign isolation and reload/release lifecycle');
+  }
+  {
+    const f = fixture();
+    const draft=f.remember(f.context({kind:'work',issue_id:'task-context-one',conversation_id:'work-context-one'}));
+    await f.adapter.open(draft);assert.equal(f.sent.length,0,'opening work does not send task context or start a model turn');
+    f.send('thread/start',{cwd:draft.cwd,model:'native-model',developerInstructions:'native instructions'},'work-context-start');
+    await settle(()=>f.sent.length===1);f.reply('work-context-start',{thread:{id:'work-context-thread'}});
+    await settle(()=>f.bounds.length===1);
+    const material='当前任务：公共基础与共享规则\n'+('范围、产物、验收步骤与双方录音 🛰️\n'.repeat(160));
+    const current=f.context({...draft,mode:'thread',thread_id:'work-context-thread',task:{...draft.task,version:2},work_context_text:material});
+    const nested=()=>({project_id:current.project_id,kind:current.kind,issue_id:current.issue_id,conversation_id:current.conversation_id,thread_id:current.thread_id,host_id:'local',mode:'thread',context:{task:current.task,work_context_text:current.work_context_text},dynamic_tools:tools});
+    f.remember(nested());
+    const input=[{type:'text',text:'请开发这个任务',text_elements:[]},{type:'localImage',path:'D:\\参考.png'},{type:'skill',name:'better-codex-develop',path:'C:\\skills\\develop\\SKILL.md'}];
+    const nativeContext={native_reference:{kind:'application',value:'native app context'}};
+    const params={threadId:'work-context-thread',input,model:'native-model',effort:'ultra',approvalPolicy:'on-request',serviceTier:'fast',collaborationMode:{mode:'plan',settings:{model:'native-model',reasoning_effort:'ultra',developer_instructions:null}},additionalContext:nativeContext};
+    const request=f.send('turn/start',params,'work-context-turn');
+    await settle(()=>f.sent.some(entry=>entry.request?.id==='work-context-turn'));
+    const outgoing=f.sent.find(entry=>entry.request?.id==='work-context-turn');
+    assert.equal(outgoing.request.params.input,input,'original rich input remains the exact native array');
+    for(const field of ['model','effort','approvalPolicy','serviceTier','collaborationMode'])assert.equal(outgoing.request.params[field],params[field]);
+    assert.equal(outgoing.request.params.additionalContext.native_reference,nativeContext.native_reference,'native sibling context preserved');
+    assert.equal(request.request.params,params);assert.deepEqual(Object.keys(nativeContext),['native_reference'],'caller metadata is not mutated');
+    const parts=Object.entries(outgoing.request.params.additionalContext).filter(([key])=>key.includes('/part/')).sort(([a],[b])=>Number(a.split('/').at(-1))-Number(b.split('/').at(-1)));
+    assert(parts.length>1,'long material is split below the native per-fragment truncation limit');
+    assert.equal(parts.map(([,entry])=>entry.value.slice(entry.value.indexOf('\n')+1)).join(''),material,'all Unicode task material is delivered without truncation');
+    assert(parts.every(([,entry])=>entry.kind==='untrusted'&&Buffer.byteLength(entry.value,'utf8')<1000),'each labelled fragment fits the conservative native token limit');
+    const oldSnapshot=Object.values(outgoing.request.params.additionalContext).find(entry=>entry.value.startsWith('当前工作任务资料快照：')).value;
+    assert.equal(f.sent.filter(entry=>entry.request?.method==='thread/resume').length,0,'task data requires no settings override/resume');
+    f.reply('work-context-turn',{turn:{id:'context-turn-1'}});await settle(()=>f.turns.length===1);
+    current.task={...current.task,version:3};current.work_context_text='当前任务：公共基础与共享规则\n任务要求：保留测试数据。';f.remember(nested());
+    f.send('turn/start',{...params,input:[input[0]]},'work-context-followup');await settle(()=>f.sent.some(entry=>entry.request?.id==='work-context-followup'));
+    const followup=f.sent.find(entry=>entry.request?.id==='work-context-followup').request.params.additionalContext;
+    assert(Object.values(followup).some(entry=>entry.value.includes(current.work_context_text)),'loaded thread receives the latest nested server task material');
+    assert(Object.values(followup).some(entry=>entry.value.includes('此旧资料段已被替换')),'shorter updates invalidate old trailing chunks');
+    assert.notEqual(Object.values(followup).find(entry=>entry.value.startsWith('当前工作任务资料快照：')).value,oldSnapshot);
+    assert.equal(f.sent.filter(entry=>entry.request?.method==='thread/start').length,1,'followup does not allocate another conversation');
+    f.reply('work-context-followup',{turn:{id:'context-turn-2'}});await settle(()=>f.turns.length===2);f.adapter.destroy();
+    const restored=fixture();await restored.adapter.open(restored.remember(restored.context({kind:'work',issue_id:'restored-task',thread_id:'restored-thread',mode:'thread'})));
+    restored.send('turn/start',{threadId:'restored-thread',input:[{type:'text',text:'开发这个任务'}]},'restored-context-turn');
+    await settle(()=>restored.sent.some(entry=>entry.request?.id==='restored-context-turn'));
+    assert(Object.values(restored.sent.at(-1).request.params.additionalContext).some(entry=>entry.value.includes('restored-task')),'preexisting thread gets task context without captured instruction baseline');
+    assert.equal(restored.sent.length,1,'only the user-authorized native turn is sent');
+    restored.reply('restored-context-turn',{turn:{id:'restored-context-turn-id'}});await settle(()=>restored.turns.length===1);restored.adapter.destroy();
+    const missing=fixture();await missing.adapter.open(missing.remember(missing.context({kind:'work',issue_id:'missing-task',thread_id:'missing-thread',mode:'thread',work_context_text:null})));
+    missing.send('turn/start',{threadId:'missing-thread',input:[]},'missing-material');await settle(()=>missing.delivered.some(entry=>entry.message?.id==='missing-material'));
+    assert.equal(missing.sent.length,0,'missing task material does not send an unscoped model turn');missing.adapter.destroy();
+    console.log('PASS: first/restored native work turns carry fresh full task material, bounded Unicode fragments and snapshot replacement without input/settings changes or extra sends');
   }
   {
     const f = fixture(); f.host.dynamicTools = false;

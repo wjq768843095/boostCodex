@@ -378,6 +378,8 @@ function createNativeConversationRuntime({ store, planning, home, context, invok
     if (hasHistory(args)) {
       const {value,history}=historyTarget(args);
       const details=context(value.project.id,{issue_id:value.issue.id});
+      delete details.work_instructions;
+      delete details.work_context_text;
       if (!details.task) details.task={...value.issue};
       const scopeTarget={project_id:value.project.id,kind:'work',issue_id:value.issue.id,history_id:history.history_id,...(history.conversation_id?{conversation_id:history.conversation_id}:{})};
       return {...scopeTarget,target:scopeTarget,context:details,history,read_only:true,source:'history',mode:'thread',thread_id:history.thread_id,host_id:history.host_id,

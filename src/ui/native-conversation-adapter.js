@@ -76,6 +76,46 @@
     return [...native, ...supplied];
   }
 
+  function refreshedContext(previous, value) {
+    return flattenContext({ ...previous, ...(value?.context || {}), ...(value?.target || {}), ...(value || {}) });
+  }
+
+  function contextChunks(value) {
+    // The installed app-server truncates each additional-context fragment at
+    // about 1000 tokens. Keep the UTF-8 byte upper bound comfortably below it,
+    // including the per-fragment snapshot label, and preserve Unicode scalars.
+    const chunks = []; let part = "", bytes = 0;
+    for (const character of value) {
+      const point = character.codePointAt(0);
+      const size = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+      if (bytes + size > 640) { chunks.push(part); part = ""; bytes = 0; }
+      part += character; bytes += size;
+    }
+    if (part) chunks.push(part);
+    return chunks;
+  }
+
+  function withWorkContext(hub, context, params) {
+    if (context.kind !== "work") return params;
+    const task = context.task, material = context.work_context_text;
+    if (readOnly(context) || !task || task.id !== context.issue_id || task.project_id !== context.project_id || typeof material !== "string" || !material.trim()) throw Error("当前任务资料暂时不可用，请重新打开会话");
+    const original = params.additionalContext;
+    if (original != null && (typeof original !== "object" || Array.isArray(original))) throw Error("当前任务资料暂时无法同步，请重新发送");
+    hub.workContexts ||= new Map();
+    const key = threadKey(context.host_id, context.thread_id);
+    let state = hub.workContexts.get(key);
+    if (!state) { state = { source: uuid(), material: null, snapshot: null, count: 0 }; hub.workContexts.set(key, state); }
+    if (state.material !== material) { state.material = material; state.snapshot = uuid(); }
+    const prefix = "better_codex_work_context/" + state.source + "/";
+    if (Object.keys(original || {}).some(name => name.startsWith(prefix))) throw Error("当前任务资料暂时无法同步，请重新发送");
+    const chunks = contextChunks(material), additionalContext = { ...(original || {}) };
+    additionalContext[prefix + "snapshot"] = { kind: "untrusted", value: `当前工作任务资料快照：${state.snapshot}，共 ${chunks.length} 段。以此快照的完整资料和本次用户要求为准；其他快照的旧资料不替代当前任务要求。` };
+    chunks.forEach((chunk, index) => { additionalContext[prefix + "part/" + index] = { kind: "untrusted", value: `任务资料快照 ${state.snapshot}，第 ${index + 1}/${chunks.length} 段：\n${chunk}` }; });
+    for (let index = chunks.length; index < state.count; index++) additionalContext[prefix + "part/" + index] = { kind: "untrusted", value: `任务资料快照 ${state.snapshot}：此旧资料段已被替换，不属于当前任务要求。` };
+    state.count = chunks.length;
+    return { ...params, additionalContext };
+  }
+
   function ownDataFunction(value, name) {
     try {
       const descriptor = Object.getOwnPropertyDescriptor(value, name);
@@ -444,6 +484,8 @@
         if (this.clients.size || this.pending || this.requests.size) return;
         if (this.host.sender.postMessage === this.sendWrapper) this.host.sender.postMessage = this.originalSend;
         if (this.host.dispatcher.deliverOrBufferMessage === this.deliverWrapper) this.host.dispatcher.deliverOrBufferMessage = this.originalDeliver;
+        if (this.toolMessageListener) root.removeEventListener?.("message", this.toolMessageListener, true);
+        this.toolMessageListener = null;
         this.released = true;
         if (root[HUB_KEY] === this) delete root[HUB_KEY];
       },
@@ -457,6 +499,21 @@
     // as if it were the original host sender.
     hub.host = host;
     hub.factory = createHub;
+
+    // The desktop's dynamic-tool executor also listens directly on window.
+    // Capture our same-page calls before that independent native listener can
+    // reject an otherwise valid unnamespaced project tool or reply twice.
+    if (hub.toolMessageListener) root.removeEventListener?.("message", hub.toolMessageListener, true);
+    hub.toolMessageListener = event => {
+      if (event.source !== root || event.origin !== root.location?.origin) return;
+      let message = event.data;
+      if (typeof message === "string") { try { message = JSON.parse(message); } catch { return; } }
+      const request = message?.serverRequest, params = request?.params;
+      if (message?.type !== "dynamic-tool-call-requested" || (message.hostId || LOCAL) !== LOCAL || request?.method !== "item/tool/call" || params?.namespace != null || !toolNames.has(params?.tool || params?.name)) return;
+      event.stopImmediatePropagation();
+      hub.run(handleTool(hub, message));
+    };
+    root.addEventListener?.("message", hub.toolMessageListener, true);
 
     hub.sendWrapper = function wrappedNativeSend(message) {
       const client = hub.activeClient();
@@ -513,7 +570,7 @@
         const request = message.serverRequest;
         const params = request?.params;
         const name = params?.tool || params?.name;
-        if (typeof name === "string" && name.startsWith(PREFIX)) {
+        if (typeof name === "string" && name.startsWith(PREFIX) && params?.namespace == null) {
           hub.run(handleTool(hub, message));
           return;
         }
@@ -574,21 +631,21 @@
     try {
       const skillPaths = (message.request.params?.input || []).filter(item => item?.type === "skill").map(item => item.path);
       if (skillPaths.length) await post(scope, "validate-input", { thread_id: message.request.params.threadId, host_id: scope.context.host_id, skill_paths: skillPaths });
+      const client = hub.latestClient() || scope.client;
+      const target = scope.context;
+      const query = new URLSearchParams({ project_id: target.project_id, kind: target.kind, relay_id: client.options.getRelayId?.() || target.relay_id, host_id: target.host_id });
+      if (target.issue_id) query.set("issue_id", target.issue_id);
+      if (conversationId(target)) query.set("conversation_id", conversationId(target));
+      if (target.history_id) query.set("history_id", target.history_id);
+      const latest = await client.options.api(API_ROOT + "context?" + query);
+      assertReturnedTarget(target, latest); assertReturnedTarget(target, latest?.target);
+      const context = refreshedContext(target, latest);
+      assertReturnedTarget(target, context);
+      if (readOnly(context)) throw Error("此会话仅供查看，请选择当前工作会话");
+      if (conversationId(target) && conversationId(context) !== conversationId(target)) throw Error("会话资料已更新，请重新打开会话");
+      if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
+      scope.context = context;
       if (!scope.operation) {
-        const client = hub.latestClient() || scope.client;
-        const target = scope.context;
-        const query = new URLSearchParams({ project_id: target.project_id, kind: target.kind, relay_id: client.options.getRelayId?.() || target.relay_id, host_id: target.host_id });
-        if (target.issue_id) query.set("issue_id", target.issue_id);
-        if (conversationId(target)) query.set("conversation_id", conversationId(target));
-        if (target.history_id) query.set("history_id", target.history_id);
-        const latest = await client.options.api(API_ROOT + "context?" + query);
-        assertReturnedTarget(target, latest); assertReturnedTarget(target, latest?.target);
-        const context = flattenContext({ ...target, ...latest });
-        assertReturnedTarget(target, context);
-        if (readOnly(context)) throw Error("此会话仅供查看，请选择当前工作会话");
-        if (conversationId(target) && conversationId(context) !== conversationId(target)) throw Error("会话资料已更新，请重新打开会话");
-        if (context.thread_id !== message.request.params.threadId || context.mode !== "thread") throw Error("当前任务仍在运行，请稍后再发送");
-        scope.context = context;
         const prepared = await post(scope, "prepare", {
           ...targetIdentity(context),
           host_id: context.host_id, request_id: uuid(), expected_revision: context.expected_revision,
@@ -598,6 +655,8 @@
         assertReturnedTarget(context, scope.operation);
         assertReturnedTarget(context, prepared.target);
         if (scope.operation?.thread_id !== context.thread_id) throw Error("会话资料已更新，请重新打开会话");
+        scope.context = refreshedContext(context, prepared);
+        assertReturnedTarget(context, scope.context);
         const identity = { ...operationIdentity(scope), thread_id: context.thread_id };
         const allocated = await post(scope, "bind", { ...identity, checkpoint: "allocated" });
         assertReturnedTarget(context, allocated.binding); assertReturnedTarget(context, allocated.operation);
@@ -610,9 +669,11 @@
         hub.run(receipt(scope, "outcome_unknown", { error: "发送结果尚待核对" }));
         (hub.latestClient() || scope.client).report(Error("发送结果尚待核对"), scope.context);
       }, Math.max(15_000, Math.min(message.timeoutMs || 60_000, 120_000)) + 1_000);
-      hub.send(message);
+      const params = withWorkContext(hub, scope.context, message.request.params);
+      hub.send(params === message.request.params ? message : { ...message, request: { ...message.request, params } });
     } catch (error) {
       hub.requests.delete(key);
+      if (pending.timer) root.clearTimeout(pending.timer);
       if (scope.operation) try { await receipt(scope, "failed", { error: errorText(error) }); } catch { /* Surface the originating request failure. */ }
       hub.deliver(responseError(message, errorText(error)));
       (hub.latestClient() || scope.client).report(error, scope.context);
@@ -1050,6 +1111,7 @@
           hub.send(outgoing);
         } catch (error) {
           hub.requests.delete(nativeKey);
+          if (pending.timer) root.clearTimeout(pending.timer);
           if (scope.operation) try { await receipt(scope, "failed", { error: errorText(error) }); } catch { /* Failure is already surfaced by the native request. */ }
           hub.deliver(responseError(message, errorText(error)));
           this.report(error, context);

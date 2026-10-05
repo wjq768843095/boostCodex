@@ -7,6 +7,7 @@ const { createManagedSkills } = require('./managed-skills.cjs');
 const { getWorkspaceContext } = require('./workspace-context.cjs');
 const { createNativeConversationRuntime, ensureConversationTables } = require('./native-conversation-runtime.cjs');
 const { nativeTools } = require('./project-mcp.cjs');
+const { readPinnedPlanningItem, buildWorkContextText } = require('./native-work-context.cjs');
 
 function directoryBrief(workspace) {
   return workspace.workspaces.map(entry => `- ${entry.id}: ${entry.path}；职责：${entry.role === 'unknown' ? '待确认' : entry.role}；数据来源：${entry.source_of_truth === 'unknown' ? '待核对' : entry.source_of_truth}${entry.availability === 'available' ? '' : '（无法访问，待核对）'}`).join('\n');
@@ -117,22 +118,45 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
   function context(projectId, options = {}) {
     const sessions = ['charter', 'planning'].map(kind => planning.getSession(projectId, kind));
     const tasks = store.listIssues({ projectId });
-    const workBinding = options.thread_id && store.db.prepare("SELECT issue_id FROM native_conversation_bindings WHERE thread_id=? AND project_id=? AND kind='work' AND archived_at IS NULL").get(options.thread_id, projectId);
+    const threadBinding = options.thread_id && store.db.prepare('SELECT project_id,issue_id,kind FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL').get(options.thread_id);
+    if (threadBinding && (threadBinding.project_id !== projectId || options.issue_id &&
+      (threadBinding.kind !== 'work' || threadBinding.issue_id !== options.issue_id))) throw Error('session_thread_mismatch');
+    let workBinding = threadBinding?.kind === 'work' ? threadBinding : null;
+    if (options.thread_id && !threadBinding) {
+      workBinding = store.db.prepare("SELECT project_id,issue_id FROM issue_native_conversations WHERE thread_id=? AND status!='closed'").get(options.thread_id);
+      // Earlier native work sessions may only have an issue_sessions checkpoint.
+      // Read that exact stored identity, rather than trusting a caller-supplied ID.
+      if (!workBinding && store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='issue_sessions'").get()) {
+        const saved = store.db.prepare('SELECT issue_id FROM issue_sessions WHERE thread_id=?').get(options.thread_id);
+        const savedIssue = saved && store.getIssue(saved.issue_id);
+        if (savedIssue) workBinding = { project_id: savedIssue.project_id, issue_id: savedIssue.id };
+      }
+      if (workBinding && (workBinding.project_id !== projectId || options.issue_id && workBinding.issue_id !== options.issue_id)) throw Error('session_thread_mismatch');
+    }
     const workTask = options.issue_id ? tasks.find(issue => issue.id === options.issue_id) : options.thread_id && !sessions.some(session => session?.thread_id === options.thread_id)
-      ? tasks.find(issue => issue.id === workBinding?.issue_id || [issue.thread_id, issue.session_thread_id, issue.run_thread_id].includes(options.thread_id)) : null;
-    const link = workTask && store.db.prepare('SELECT item_id,charter_revision,plan_revision FROM project_planning_issue_links WHERE issue_id=?').get(workTask.id);
+      ? workBinding ? tasks.find(issue => issue.id === workBinding.issue_id) : tasks.find(issue => [issue.thread_id, issue.session_thread_id, issue.run_thread_id].includes(options.thread_id)) : null;
+    if (options.issue_id && !workTask) throw Error('issue_project_mismatch');
+    if (workTask && options.thread_id && !workBinding && ![workTask.thread_id, workTask.session_thread_id, workTask.run_thread_id].includes(options.thread_id)) throw Error('session_thread_mismatch');
+    const link = workTask && store.db.prepare('SELECT project_id,item_id,charter_revision,plan_revision,item_json FROM project_planning_issue_links WHERE issue_id=?').get(workTask.id);
+    if (link && link.project_id !== projectId) throw Error('issue_project_mismatch');
     const value = planning.getContext(projectId, workTask ? { ...options, thread_id: undefined,
-      ...(link ? { charter_revision: options.charter_revision ?? options.revision ?? link.charter_revision, plan_revision: options.plan_revision ?? link.plan_revision } : {}) } : options);
+      ...(link ? { charter_revision: link.charter_revision, plan_revision: link.plan_revision } : {}) } : options);
     if (workTask) value.confirmation_candidates = [];
     const project = store.getProject(projectId);
     const groups = skillList(projectId);
     const planningLinks=store.db.prepare('SELECT item_id,issue_id,charter_revision,plan_revision FROM project_planning_issue_links WHERE project_id=?').all(projectId);
-    return { ...value, project: { ...value.project, root_paths: project.root_paths || [] }, ...getWorkspaceContext(project, { workspaceMap: value.charter?.metadata?.workspace_map }),
+    const workspace = getWorkspaceContext(project, { workspaceMap: value.charter?.metadata?.workspace_map });
+    const planningItem = readPinnedPlanningItem(link);
+    const task = workTask ? { id: workTask.id, project_id: projectId, version: workTask.version,
+      title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),
+      active_run_status:workTask.active_run_status || null,session_status:workTask.session_status || null,session_active_turn_id:workTask.session_active_turn_id || null,
+      reply_status:workTask.reply_status || store.getIssueReplyState?.(workTask.id)?.status || 'idle',archived_at:workTask.archived_at || null,
+      ...(link ? { item_id: link.item_id, charter_revision: link.charter_revision, plan_revision: link.plan_revision } : {}), planning_item: planningItem } : null;
+    return { ...value, project: { ...value.project, root_paths: project.root_paths || [] }, ...workspace,
       tasks: tasks.map(issue => ({ id: issue.id, title: issue.title, status: issue.status, version: issue.version,archived_at:issue.archived_at || null,...planningLinks.find(entry=>entry.issue_id===issue.id) })),
       planning_links: planningLinks.map(entry=>{const issue=store.getIssue(entry.issue_id);return {...entry,status:issue?.status || 'missing',version:issue?.version || null,archived:Boolean(issue?.archived_at)};}),
-      ...(workTask ? { task: { id: workTask.id, title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),
-        active_run_status:workTask.active_run_status || null,session_status:workTask.session_status || null,session_active_turn_id:workTask.session_active_turn_id || null,
-        reply_status:workTask.reply_status || store.getIssueReplyState?.(workTask.id)?.status || 'idle',archived_at:workTask.archived_at || null, ...link } } : {}),
+      ...(task ? { task, work_context_text: buildWorkContextText({ project, task, planningItem, plan: value.plan, workspaces: workspace.workspaces,
+        charter: link ? planning.getCharter(projectId, { revision: link.charter_revision }) : value.charter }) } : {}),
       skills: [...groups.managed, ...groups.external].map(({ id, name, slug, description, path, managed, scope, project_id }) => ({ id, name, slug, description, path, managed, scope, project_id })) };
   }
   function startSession(projectId, body) {
