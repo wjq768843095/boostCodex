@@ -777,7 +777,8 @@
         if (!hostPromise) hostPromise = Promise.resolve(options.host || loadInstalledHost());
         host = await hostPromise;
         if (!host.dynamicTools || !host.prewarm || !host.draftIdentity || typeof host.readDraft !== "function" || typeof host.selectDraft !== "function" || typeof host.captureDraft !== "function" || typeof host.restoreDraft !== "function" || typeof host.sender?.postMessage !== "function" || typeof host.dispatcher?.deliverOrBufferMessage !== "function") throw Error("当前 Codex 暂时不支持页内会话");
-        host.readDraft();
+        // The current page may show an existing thread or have no composer.
+        // Validate draft state after navigating to the requested project.
         if (!hub) {
           const existing = root[HUB_KEY];
           hub = existing && !existing.released && existing.host.sender === host.sender && existing.host.dispatcher === host.dispatcher ? existing.factory === createHub ? existing : createHub(host, existing) : createHub(host);

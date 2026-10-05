@@ -150,6 +150,31 @@ function fixture(config = {}) {
 
 (async () => {
   {
+    const f = fixture({ discovery: true });
+    f.nativeElement.isConnected = false;
+    await f.adapter.connect();
+    const opened = await f.adapter.open(f.context({ mode: 'thread', thread_id: 'existing-thread' }));
+    assert.equal(opened.mode, 'thread');
+    assert.equal(f.nativeRoute(), '/local/existing-thread');
+    assert.equal(f.errors.length, 0);
+    assert.equal(f.sent.length, 0, 'opening an existing conversation must not send a model request');
+    f.adapter.destroy();
+  }
+  {
+    const f = fixture();
+    const readDraft = f.host.readDraft;
+    f.host.readDraft = () => {
+      if (f.nativeRoute() !== '/projects?projectId=native-project') throw Error('No draft composer on the previous page');
+      return readDraft();
+    };
+    const opened = await f.adapter.open(f.context());
+    assert.equal(opened.mode, 'draft');
+    assert.equal(f.nativeRoute(), '/projects?projectId=native-project');
+    assert.equal(f.errors.length, 0);
+    assert.equal(f.sent.length, 0, 'opening a draft must not start a thread or send a model request');
+    f.adapter.destroy();
+  }
+  {
     const f = fixture({ discovery: true, retainedRouter: true, animationFrames: true, retainedPaths: ['/local/retained-thread', '/local/other-thread'] });
     const context = f.context({ mode: 'thread', thread_id: 'retained-thread' });
     await f.adapter.connect();
