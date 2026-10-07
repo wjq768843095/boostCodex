@@ -1242,15 +1242,15 @@ var BetterCodexInjected = (() => {
     }
     const style = document.createElement("style");
     style.textContent = `
-      .bc-composer-shortcuts{display:flex;align-items:center;gap:4px;min-width:0;max-width:clamp(120px,34vw,480px);margin-left:4px;padding:3px 5px;box-sizing:border-box;border:1px solid rgba(120,151,195,.28);border-radius:16px;background:rgba(85,119,168,.14)}
+      .bc-composer-shortcuts{display:flex;align-items:center;gap:2px;min-width:0;max-width:clamp(120px,34vw,480px);margin-left:2px;padding:2px 3px;box-sizing:border-box;border:1px solid rgba(120,151,195,.28);border-radius:14px;background:rgba(85,119,168,.14)}
       .bc-composer-shortcuts[hidden]{display:none}
-      .bc-composer-shortcut-list{display:flex;align-items:center;gap:4px;min-width:0;overflow-x:auto;scrollbar-width:none}
-      .bc-composer-shortcuts button{flex-shrink:0;border:1px solid transparent;border-radius:999px;padding:5px 9px;background:transparent;color:var(--text-tertiary,#999);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
+      .bc-composer-shortcut-list{display:flex;align-items:center;gap:2px;min-width:0;overflow-x:auto;scrollbar-width:none}
+      .bc-composer-shortcuts button{flex-shrink:0;border:1px solid transparent;border-radius:999px;padding:3px 6px;background:transparent;color:var(--text-tertiary,#999);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
       .bc-composer-shortcuts button:hover{background:var(--color-bg-primary-ghost-hover,rgba(128,128,128,.14))}
       .bc-composer-shortcuts button[aria-pressed="true"]{color:var(--color-text-primary,#eee);background:rgba(128,128,128,.18);border-color:rgba(128,128,128,.25)}
-      .bc-composer-shortcuts .bc-composer-fast{display:flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0}
+      .bc-composer-shortcuts .bc-composer-fast{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0}
       .bc-composer-shortcuts .bc-composer-fast svg{width:18px;height:18px}
-      .bc-composer-shortcuts .bc-composer-shortcut-settings{display:flex;align-items:center;justify-content:center;width:28px;height:30px;padding:0}
+      .bc-composer-shortcuts .bc-composer-shortcut-settings{display:flex;align-items:center;justify-content:center;width:24px;height:26px;padding:0}
       .bc-composer-shortcuts .bc-composer-shortcut-settings svg{width:15px;height:15px}
       .bc-composer-shortcuts .bc-composer-fast[aria-pressed="true"]{color:#438cff;background:rgba(67,140,255,.12);border-color:transparent}
       .bc-composer-shortcuts button:disabled{opacity:.4;cursor:default}
