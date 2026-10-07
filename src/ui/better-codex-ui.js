@@ -1042,7 +1042,19 @@ var BetterCodexInjected = (() => {
     };
   }
 
+  function isAuxiliaryDesktopUrl(value) {
+    try {
+      const url = new URL(value);
+      const route = new URL(url.searchParams.get("initialRoute") || url.pathname + url.search, "https://codex.local");
+      return /detached-window|global-dictation|avatar-overlay/i.test(url.pathname + route.pathname) ||
+        route.searchParams.get("window") === "page" || route.searchParams.get("prewarm") === "1";
+    } catch { return false; }
+  }
   function install(config) {
+    if (isAuxiliaryDesktopUrl(window.location.href)) {
+      window.__betterCodexInjection__?.destroy?.();
+      return { installed: false, reason: "auxiliary_desktop_window" };
+    }
     if (!config || config.schemaVersion !== 1) throw new Error("injected_ui_schema_mismatch");
     "use strict";
     const VERSION = config.version;
@@ -2672,6 +2684,9 @@ var BetterCodexInjected = (() => {
         .better-codex-inline-details-body { padding: 16px; }
         .better-codex-inline-resize { position: absolute; top: 58px; bottom: 0; right: var(--bc-inline-details-width, 360px); width: 12px; margin-right: -6px; cursor: col-resize; pointer-events: auto; touch-action: none; z-index: 4; }
         .better-codex-inline-resize:focus-visible { outline: 2px solid var(--bc-color-accent); outline-offset: -2px; }
+        .bc-conversations-resize { position: absolute; top: 58px; bottom: 0; left: calc(var(--bc-planning-projects-width) + var(--bc-planning-conversations-width) - 6px); width: 12px; cursor: col-resize; pointer-events: auto; touch-action: none; z-index: 4; }
+        .bc-conversations-resize:hover, .bc-conversations-resize:active { background: color-mix(in srgb, var(--bc-color-accent) 25%, transparent); }
+        .bc-conversations-resize:focus-visible { outline: 2px solid var(--bc-color-accent); outline-offset: -2px; }
         .better-codex-inline-status { position: absolute; left: 0; right: var(--bc-inline-details-space, 0px); top: 58px; bottom: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 28px; background: var(--bc-color-canvas); pointer-events: auto; overflow: auto; }
         .better-codex-inline-status p { max-width: 520px; white-space: pre-wrap; }
         .better-codex-inline-status button { border: 1px solid var(--bc-color-hairline); border-radius: 7px; padding: 8px 16px; color: inherit; background: var(--bc-color-control); cursor: pointer; }
@@ -3122,7 +3137,7 @@ var BetterCodexInjected = (() => {
         archive.textContent = t("已归档聊天");
         archive.addEventListener("click", () => {
           close();
-          window.postMessage({ type: NAVIGATION.messageType, path: "/settings/data-controls" }, window.location.origin);
+          window.postMessage({ type: NAVIGATION.messageType, path: "/archive" }, window.location.origin);
         });
         const usage = document.createElement("button");
         usage.type = "button";
@@ -6152,7 +6167,7 @@ var BetterCodexInjected = (() => {
     }
     function inlineTaskAcceptanceMarkup(issue, readOnly = false) {
       const pending = issue.workflow?.pending_manual;
-      if (issue.status !== "in_review" || issue.workflow?.result !== "review_passed" || !Array.isArray(pending) || !pending.length) return "";
+      if (issue.status !== "in_review" || issue.workflow?.result !== "review_passed" || issue.workflow?.evidence_valid === false || !Array.isArray(pending) || !pending.length) return "";
       const disabled = readOnly || Boolean(issue.session_active_turn_id || issue.task_execution_running || issue.active_run_status);
       return '<section class="better-codex-project-plan-section"><header><strong>' + te("待人工验收") + '</strong></header><ul>' + pending.map(item => '<li>' + escapeHtml2(item) + '</li>').join("") + '</ul>' + (readOnly ? "" : '<button type="button" class="better-codex-submit" data-inline-accept-task' + (disabled ? ' disabled' : '') + '>' + te("确认验收通过") + '</button>') + '</section>';
     }
@@ -6161,7 +6176,7 @@ var BetterCodexInjected = (() => {
       const current = inlineConversationTarget();
       const originKey = inlineConversationKey(inlineConversation);
       const issue = inlineConversation.context?.task;
-      if (!issue || issue.id !== current.issue_id || issue.workflow?.result !== "review_passed" || issue.status !== "in_review") return;
+      if (!issue || issue.id !== current.issue_id || issue.workflow?.result !== "review_passed" || issue.workflow?.evidence_valid === false || issue.status !== "in_review") return;
       button.disabled = true;
       try {
         const confirmed = await confirmAction("确认验收通过", "请确认列出的人工验收项目均已通过，确认后任务将进入已完成。", "确认通过");
@@ -6299,6 +6314,48 @@ var BetterCodexInjected = (() => {
         if (inlineConversation) renderInlineConversation();
       }
     }
+    function inlineConversationColumnSizing() {
+      const kind = inlineConversationTarget()?.kind === "work" ? "work" : "planning";
+      const projectsWidth = innerWidth <= 1100 ? 152 : 180;
+      const surfaceWidth = inlineConversationRoot?.closest("[data-better-codex-inline-host]")?.clientWidth || innerWidth - 52;
+      const compact = window.matchMedia("(max-width: 980px)").matches;
+      const detailsSpace = !compact && inlineConversationDetailsOpen ? 280 : 0;
+      const max = Math.max(160, Math.min(520, surfaceWidth - projectsWidth - detailsSpace - 360));
+      let saved = 0;
+      try { saved = Number(localStorage.getItem("better-codex-" + kind + "-conversations-width")); } catch {}
+      const width = Math.min(max, Math.max(160, saved || (innerWidth <= 1100 ? 176 : 190)));
+      return { kind, projectsWidth, max, width };
+    }
+    function bindInlineConversationColumnResize(handle) {
+      let drag = null;
+      const update = (width) => {
+        const sizing = inlineConversationColumnSizing();
+        try { localStorage.setItem("better-codex-" + sizing.kind + "-conversations-width", String(Math.min(sizing.max, Math.max(160, width)))); } catch {}
+        renderInlineConversation();
+      };
+      handle.addEventListener("pointerdown", event => {
+        if (event.button !== 0) return;
+        drag = { pointerId: event.pointerId, x: event.clientX, width: inlineConversationColumnSizing().width };
+        handle.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+      handle.addEventListener("pointermove", event => {
+        if (drag?.pointerId === event.pointerId) update(drag.width + event.clientX - drag.x);
+      });
+      const finish = event => {
+        if (drag?.pointerId !== event.pointerId) return;
+        drag = null;
+        if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      };
+      handle.addEventListener("pointerup", finish);
+      handle.addEventListener("pointercancel", finish);
+      handle.addEventListener("lostpointercapture", () => { drag = null; });
+      handle.addEventListener("keydown", event => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        update(inlineConversationColumnSizing().width + (event.key === "ArrowRight" ? 20 : -20));
+      });
+    }
     function renderInlineConversation() {
       if (!inlineConversation || !inlineConversationRoot) return;
       const target = inlineConversationTarget();
@@ -6360,7 +6417,14 @@ var BetterCodexInjected = (() => {
       if (status.innerHTML !== statusMarkup) status.innerHTML = statusMarkup;
       status.hidden = !statusMarkup && (!inlineConversationCacheRestoring || projectSurfaceCache?.nativeRetained === true);
       const nativeSurface = inlineConversationRoot.closest("[data-better-codex-inline-host]");
-      const navSpace = (innerWidth <= 1100 ? 328 : 370) + "px";
+      const columnSizing = inlineConversationColumnSizing();
+      inlineConversationRoot.style.setProperty("--bc-planning-conversations-width", columnSizing.width + "px");
+      const conversationResize = inlineConversationRoot.querySelector(".bc-conversations-resize");
+      conversationResize.setAttribute("aria-label", t(workWorkspace ? "调整工作会话宽度" : "调整规划会话宽度"));
+      conversationResize.setAttribute("aria-valuemin", "160");
+      conversationResize.setAttribute("aria-valuemax", String(columnSizing.max));
+      conversationResize.setAttribute("aria-valuenow", String(columnSizing.width));
+      const navSpace = (columnSizing.projectsWidth + columnSizing.width) + "px";
       const maxDetailsWidth = compact ? Math.round(innerWidth * .9) : Math.max(280, (nativeSurface?.clientWidth || innerWidth - 52) - parseFloat(navSpace) - 360);
       const detailsWidth = Math.min(inlineConversationWidth, maxDetailsWidth);
       details.hidden = !detailsOpen;
@@ -6434,6 +6498,13 @@ var BetterCodexInjected = (() => {
         inlineConversationRoot.setAttribute(OWNED, "true");
         inlineConversationRoot.innerHTML = '<header class="better-codex-inline-heading"></header><aside class="bc-planning-projects" aria-label="' + te("项目列表") + '"></aside><aside class="bc-planning-conversations" aria-label="' + te("规划会话") + '"></aside><aside class="better-codex-inline-details" aria-label="' + te("总纲与任务") + '"></aside><div class="better-codex-inline-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-label="' + te("调整资料宽度") + '"></div><div class="better-codex-inline-status" hidden></div><div class="better-codex-inline-notice" role="status" hidden></div>';
         inlineConversationRoot.addEventListener("click", onInlineConversationClick);
+        const conversationResize = document.createElement("div");
+        conversationResize.className = "bc-conversations-resize";
+        conversationResize.setAttribute("role", "separator");
+        conversationResize.setAttribute("tabindex", "0");
+        conversationResize.setAttribute("aria-orientation", "vertical");
+        inlineConversationRoot.appendChild(conversationResize);
+        bindInlineConversationColumnResize(conversationResize);
         const resize = inlineConversationRoot.querySelector(".better-codex-inline-resize");
         resize.addEventListener("pointerdown", (event) => {
           if (event.button !== 0) return;
@@ -6443,7 +6514,9 @@ var BetterCodexInjected = (() => {
         });
         resize.addEventListener("pointermove", (event) => {
           if (!inlineConversationResize || event.pointerId !== inlineConversationResize.pointerId) return;
-          inlineConversationWidth = Math.min(Math.max(280, innerWidth - 52 - (innerWidth <= 1100 ? 328 : 370) - 360), Math.max(280, inlineConversationResize.width + inlineConversationResize.x - event.clientX));
+          const sizing = inlineConversationColumnSizing();
+          const surfaceWidth = inlineConversationRoot.closest("[data-better-codex-inline-host]")?.clientWidth || innerWidth - 52;
+          inlineConversationWidth = Math.min(Math.max(280, surfaceWidth - sizing.projectsWidth - sizing.width - 360), Math.max(280, inlineConversationResize.width + inlineConversationResize.x - event.clientX));
           renderInlineConversation();
         });
         const finishResize = () => { inlineConversationResize = null; localStorage.setItem("better-codex-conversation-details-width", String(inlineConversationWidth)); };
@@ -6452,7 +6525,9 @@ var BetterCodexInjected = (() => {
         resize.addEventListener("keydown", (event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
           event.preventDefault();
-          inlineConversationWidth = Math.min(Math.max(280, innerWidth - 52 - (innerWidth <= 1100 ? 328 : 370) - 360), Math.max(280, (parseFloat(inlineConversationRoot.style.getPropertyValue("--bc-inline-details-width")) || inlineConversationWidth) + (event.key === "ArrowLeft" ? 20 : -20)));
+          const sizing = inlineConversationColumnSizing();
+          const surfaceWidth = inlineConversationRoot.closest("[data-better-codex-inline-host]")?.clientWidth || innerWidth - 52;
+          inlineConversationWidth = Math.min(Math.max(280, surfaceWidth - sizing.projectsWidth - sizing.width - 360), Math.max(280, (parseFloat(inlineConversationRoot.style.getPropertyValue("--bc-inline-details-width")) || inlineConversationWidth) + (event.key === "ArrowLeft" ? 20 : -20)));
           localStorage.setItem("better-codex-conversation-details-width", String(inlineConversationWidth));
           renderInlineConversation();
         });

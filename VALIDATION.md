@@ -314,6 +314,18 @@ Skill 支持通用/项目归属、项目范围筛选、从托管或外部 Skill 
 - 实际阻塞已单独修复：再次核对完整空线程及无在途请求后，在权威数据库事务内严格检查原 operation、任务版本/状态、原 binding、会话及执行活动，先保存单记录元数据恢复备份，再以 request_id/thread_id/updated_at/status 的条件更新且影响恰好 1 条，将该坏发送预留置 failed/native_recovered_not_sent。没有覆盖数据库、修改任务/聊天、关闭其他会话或补发消息。备份保存在权威数据目录 backups/native-operation-repair-1791205847600.json。
 - 修复后通过当前实际 Runtime 的 context 接口回读：mode=thread、原线程 01a10c1b-c051-7791-ba0d-68bf6b510798、binding.status=idle、read_only=false、pending_operation=null。原工作会话已解除元数据阻塞。长期恢复代码仍待运行中的总纲会话结束后自动应用；真实消息发送由用户回到原会话手动提交验证。
 
+# 2026-10-07 任务阶段与 Skill 状态对齐
+
+- 规划转换创建 `todo`，明确不自动派发；新增阶段状态接口，限定当前可写工作会话、任务版本和实际证据。开发开工进入进行中，开发与代码复核完成进入待审核，测试缺陷返回修复，必需技术验收通过且无人工待办时完成；有人工待办则保留待审核，由用户在任务资料区确认。总纲、任务规划、审核意见与用户确认仍保留各自边界。
+- 原生对话的开始、正常结束和用户停止只记录执行活动，不推断开发或验收完成。采用新工作流的任务不再由旧调度结果覆盖阶段；旧派发及待处理调度均跳过这些任务。旧已在待审核的任务可以登记真实验收，旧状态不作为验收通过的证据。
+- 阶段报告绑定任务范围；标题、要求、项目、目录或所引用规划变化后，旧验收证据失效并回到待办。排序、优先级及标签变化保留有效结果。待人工项不能由模型清空，历史报告保留。
+- 权威数据库精准迁移了京华基金会 13 个已转换、未执行的规划任务：`backlog → todo`，`needs_attention=0`、`pending_actor=user`。原 1 个待审核与 1 个已阻塞保持原状态。备份为 `C:\Users\admin\.better-codex\backups\task-workflow\2026-10-07T08-25-07-789Z-426ca31d-d2d6-45bb-9563-bc43eb1ff710.json`，已确认可解析、非空且恰好包含 13 个受影响任务；重复迁移不再修改。
+- 六项内置 Skill 的权威保存内容与源模板匹配，开发与测试 Skill 使用真实状态工具并回读结果；原生 MCP 已发现 `project_task_transition`，六项 Skill 可发现并启用。
+- 全部 `npm test` 回归通过，包含状态阶段、任务版本与跨线程保护、待人工项、范围变更、真实 HTTP 流程、旧回合及旧工具重放、不自动派发、历史只读及人工确认按钮行为。六项 Skill 的 `quick_validate` 通过；部分目录链接 fixture 受当前环境限制，其他对应检查通过。
+- 当前 Codex 桌面只读核对看板真实 DOM：待规划 0、待办 13、进行中 0、待审核 1、已完成 0、已阻塞 1。临时打开看板后恢复原视图；源码、当前应用构建及 Runtime 版本均核对一致。没有新建业务会话、发送模型业务请求或代替用户验收实际开发成果。
+- 扩展的旧 `installed-native` 跨项目四列布局检查出现视图渲染等待超时，未将该检查记作通过；本轮阶段流的桌面验证使用实际看板 DOM、工具发现与应用版本核对，业务开发和验收调用使用隔离 HTTP fixture。
+- 人工操作路径：打开任一待办任务的工作会话，选 `$better-codex-develop` 并发送开发要求；预期开工后进行中、明确开发交付后待审核。随后选 `$better-codex-test` 发送验收要求；预期失败回修复、环境缺失已阻塞、技术通过但需人工时仍待审核。逐项完成列出的人工步骤并点击“确认验收通过”，预期进入已完成。正常提问或单轮回复结束不改变业务阶段。
+
 
 # 2026-10-07 Codex 更新后的原生会话适配修复
 
@@ -332,3 +344,29 @@ Skill 支持通用/项目归属、项目范围筛选、从托管或外部 Skill 
 - 实际应用核对：自动应用阶段为 ready；源码与应用版本一致；运行中后端版本与源码一致；readyz 正常、原生会话中继连接；打开 Skill 页面后 UI ready=true、bootstrapError=null，桌面 bundleChecksum 与已应用 UI 文件 SHA256 一致。随后恢复原浏览位置。
 - 通用 `installed-native.cjs --check-reload` 在并发源码重载期间遇到注入对象暂时缺失，未完成该完整脚本；最终以上述源码稳定后的专项只读核对确认本次应用状态。
 - 人工验收：打开一个空闲的总纲/规划/工作会话，点击顶部“解除绑定”并确认；应保留同一聊天、退出任务流外壳，原任务资料仍保留。之后继续普通对话及重启 Codex，均不应重新出现任务流绑定。本轮未在真实业务数据上执行此操作。
+
+
+# 2026-10-07 发送失败：预热页面抢占会话中继
+
+- 实际日志：用户发送触发 /api/native-conversations/prepare 多次失败 session_relay_not_leader。只读核对 native_session_proxy：leader 为 Codex Page 的 window=page&prewarm=1 辅助 renderer，主窗口使用另一个 relay_id。不是输入框接口或线程数据丢失。
+- 修复：后端 targetAllowed 解码 initialRoute 并排除 Page 专用窗口、预热窗口和已有原生辅助窗口；兼容配置补充辅助窗口排除条件；UI install 在初始化前做相同校验并销毁旧辅助注入，防止既存新文档脚本再次抢占。普通主窗口内 Page 和原生线程路由继续允许。
+- 现场恢复：仅对已核实的辅助 renderer 销毁 Better Codex 注入，并移除其旧 Page.addScriptToEvaluateOnNewDocument 注册；未关闭原生窗口或会话、未发送或重放模型消息、未手工修改数据库。
+- 验证：native-desktop-bridge 增加辅助窗口 URL、targetAllowed、早期退出及旧注入销毁测试；native-conversation-adapter、native-inline-ui、native-ui 和修改文件语法检查通过。实际源码应用状态 ready/error=null、sourceMatches=true；主窗口 ready=true/error=null；主窗口 relay_id 与权威库 leader 相同，lease 有效。实际消息发送由用户手动验证。
+
+
+## 2026-10-07：顶部已归档聊天与用量入口修复
+
+- 已归档聊天跳转更新为新版原生 `/archive` 页面；旧 `/settings/data-controls` 路径不再使用。
+- 桌面通信白名单补充精确 `GET /api/account/usage`，继续拒绝其他账号路径和该路径的写请求；原入口被 `invalid_bridge_request` 拒绝是用量显示不可用的主因。
+- 额度解析优先新版 `rateLimitsByLimitId.codex` 并兼容旧格式；初始化成功后才读取额度，缺失百分比保持不可用。
+- 验证：codex-usage、native-desktop-bridge、native-ui 专项测试及修改源码语法检查通过；新增额度测试已纳入常规测试入口。真实只读额度查询返回每周剩余 97%，顶部显示相同结果并提供重置时间。点击实际归档入口后出现 Archived chats 页面，随后返回原会话。
+- 自动应用状态 ready、error=null，源码与已应用版本一致，运行后端 revision 与 backendHash 一致；UI ready=true、bootstrapError=null，原生会话中继仍连接。本轮未操作真实聊天的取消归档或删除，也未发起模型业务请求。
+
+## 2026-10-07：任务流二次审核断点修复
+
+- 开发交付、开始验收及提交验收结果均校验当前任务范围与报告版本顺序；不能跳过开始验收直接通过，也不能重新开工后复用旧交付。审核退回或已有交付后，再次提交开发完成必须先登记新的开发开始。拒绝操作保留已有报告与证据。
+- 技术通过待人工时，状态查询和展示人工步骤保留已有通过结果；实际重新验收须登记新的开始验收。失败结论支持当前版本下同轮补充证据，进入新开发轮后旧失败不可复用。旧待审核成果可直接开始真实验收；旧阻塞缺少恢复阶段时，按有效记录恢复，资料不足则回到待办。
+- 活动工作会话 A 在浏览会话 B 时仍可记录自身任务阶段；B、历史、跨项目、已解绑或归属不明确的会话不能借用 A 的权限。
+- 六项源 Skill 补齐上述回路、资料变更后的重新开发、单轮失败结论提交、持续验收与重新验收的区别，以及用户主动换 Skill 执行对应工作的授权规则。初始或历史任务不因 evidence_valid=false 被误判为必须重开发；README 和工具说明同步。
+- 完整 npm test 回归通过；最后开发交付门槛修改后，task-workflow、task-workflow-integration 和 project-mcp 专项再次通过。native-work-conversations 专项与六项 Skill 的 quick_validate 均通过。验证使用隔离 fixture，未发送真实模型业务请求、修改真实业务任务或中断运行会话。
+- 本轮最终实际应用检查：自动更新为 waiting_for_idle、error=null，两个任务仍有执行活动，源码与已应用版本尚不一致；运行后端与当前已应用构建一致。只读原生 thread/read 已确认其中工作线程为 active/inProgress。更新已排队，不能将源码及测试通过表述为本轮修复已在桌面生效。等待真实工作结束后由既有自动应用机制更新，再核对六项托管 Skill 和工作流工具。

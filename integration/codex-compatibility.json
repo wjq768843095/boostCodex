@@ -19,7 +19,9 @@
     ],
     "excludedRoutes": [
       "initialRoute=%2Fglobal-dictation",
-      "initialRoute=%2Favatar-overlay"
+      "initialRoute=%2Favatar-overlay",
+      "window%3Dpage",
+      "prewarm%3D1"
     ]
   },
   "selectors": {

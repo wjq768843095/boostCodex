@@ -35,10 +35,10 @@ async function run() {
     assert.equal((await ok('/api/session-relay/poll','POST',pollBody)).command,null);
     assert.ok(!/codex_exec|planning_process_started|scheduler_started/.test(output),'fixture must never start a model process');
     const event=async(threadId,turnId)=>ok('/api/session-relay/events','POST',{relay_id:relayId,method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}});
-    const bind=async(kind,issueId)=>{
-      const query=new URLSearchParams({project_id:project.id,kind,...(issueId?{issue_id:issueId}:{})});
+    const bind=async(kind,issueId,conversationId)=>{
+      const query=new URLSearchParams({project_id:project.id,kind,...(issueId?{issue_id:issueId}:{}),...(conversationId?{conversation_id:conversationId}:{})});
       const context=await ok('/api/native-conversations/context?'+query);
-      const args={project_id:project.id,kind,...(issueId?{issue_id:issueId}:{}),relay_id:relayId,host_id:'local',request_id:randomUUID(),expected_revision:context.expected_revision,draft_generation:context.draft_generation};
+      const args={project_id:project.id,kind,...(issueId?{issue_id:issueId}:{}),...(conversationId?{conversation_id:conversationId}:{}),relay_id:relayId,host_id:'local',request_id:randomUUID(),expected_revision:context.expected_revision,draft_generation:context.draft_generation};
       const prepared=await ok('/api/native-conversations/prepare','POST',args);
       assert.equal(prepared.dynamic_tools.length,kind==='work'?6:5);
       assert.equal(prepared.dynamic_tools.some(tool=>tool.name==='better_codex_project_task_transition'),kind==='work');
@@ -73,6 +73,7 @@ async function run() {
     await reject('/api/project-tools/project_task_transition',{project_id:project.id,thread_id:bound.threadId,expected_version:await version(),action:'development_complete',summary:'缺少证据'},'workflow_evidence_required');
     const completed=await direct({expected_version:await version(),action:'development_complete',summary:'开发完成',evidence:['隔离接口检查通过'],pending_manual:['手动检查实际页面']});
     assert.equal(completed.task.status,'in_review');assert.equal(completed.workflow.result,'development_complete');
+    await reject('/api/project-tools/project_task_transition',{project_id:project.id,thread_id:bound.threadId,expected_version:await version(),action:'review_passed',summary:'未开始验收不能直接通过',evidence:['开发侧检查']},'workflow_review_required');
     const replay=await native(startId,startArgs);assert.deepEqual(replay,started);assert.equal((await read()).status,'in_review');assert.deepEqual((await context()).task.workflow,completed.workflow,'old tool replay cannot overwrite the stage');
     await event(bound.threadId,'previous-native-turn');assert.equal((await read()).status,'in_review');assert.deepEqual((await context()).task.workflow,completed.workflow);
     await event(bound.threadId,bound.turnId);assert.equal((await read()).status,'in_review');assert.deepEqual((await context()).task.workflow,completed.workflow,'turn completion retains the reported business stage');
@@ -87,11 +88,74 @@ async function run() {
     await reject(issueRoute+'/workflow',{expected_version:await version(),action:'accept'},'issue_execution_running');
     await event(bound.threadId,lastTurn);
     assert.equal((await read()).status,'in_review');assert.deepEqual((await context()).task.workflow,passed.workflow,'a later native turn cannot replace verified business evidence');
+    await ok(issueRoute,'PATCH',{version:await version(),priority:'high'});
+    await ok('/api/project-tools/project_charter_save','POST',{project_id:project.id,thread_id:charter.threadId,expected_revision:confirmed.revision,sections:[{id:'scope',title:'新草稿',content:'当前任务仍固定使用旧确认范围'}]});
+    assert.equal((await context()).task.workflow.evidence_valid,true,'metadata and a later unconfirmed charter do not invalidate pinned task evidence');
+    const retest=await direct({expected_version:await version(),action:'start_review',summary:'人工确认前重新技术验收'});
+    assert.equal(retest.workflow.result,'reviewing');
+    const retested=await direct({expected_version:await version(),action:'review_passed',summary:'重新技术验收通过',evidence:['重新检查接口与状态']});
+    assert.equal(retested.workflow.result,'review_passed');assert.deepEqual(retested.workflow.pending_manual,['手动检查实际页面']);
     await reject('/api/native-conversations/tool',callArgs(randomUUID(),{expected_version:await version(),action:'accept',summary:'禁止代理代验收'}),'workflow_user_acceptance_required');
     const accepted=await ok(issueRoute+'/workflow','POST',{expected_version:await version(),action:'accept'});
     assert.equal(accepted.issue.status,'done');assert.equal(accepted.workflow.result,'accepted');assert.deepEqual(accepted.workflow.pending_manual,[]);
     await reject(issueRoute+'/workflow',{expected_version:passed.task.version,action:'accept'},'version_conflict');
     assert.equal((await ok('/api/session-relay/poll','POST',pollBody)).command,null,'workflow updates never queue native or model requests');
+
+    const cycleIssue=await ok('/api/issues','POST',{project_id:project.id,title:'开发轮次隔离',native_only:true,status:'todo'});
+    const cycle=await bind('work',cycleIssue.id);await event(cycle.threadId,cycle.turnId);
+    const cycleRoute='/api/issues/'+cycleIssue.id,cycleVersion=async()=>(await ok(cycleRoute)).version;
+    const cycleArgs=async(action,extra={})=>({project_id:project.id,thread_id:cycle.threadId,expected_version:await cycleVersion(),action,summary:'开发轮次测试 '+action,...extra});
+    const cyclePhase=async(action,extra={})=>ok('/api/project-tools/project_task_transition','POST',await cycleArgs(action,extra));
+    await cyclePhase('start_development');await cyclePhase('development_complete',{evidence:['第一轮开发检查']});
+    await reject('/api/project-tools/project_task_transition',await cycleArgs('review_failed',{evidence:['尚未正式开始验收']}),'workflow_review_required');
+    await cyclePhase('start_review');
+    const failed=await cyclePhase('review_failed',{evidence:['第一轮验收发现缺陷']});assert.equal(failed.task.status,'in_progress');
+    const failedAgain=await cyclePhase('review_failed',{evidence:['第一轮验收发现缺陷']});assert.equal(failedAgain.task.status,'in_progress');assert.equal(failedAgain.workflow.result,'review_failed','same review round permits repeat failure reports');
+    await cyclePhase('start_development');
+    await reject('/api/project-tools/project_task_transition',await cycleArgs('review_failed',{evidence:['第一轮验收发现缺陷']}),'workflow_review_required');
+    await ok(cycleRoute,'PATCH',{version:await cycleVersion(),status:'in_review'});
+    await reject('/api/project-tools/project_task_transition',await cycleArgs('start_review'),'workflow_development_required');
+    await cyclePhase('start_development');await cyclePhase('development_complete',{evidence:['最新开发轮次已修复']});
+    await cyclePhase('start_review');
+    const repaired=await cyclePhase('review_passed',{evidence:['最新开发轮次验收通过']});assert.equal(repaired.task.status,'done');
+
+    const ownerIssue=await ok('/api/issues','POST',{project_id:project.id,title:'活动线程归属隔离',native_only:true,status:'todo'});
+    const createWork=async title=>(await ok('/api/native-conversations/create','POST',{project_id:project.id,kind:'work',issue_id:ownerIssue.id,title})).conversation;
+    const ownerA=await createWork('开发会话 A'),viewerB=await createWork('浏览会话 B');
+    const bBound=await bind('work',ownerIssue.id,viewerB.conversation_id);await event(bBound.threadId,bBound.turnId);
+    const aBound=await bind('work',ownerIssue.id,ownerA.conversation_id);
+    const ownerRoute='/api/issues/'+ownerIssue.id;
+    const ownerVersion=async()=>(await ok(ownerRoute)).version;
+    const ownerPhaseArgs=async(threadId,action,extra={})=>({project_id:project.id,thread_id:threadId,expected_version:await ownerVersion(),action,summary:'活动线程归属 '+action,...extra});
+    const ownerList=()=>ok('/api/native-conversations/list?'+new URLSearchParams({project_id:project.id,kind:'work',issue_id:ownerIssue.id}));
+    const readWork=row=>ok('/api/native-conversations/context?'+new URLSearchParams({project_id:project.id,kind:'work',issue_id:ownerIssue.id,conversation_id:row.conversation_id}));
+    const activeBefore=await ok(ownerRoute);
+    await ok('/api/native-conversations/select','POST',{project_id:project.id,issue_id:ownerIssue.id,conversation_id:viewerB.conversation_id});
+    const browsing=await readWork(viewerB),browsingList=await ownerList();
+    assert.equal(browsing.thread_id,bBound.threadId);assert.equal(browsing.task_execution_running,true);assert.equal(browsing.binding.active_turn_id,null);
+    assert.equal(browsingList.selected_conversation_id,viewerB.conversation_id);
+    assert.equal(browsingList.conversations.find(row=>row.conversation_id===ownerA.conversation_id).session_active_turn_id,aBound.turnId);
+    const activeAfter=await ok(ownerRoute);
+    assert.equal(activeAfter.session_thread_id,aBound.threadId);assert.equal(activeAfter.session_active_turn_id,aBound.turnId);assert.equal(activeAfter.version,activeBefore.version,'browsing never changes active ownership or task version');
+    const ownerStarted=await ok('/api/project-tools/project_task_transition','POST',await ownerPhaseArgs(aBound.threadId,'start_development'));
+    assert.equal(ownerStarted.workflow.thread_id,aBound.threadId);assert.equal(ownerStarted.workflow.turn_id,aBound.turnId);
+    await reject('/api/project-tools/project_task_transition',await ownerPhaseArgs(bBound.threadId,'development_complete',{evidence:['浏览线程没有活动回合']}),'session_thread_mismatch');
+    await ok('/api/project-tools/project_task_transition','POST',await ownerPhaseArgs(aBound.threadId,'development_complete',{evidence:['活动线程开发完成']}));
+    await ok('/api/native-conversations/select','POST',{project_id:project.id,issue_id:ownerIssue.id,conversation_id:ownerA.conversation_id});
+    assert.equal((await ownerList()).selected_conversation_id,ownerA.conversation_id);
+    assert.equal((await readWork(ownerA)).binding.active_turn_id,aBound.turnId);
+    await event(aBound.threadId,aBound.turnId);
+    await ok('/api/project-tools/project_task_transition','POST',await ownerPhaseArgs(aBound.threadId,'start_review'));
+    const ownerPassed=await ok('/api/project-tools/project_task_transition','POST',await ownerPhaseArgs(aBound.threadId,'review_passed',{evidence:['回到活动会话后验收通过']}));
+    assert.equal(ownerPassed.task.status,'done');
+
+    const blockedIssue=await ok('/api/issues','POST',{project_id:project.id,title:'缺少历史的旧阻塞任务',native_only:true,status:'blocked'});
+    const blocked=await bind('work',blockedIssue.id);await event(blocked.threadId,blocked.turnId);
+    const blockedRoute='/api/issues/'+blockedIssue.id;
+    const resumed=await ok('/api/project-tools/project_task_transition','POST',{project_id:project.id,thread_id:blocked.threadId,expected_version:(await ok(blockedRoute)).version,action:'resume',summary:'恢复旧任务'});
+    assert.equal(resumed.task.status,'todo');assert.equal(resumed.workflow.stage,'todo');
+    const resumedDevelopment=await ok('/api/project-tools/project_task_transition','POST',{project_id:project.id,thread_id:blocked.threadId,expected_version:resumed.task.version,action:'start_development',summary:'重新开始开发'});
+    assert.equal(resumedDevelopment.task.status,'in_progress');
 
     const historicalIssue=await ok('/api/issues','POST',{project_id:project.id,title:'历史会话隔离测试',native_only:true,status:'todo'});
     const old=await bind('work',historicalIssue.id);await event(old.threadId,old.turnId);
@@ -102,7 +166,8 @@ async function run() {
     await reject('/api/native-conversations/tool',{...callArgs(randomUUID(),{expected_version:(await ok('/api/issues/'+historicalIssue.id)).version,action:'start_development',summary:'历史只读'}),thread_id:old.threadId},'native_history_read_only');
     await reject('/api/project-tools/project_task_transition',{project_id:project.id,thread_id:old.threadId,expected_version:(await ok('/api/issues/'+historicalIssue.id)).version,action:'start_development',summary:'历史只读',history_id:history.history_id},'native_history_read_only');
     assert.equal((await ok('/api/session-relay/poll','POST',pollBody)).command,null);
-    console.log('PASS: real HTTP workflow stages, evidence/version guards, scoped native tools, replay/lifecycle preservation, manual acceptance and no automatic dispatch');
+    assert.ok(!/codex_exec|planning_process_started|scheduler_started/.test(output),'no model business request may occur during workflow or conversation tests');
+    console.log('PASS: real HTTP review gates/development rounds, retryable failure reports, scoped active-thread ownership, legacy blocked recovery, evidence/version guards, replay/lifecycle preservation, manual acceptance and no automatic dispatch');
   } finally {
     if(child?.exitCode===null&&port&&token) await api('/api/shutdown','POST',{}).catch(()=>{});
     if(child?.exitCode===null) {await Promise.race([once(child,'exit'),new Promise(resolve=>setTimeout(resolve,4000))]);if(child.exitCode===null)child.kill();}

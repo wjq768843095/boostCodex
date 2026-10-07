@@ -22,7 +22,7 @@ ALTER TABLE issues ADD COLUMN priority TEXT;
 ALTER TABLE issues ADD COLUMN labels_json TEXT;
 ALTER TABLE issues ADD COLUMN sort_order INTEGER;
 `);
-const store={db,getIssue:id=>db.prepare('SELECT * FROM issues WHERE id=?').get(id),transaction(fn){db.exec('BEGIN IMMEDIATE');try {const result=fn();db.exec('COMMIT');return result;} catch(error){db.exec('ROLLBACK');throw error;}}};
+const store={db,getIssue:id=>db.prepare('SELECT * FROM issues WHERE id=?').get(id),getProject:id=>({id,workspace_path:'D:/fixture'}),isTitleRegenerationPending:()=>false,transaction(fn){db.exec('BEGIN IMMEDIATE');try {const result=fn();db.exec('COMMIT');return result;} catch(error){db.exec('ROLLBACK');throw error;}}};
 store.taskWorkflow=createTaskWorkflow({store});
 const workflow=store.taskWorkflow;
 function task(id,status='todo') {db.prepare("INSERT INTO issues(id,project_id,status,version,needs_attention,pending_actor,archived_at,updated_at,title,description,workspace_path) VALUES(?,'p',?,1,1,'agent',NULL,'2026-01-01','task','original scope','D:/fixture')").run(id,status);}
@@ -34,15 +34,12 @@ function bind(id,thread) {
 const transition=(id,action,extra={},actor='skill')=>workflow.transition({issue_id:id,thread_id:'thread-'+id,expected_version:store.getIssue(id).version,action,summary:action,...extra},{actor});
 const throws=(fn,code)=>assert.throws(fn,error=>error.message===code,code);
 function edit(id,patch) {
-  return store.transaction(()=>{
-    const previous=store.getIssue(id),keys=Object.keys(patch);
-    db.prepare('UPDATE issues SET '+keys.map(key=>key+'=?').join(',')+',version=version+1 WHERE id=? AND version=?').run(...keys.map(key=>patch[key]),id,previous.version);
-    const saved=store.getIssue(id);workflow.manualStatus(previous,saved);return saved;
-  });
+  return store.updateIssue(id,store.getIssue(id).version,patch);
 }
 function pendingReview(id) {
   task(id);bind(id,'thread-'+id);transition(id,'start_development');
   transition(id,'development_complete',{evidence:['implementation verified'],pending_manual:['device acceptance']});
+  transition(id,'start_review');
   return transition(id,'review_passed',{evidence:['review checked against scope']});
 }
 
@@ -51,10 +48,37 @@ const source=fs.readFileSync(path.join(__dirname,'../src/backend/better-codex.cj
 function method(name) {
   const start=source.indexOf('      '+name+'('),end=source.indexOf('\n      }',start)+8;
   assert.ok(start>=0 && end>start,name);
-  return new Function('now','return ({'+source.slice(start,end)+'});')(()=>new Date().toISOString())[name];
+  return new Function('now','issueStatuses','issuePriorities','asPendingActor','cleanTitle','cleanLabels','return ({'+source.slice(start,end)+'});')(()=>new Date().toISOString(),['backlog','todo','in_progress','in_review','done','blocked'],['none','low','medium','high','urgent'],value=>value,value=>value.trim(),value=>value)[name];
 }
-for(const name of ['sessionTurnStarted','completeSessionTurn','finalizeScheduler']) store[name]=method(name);
+for(const name of ['sessionTurnStarted','completeSessionTurn','finalizeScheduler','updateIssue']) store[name]=method(name);
 try {
+  // An existing table is upgraded only after a verified, recoverable single-table backup.
+  const legacyDb=new DatabaseSync(':memory:');
+  try {
+    legacyDb.exec(`CREATE TABLE issues(id TEXT PRIMARY KEY);INSERT INTO issues VALUES('legacy');
+      CREATE TABLE unrelated(marker TEXT);INSERT INTO unrelated VALUES('must remain outside backup');
+      CREATE TABLE issue_task_workflow(issue_id TEXT PRIMARY KEY REFERENCES issues(id),stage TEXT NOT NULL,result TEXT,task_version INTEGER NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',evidence_json TEXT NOT NULL DEFAULT '[]',pending_manual_json TEXT NOT NULL DEFAULT '[]',reports_json TEXT NOT NULL DEFAULT '{}',
+      blocked_from_status TEXT,thread_id TEXT,turn_id TEXT,updated_at TEXT NOT NULL);
+      INSERT INTO issue_task_workflow VALUES('legacy','review','review_passed',7,'original report','["verified"]','["device"]','{}',NULL,'old-thread','old-turn','2026-01-01');`);
+    const original=legacyDb.prepare('SELECT * FROM issue_task_workflow').get(),originalColumns=legacyDb.prepare('PRAGMA table_info(issue_task_workflow)').all().map(row=>row.name);
+    throws(()=>createTaskWorkflow({store:{db:legacyDb}}),'workflow_backup_home_required');
+    assert.deepEqual(legacyDb.prepare('PRAGMA table_info(issue_task_workflow)').all().map(row=>row.name),originalColumns);
+    const blockedHome=path.join(home,'backup-path-is-file');fs.writeFileSync(blockedHome,'fixture');
+    assert.throws(()=>createTaskWorkflow({store:{db:legacyDb},home:blockedHome}));
+    assert.deepEqual(legacyDb.prepare('SELECT * FROM issue_task_workflow').get(),original);
+    assert.deepEqual(legacyDb.prepare('PRAGMA table_info(issue_task_workflow)').all().map(row=>row.name),originalColumns);
+    const authority=path.join(home,'fixture-authority'),upgraded=createTaskWorkflow({store:{db:legacyDb,file:path.join(authority,'better-codex.db')}});
+    assert.ok(upgraded.schema_backup_path.startsWith(path.join(authority,'backups','task-workflow')));
+    assert.ok(fs.statSync(upgraded.schema_backup_path).size);
+    const backupText=fs.readFileSync(upgraded.schema_backup_path,'utf8'),schemaBackup=JSON.parse(backupText);
+    assert.equal(schemaBackup.table,'issue_task_workflow');assert.ok(schemaBackup.schema_sql.includes('CREATE TABLE issue_task_workflow'));
+    assert.deepEqual(schemaBackup.rows,[JSON.parse(JSON.stringify(original))]);assert.ok(!backupText.includes('must remain outside backup'));
+    const {scope_hash,...restored}=legacyDb.prepare('SELECT * FROM issue_task_workflow').get();
+    assert.equal(scope_hash,null);assert.deepEqual(restored,{...original});
+    assert.deepEqual(legacyDb.prepare('PRAGMA table_info(issue_task_workflow)').all().map(row=>row.name),[...originalColumns,'scope_hash']);
+    assert.equal(createTaskWorkflow({store:{db:legacyDb}}).schema_backup_path,null);
+  } finally {legacyDb.close();}
   task('discussion');bind('discussion','thread-discussion');
   const initial=store.getIssue('discussion').version;
   store.sessionTurnStarted('thread-discussion','discussion-turn');
@@ -63,6 +87,7 @@ try {
   assert.equal(discussion.should_schedule,false);assert.equal(store.getIssue('discussion').status,'todo');
   task('a');bind('a','thread-a');task('b');bind('b','thread-b');
   workflow.ensure('a');
+  assert.equal(workflow.get('a').evidence_valid,false,'todo is not verified');
   throws(()=>transition('a','development_complete',{evidence:['check']}),'workflow_development_required');
   throws(()=>transition('a','start_development',{thread_id:'thread-b'}),'session_thread_mismatch');
   throws(()=>transition('a','start_development',{expected_version:999}),'version_conflict');
@@ -83,11 +108,15 @@ try {
   assert.ok(workflow.get('a').reports.development_complete);assert.deepEqual(workflow.get('a').pending_manual,[]);
   task('fix');bind('fix','thread-fix');store.sessionTurnStarted('thread-fix','turn-fix');
   transition('fix','start_development');transition('fix','development_complete',{evidence:['first implementation']});
+  throws(()=>transition('fix','review_failed',{evidence:['must open review']}),'workflow_review_required');
+  transition('fix','start_review');
   transition('fix','review_failed',{evidence:['reproduced defect']});
   assert.equal(store.getIssue('fix').status,'in_progress');assert.equal(store.getIssue('fix').needs_attention,0);
   transition('fix','block');assert.equal(store.getIssue('fix').status,'blocked');
   transition('fix','resume');assert.equal(store.getIssue('fix').status,'in_progress');
+  transition('fix','start_development');
   transition('fix','development_complete',{evidence:['fixed defect']});
+  transition('fix','start_review');
   transition('fix','review_passed',{evidence:['review and tests passed']});
   const doneVersion=store.getIssue('fix').version;
   store.completeSessionTurn('thread-fix','turn-fix','completed');
@@ -125,14 +154,105 @@ try {
     assert.equal(workflow.get(id).stage,'review');
     throws(()=>transition(id,'start_review'),'workflow_development_required');
     transition(id,'start_development');transition(id,'development_complete',{evidence:['new scope implementation verified']});
+    transition(id,'start_review');
     transition(id,'review_passed',{evidence:['new scope reviewed']});
     assert.equal(transition(id,'accept',{},'user').task.status,'done');
   }
   const unaffected=pendingReview('metadata'),technical=unaffected.workflow.reports.review_passed;
-  edit('metadata',{priority:'high',labels_json:'["focus"]',sort_order:999});
+  edit('metadata',{priority:'high',labels:['focus'],sort_order:999});
   assert.equal(workflow.get('metadata').result,'review_passed');assert.equal(workflow.get('metadata').evidence_valid,true);
   assert.deepEqual(workflow.get('metadata').reports.review_passed,technical);
   assert.equal(transition('metadata','accept',{},'user').task.status,'done');
+  pendingReview('repeat-review');
+  throws(()=>transition('repeat-review','review_passed',{evidence:['new result without review']}),'workflow_review_required');
+  throws(()=>transition('repeat-review','review_failed',{evidence:['new failure without review']}),'workflow_review_required');
+  transition('repeat-review','start_review');
+  throws(()=>transition('repeat-review','accept',{},'user'),'workflow_acceptance_required');
+  edit('repeat-review',{priority:'high',sort_order:112});
+  assert.equal(workflow.get('repeat-review').evidence_valid,true);
+  const latestReview=transition('repeat-review','review_passed',{evidence:['second review confirmed']});
+  assert.ok(latestReview.workflow.reports.start_review.task_version>latestReview.workflow.reports.development_complete.task_version);
+  assert.ok(latestReview.workflow.reports.review_passed.task_version>latestReview.workflow.reports.start_review.task_version);
+  throws(()=>transition('repeat-review','accept',{expected_version:latestReview.task.version-1},'user'),'version_conflict');
+  assert.equal(transition('repeat-review','accept',{},'user').task.status,'done');
+  const prior=pendingReview('new-development').workflow;
+  transition('new-development','start_development');
+  assert.equal(workflow.get('new-development').evidence_valid,false);
+  assert.deepEqual(workflow.get('new-development').reports.development_complete,prior.reports.development_complete);
+  edit('new-development',{status:'in_review'});
+  throws(()=>transition('new-development','start_review'),'workflow_development_required');
+  throws(()=>transition('new-development','accept',{},'user'),'workflow_acceptance_required');
+  transition('new-development','start_development');transition('new-development','development_complete',{evidence:['new implementation']});
+  transition('new-development','start_review');transition('new-development','review_passed',{evidence:['new review']});
+  assert.equal(transition('new-development','accept',{},'user').task.status,'done');
+  task('repeat-failure');bind('repeat-failure','thread-repeat-failure');
+  transition('repeat-failure','start_development');transition('repeat-failure','development_complete',{evidence:['implementation'],pending_manual:['device']});
+  transition('repeat-failure','start_review');
+  const failed=transition('repeat-failure','review_failed',{evidence:['defect A']});
+  const beforeUndeclaredFix=workflow.get('repeat-failure');
+  throws(()=>transition('repeat-failure','development_complete',{evidence:['fix without new development start']}),'workflow_development_required');
+  assert.deepEqual(workflow.get('repeat-failure'),beforeUndeclaredFix);
+  const repeated=transition('repeat-failure','review_failed',{evidence:['defect B','defect A']});
+  assert.equal(repeated.task.status,'in_progress');assert.equal(repeated.workflow.stage,'development');
+  assert.deepEqual(repeated.workflow.evidence,['defect A','defect B']);assert.deepEqual(repeated.workflow.pending_manual,['device']);
+  assert.equal(repeated.workflow.reports.start_review.task_version,failed.workflow.reports.start_review.task_version);
+  assert.equal(repeated.workflow.evidence_valid,true);
+  throws(()=>transition('repeat-failure','review_failed',{evidence:['defect C'],pending_manual:[]}),'pending_manual_acceptance_required');
+  transition('repeat-failure','start_development');
+  throws(()=>transition('repeat-failure','review_failed',{evidence:['old failure']}),'workflow_review_required');
+  transition('repeat-failure','development_complete',{evidence:['all defects fixed']});transition('repeat-failure','start_review');
+  transition('repeat-failure','review_passed',{evidence:['all defect regression checks']});
+  assert.equal(transition('repeat-failure','accept',{},'user').task.status,'done');
+  task('repeat-delivery');bind('repeat-delivery','thread-repeat-delivery');
+  transition('repeat-delivery','start_development');transition('repeat-delivery','development_complete',{evidence:['first delivery']});
+  edit('repeat-delivery',{status:'in_progress'});
+  const firstDelivery=workflow.get('repeat-delivery');
+  throws(()=>transition('repeat-delivery','development_complete',{evidence:['cannot reuse old start']}),'workflow_development_required');
+  assert.deepEqual(workflow.get('repeat-delivery'),firstDelivery);
+  transition('repeat-delivery','start_development');transition('repeat-delivery','development_complete',{evidence:['new development delivery']});
+  transition('repeat-delivery','start_review');transition('repeat-delivery','review_passed',{evidence:['reviewed delivery'],pending_manual:['manual approval']});
+  edit('repeat-delivery',{status:'in_progress'});
+  throws(()=>transition('repeat-delivery','development_complete',{evidence:['cannot bypass post-review start']}),'workflow_development_required');
+  transition('repeat-delivery','start_development');transition('repeat-delivery','development_complete',{evidence:['post-review revision']});
+  transition('repeat-delivery','start_review');transition('repeat-delivery','review_passed',{evidence:['new revision reviewed']});
+  assert.equal(transition('repeat-delivery','accept',{},'user').task.status,'done');
+  task('legacy-reopened','in_review');bind('legacy-reopened','thread-legacy-reopened');workflow.ensure('legacy-reopened');
+  assert.equal(workflow.get('legacy-reopened').evidence_valid,false,'legacy status is not technical acceptance');
+  transition('legacy-reopened','start_development');edit('legacy-reopened',{status:'in_review'});
+  throws(()=>transition('legacy-reopened','start_review'),'workflow_development_required');
+  task('old-blocked','blocked');bind('old-blocked','thread-old-blocked');
+  transition('old-blocked','block',{evidence:['dependency unavailable']});
+  const restored=transition('old-blocked','resume',{evidence:['dependency restored']});
+  assert.equal(restored.task.status,'todo');assert.equal(restored.workflow.stage,'todo');assert.equal(restored.workflow.result,null);
+  assert.equal(restored.workflow.evidence_valid,false);assert.equal(restored.workflow.reports.development_complete,undefined);
+  transition('old-blocked','start_development');assert.equal(store.getIssue('old-blocked').status,'in_progress');
+  pendingReview('proven-blocked');transition('proven-blocked','block');
+  db.prepare("UPDATE issue_task_workflow SET blocked_from_status=NULL WHERE issue_id='proven-blocked'").run();
+  const proven=transition('proven-blocked','resume');assert.equal(proven.task.status,'in_review');assert.equal(proven.workflow.result,'review_passed');
+  assert.deepEqual(proven.workflow.pending_manual,['device acceptance']);assert.notEqual(proven.task.status,'done');
+  task('active-owner');bind('active-owner','thread-active-owner');store.sessionTurnStarted('thread-active-owner','owner-turn');
+  db.prepare("UPDATE issue_native_conversations SET selected=0,active_turn_id='owner-turn',status='running' WHERE issue_id='active-owner'").run();
+  db.prepare("INSERT INTO issue_native_conversations VALUES('owner-next','active-owner','thread-owner-next','ready',1,NULL,NULL)").run();
+  db.prepare("INSERT INTO native_conversation_bindings VALUES('thread-owner-next','active-owner','work',NULL)").run();
+  assert.equal(transition('active-owner','start_development').task.status,'in_progress');
+  throws(()=>transition('active-owner','development_complete',{thread_id:'thread-owner-next',evidence:['non owner']}),'session_thread_mismatch');
+  throws(()=>transition('active-owner','development_complete',{thread_id:'thread-b',evidence:['foreign']}),'session_thread_mismatch');
+  throws(()=>transition('active-owner','development_complete',{expected_version:1,evidence:['stale version']}),'version_conflict');
+  db.prepare("UPDATE issue_native_conversations SET active_turn_id='different-turn' WHERE conversation_id='conversation-active-owner'").run();
+  throws(()=>transition('active-owner','development_complete',{evidence:['ambiguous owner']}),'session_thread_mismatch');
+  db.prepare("UPDATE issue_native_conversations SET selected=CASE WHEN conversation_id='conversation-active-owner' THEN 1 ELSE 0 END WHERE issue_id='active-owner'").run();
+  throws(()=>transition('active-owner','development_complete',{evidence:['selected cannot bypass conflicting turns']}),'session_thread_mismatch');
+  db.prepare("UPDATE issue_native_conversations SET selected=CASE WHEN conversation_id='owner-next' THEN 1 ELSE 0 END WHERE issue_id='active-owner'").run();
+  db.prepare("UPDATE issue_native_conversations SET active_turn_id='owner-turn' WHERE conversation_id='conversation-active-owner'").run();
+  transition('active-owner','development_complete',{evidence:['actual owner implementation']});
+  db.prepare("INSERT INTO native_conversation_unbindings VALUES('thread-active-owner')").run();
+  throws(()=>transition('active-owner','start_review'),'native_conversation_unbound');
+  db.prepare("DELETE FROM native_conversation_unbindings WHERE thread_id='thread-active-owner'").run();
+  db.prepare("UPDATE issue_native_conversations SET status='closed' WHERE conversation_id='conversation-active-owner'").run();
+  throws(()=>transition('active-owner','start_review'),'native_history_read_only');
+  db.prepare("UPDATE issue_native_conversations SET status='ready',active_turn_id=NULL WHERE conversation_id='conversation-active-owner'").run();
+  store.completeSessionTurn('thread-active-owner','owner-turn','completed');
+  throws(()=>transition('active-owner','start_review'),'session_thread_mismatch','inactive non-selected thread remains refused');
   pendingReview('scope-bypass');db.prepare("UPDATE issues SET description='changed outside editor',version=version+1 WHERE id='scope-bypass'").run();
   assert.equal(workflow.get('scope-bypass').evidence_valid,false);
   throws(()=>transition('scope-bypass','accept',{},'user'),'workflow_acceptance_required');

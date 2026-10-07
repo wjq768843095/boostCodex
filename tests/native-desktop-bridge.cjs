@@ -42,6 +42,8 @@ async function bridgeFixtures() {
     return resolved.at(-1).result;
   }
   for (const [route, method, body] of [
+    ['/api/account/usage', 'GET'],
+    ['/api/account/usage?refresh=1', 'GET'],
     ['/api/skills', 'GET'],
     ['/api/skills?scope=managed', 'GET'],
     ['/api/skills/fixture-skill', 'PATCH', JSON.stringify({ version: 2, instructions: 'fixture' })],
@@ -74,7 +76,10 @@ async function bridgeFixtures() {
     ['/api/native-conversations/context', { token: 'wrong-token' }],
     ['/api/remote-access/status', {}],
     ['/api/relay/status', {}],
-    ['/api/sync/status', {}]
+    ['/api/sync/status', {}],
+    ['/api/account/usage-other', {}],
+    ['/api/account/usage/activity', {}],
+    ['/api/account/profile', {}]
   ]) {
     const before = requests.length;
     const result = await request(route, 'GET', extra);
@@ -82,6 +87,12 @@ async function bridgeFixtures() {
     assert.equal(result.ok, false, route);
     assert.equal(result.status, 0, route);
     assert.equal(result.value.error, 'invalid_bridge_request', route);
+  }
+  for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) {
+    const before = requests.length;
+    const result = await request('/api/account/usage', method);
+    assert.equal(requests.length, before);
+    assert.equal(result.value.error, 'invalid_bridge_request');
   }
 }
 
@@ -194,7 +205,37 @@ function visibilityFixtures() {
   assert.equal(visible({ isConnected: true }), false, 'non-elements are not mount candidates');
 }
 
+function auxiliaryWindowFixtures() {
+  const main = 'app://-/index.html';
+  const page = main + '?initialRoute=' + encodeURIComponent('/space/local-page-test?window=page&prewarm=1');
+  for (const source of [backend, ui]) {
+    const ctx = vm.createContext({ URL });
+    vm.runInContext(readFunction(source, 'isAuxiliaryDesktopUrl'), ctx);
+    assert.equal(ctx.isAuxiliaryDesktopUrl(main), false);
+    assert.equal(ctx.isAuxiliaryDesktopUrl(main + '?initialRoute=' + encodeURIComponent('/local/thread-test')), false);
+    assert.equal(ctx.isAuxiliaryDesktopUrl(main + '?initialRoute=' + encodeURIComponent('/space/page-test')), false, 'ordinary main-window Pages remain allowed');
+    for (const value of [page, main + '?initialRoute=/space/test?window=page', main + '?prewarm=1', main + '?initialRoute=%2Fglobal-dictation', main + '?initialRoute=%2Favatar-overlay', 'app://-/detached-window.html']) {
+      assert.equal(ctx.isAuxiliaryDesktopUrl(value), true, value);
+    }
+  }
+  const compatibility = JSON.parse(fs.readFileSync(path.join(__dirname, '../integration/codex-compatibility.json'), 'utf8'));
+  const ctx = vm.createContext({ URL, activeCompatibility: () => compatibility });
+  vm.runInContext(readFunction(backend, 'isAuxiliaryDesktopUrl'), ctx);
+  vm.runInContext(readFunction(backend, 'targetAllowed'), ctx);
+  assert.equal(ctx.targetAllowed({ url: main }), true);
+  assert.equal(ctx.targetAllowed({ url: page }), false);
+  assert.equal(ctx.targetAllowed({ url: 'https://example.com/' }), false);
+  const install = ui.slice(ui.indexOf('  function install(config) {'), ui.indexOf('    const VERSION = config.version;'));
+  let destroyed = 0;
+  const guard = vm.createContext({ URL, window: { location: { href: page }, __betterCodexInjection__: { destroy() { destroyed++; } } } });
+  vm.runInContext(readFunction(ui, 'isAuxiliaryDesktopUrl'), guard);
+  vm.runInContext(install + '\n return { installed: true };\n}', guard);
+  assert.equal(guard.install(undefined).installed, false, 'auxiliary startup stops before bridge, relay or UI initialization');
+  assert.equal(destroyed, 1, 'obsolete auxiliary injection is disposed');
+}
+
 (async () => {
+  auxiliaryWindowFixtures();
   await bridgeFixtures();
   await recoveryFixtures();
   visibilityFixtures();

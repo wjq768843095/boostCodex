@@ -31,6 +31,7 @@ assert(!context.inlineTaskAcceptanceMarkup(task, true).includes('data-inline-acc
 assert(context.inlineTaskAcceptanceMarkup({ ...task, session_active_turn_id: 'turn-1' }).includes(' disabled'));
 assert.equal(context.inlineTaskAcceptanceMarkup({ ...task, workflow: { result: 'development_complete', pending_manual: ['检查'] } }), '');
 assert.equal(context.inlineTaskAcceptanceMarkup({ ...task, status: 'done' }), '');
+assert.equal(context.inlineTaskAcceptanceMarkup({ ...task, workflow: { ...task.workflow, evidence_valid: false } }), '');
 assert.equal(context.workflowActivityState({ status: 'todo', workflow: {} }, 'completed'), 'not-started');
 assert.equal(context.workflowActivityState({ status: 'in_progress', workflow: {} }, 'completed'), 'in_progress');
 assert.equal(context.workflowActivityState({ status: 'in_review', workflow: {} }, 'completed'), 'in_review');

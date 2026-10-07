@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 
-function createTaskWorkflow({ store }) {
+function createTaskWorkflow({ store, home }) {
   const db = store.db, now = () => new Date().toISOString();
   const fail = code => { const error = new Error(code); error.code = code; throw error; };
   const table = name => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
@@ -20,7 +20,28 @@ function createTaskWorkflow({ store }) {
     action TEXT NOT NULL, actor TEXT NOT NULL, task_version INTEGER NOT NULL,
     report_json TEXT NOT NULL, created_at TEXT NOT NULL
   );`);
-  if (!columns('issue_task_workflow').has('scope_hash')) db.exec('ALTER TABLE issue_task_workflow ADD COLUMN scope_hash TEXT');
+  let schemaBackupPath=null;
+  if (!columns('issue_task_workflow').has('scope_hash')) {
+    const authorityHome=home || (store.file && path.isAbsolute(store.file)?path.dirname(store.file):null);
+    if (!authorityHome || !path.isAbsolute(authorityHome)) fail('workflow_backup_home_required');
+    const ownsTransaction=!db.isTransaction;
+    if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+    try {
+      const schema=db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='issue_task_workflow'").get()?.sql;
+      const rows=db.prepare('SELECT * FROM issue_task_workflow').all();
+      const dependencies=db.prepare("SELECT type,name,sql FROM sqlite_master WHERE tbl_name='issue_task_workflow' AND type!='table' AND sql IS NOT NULL ORDER BY type,name").all();
+      if (!schema) fail('workflow_backup_failed');
+      const folder=path.join(authorityHome,'backups','task-workflow');fs.mkdirSync(folder,{recursive:true});
+      schemaBackupPath=path.join(folder,now().replace(/[:.]/g,'-')+'-'+randomUUID()+'-scope-schema.json');
+      const backup={kind:'issue_task_workflow_before_scope_hash',created_at:now(),table:'issue_task_workflow',schema_sql:schema,dependencies,rows};
+      fs.writeFileSync(schemaBackupPath,JSON.stringify(backup,null,2),{flag:'wx',mode:0o600});
+      if (!fs.statSync(schemaBackupPath).size) fail('workflow_backup_failed');
+      const verified=JSON.parse(fs.readFileSync(schemaBackupPath,'utf8'));
+      if (verified.table!=='issue_task_workflow' || verified.schema_sql!==schema || JSON.stringify(verified.rows)!==JSON.stringify(rows) || JSON.stringify(verified.dependencies)!==JSON.stringify(dependencies)) fail('workflow_backup_failed');
+      db.exec('ALTER TABLE issue_task_workflow ADD COLUMN scope_hash TEXT');
+      if (ownsTransaction) db.exec('COMMIT');
+    } catch(error) {if (ownsTransaction) db.exec('ROLLBACK');throw error;}
+  }
   const issue = id => store.getIssue ? store.getIssue(id) : db.prepare('SELECT * FROM issues WHERE id=?').get(id);
   function scopeHash(task) {
     const project=typeof store.getProject==='function'?store.getProject(task.project_id):null;
@@ -29,12 +50,27 @@ function createTaskWorkflow({ store }) {
       charter_revision:link?.charter_revision ?? null,plan_revision:link?.plan_revision ?? null,item_json:link?.item_json ?? null};
     return createHash('sha256').update(JSON.stringify(scope)).digest('hex');
   }
+  function reportState(reports, scope) {
+    const valid=name=>reports[name]?.scope_hash===scope && Number.isSafeInteger(reports[name]?.task_version) && reports[name].task_version>0;
+    const version=name=>valid(name)?reports[name].task_version:0;
+    const development=valid('start_development') && version('development_complete')>version('start_development') && reports.development_complete.evidence?.length>0;
+    const legacy=valid('legacy_review') && version('legacy_review')>version('start_development');
+    const source=development?reports.development_complete:legacy?reports.legacy_review:null;
+    const review=Boolean(source && version('start_review')>source.task_version);
+    const passed=review && version('review_passed')>version('start_review') && version('review_passed')>version('review_failed') && reports.review_passed.evidence?.length>0;
+    const failed=review && version('review_failed')>version('start_review') && version('review_failed')>version('review_passed') && reports.review_failed.evidence?.length>0;
+    const reviewing=review && version('start_review')>Math.max(version('review_passed'),version('review_failed'));
+    const accepted=passed && version('accept')>version('review_passed');
+    return {valid,version,development,legacy,source,review,reviewing,passed:Boolean(passed),failed:Boolean(failed),accepted:Boolean(accepted)};
+  }
   function get(id) {
     const row = db.prepare('SELECT * FROM issue_task_workflow WHERE issue_id=?').get(id);
     if (!row) return null;
     const {evidence_json,pending_manual_json,reports_json,...value}=row;
     const task=issue(id);
-    return {...value,evidence_valid:Boolean(task && value.result!=='scope_changed' && value.scope_hash && value.scope_hash===scopeHash(task)),evidence:JSON.parse(evidence_json),pending_manual:JSON.parse(pending_manual_json),reports:JSON.parse(reports_json)};
+    const reports=JSON.parse(reports_json),scope=task?scopeHash(task):null,state=reportState(reports,scope);
+    const resultValid={development_complete:state.development,reviewing:state.reviewing,review_passed:state.passed,review_failed:state.failed,accepted:state.accepted}[value.result] || false;
+    return {...value,evidence_valid:Boolean(task && value.scope_hash===scope && resultValid),evidence:JSON.parse(evidence_json),pending_manual:JSON.parse(pending_manual_json),reports};
   }
   function ensure(id) {
     const task=issue(id); if (!task) fail('issue_not_found');
@@ -80,16 +116,20 @@ function createTaskWorkflow({ store }) {
       if (actor==='skill' && !thread) fail('workflow_thread_required');
       if (thread) {
         if (table('native_conversation_unbindings') && db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(thread)) fail('native_conversation_unbound');
+        const archivedWork=table('issue_native_conversations') && db.prepare("SELECT 1 FROM issue_native_conversations WHERE issue_id=? AND thread_id=? AND status='closed'").get(task.id,thread);
+        if (archivedWork) fail('native_history_read_only');
         const binding=table('native_conversation_bindings')?db.prepare("SELECT * FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL").get(thread):null;
         if (binding && (binding.issue_id!==task.id || binding.kind!=='work')) fail('session_thread_mismatch');
         const known=activity.work.find(row=>row.thread_id===thread && row.status!=='closed') || activity.sessions.find(row=>row.thread_id===thread);
         if (!binding && !known || activity.turns.some(row=>row.thread_id!==thread)) fail('session_thread_mismatch');
-        if (activity.work.length && !activity.work.some(row=>row.thread_id===thread && row.selected)) fail('session_thread_mismatch');
+        if (new Set(activity.turns.map(row=>JSON.stringify([row.thread_id,row.active_turn_id]))).size>1) fail('session_thread_mismatch');
         const mirrored=activity.sessions[0];
+        const ownedTurn=mirrored?.thread_id===thread && mirrored.active_turn_id && activity.turns.length && activity.turns.every(row=>row.thread_id===thread && row.active_turn_id===mirrored.active_turn_id);
+        if (!ownedTurn && activity.work.length && !activity.work.some(row=>row.thread_id===thread && row.selected)) fail('session_thread_mismatch');
         if (mirrored && mirrored.thread_id!==thread) fail('session_thread_mismatch');
       } else if (activity.busy) fail('issue_execution_running');
       const current=ensure(task.id),stage=current.stage,result=current.result;
-      const scope=scopeHash(task),validReport=action=>current.reports[action]?.scope_hash===scope;
+      const scope=scopeHash(task),reportsState=reportState(current.reports,scope);
       if (task.status==='done') fail('workflow_transition_invalid');
       let status=task.status,nextStage=stage,nextResult=result,blockedFrom=current.blocked_from_status;
       const manual=pending===null?current.pending_manual:pending;
@@ -99,16 +139,20 @@ function createTaskWorkflow({ store }) {
           if (task.status==='done' || task.status==='blocked') fail('workflow_transition_invalid');
           status='in_progress';nextStage='development';nextResult=null;break;
         case 'development_complete':
-          if (stage!=='development' || task.status==='blocked' || !validReport('start_development')) fail('workflow_development_required');
+          const lastDelivery=Math.max(reportsState.version('development_complete'),reportsState.version('review_failed'),reportsState.version('review_passed'));
+          if (stage!=='development' || task.status==='blocked' || !reportsState.valid('start_development') || reportsState.version('start_development')<=lastDelivery) fail('workflow_development_required');
           if (!evidence.length) fail('workflow_evidence_required');
           status='in_review';nextStage='review';nextResult='development_complete';break;
         case 'start_review':
-          if (stage!=='review' || task.status==='blocked' || !(validReport('development_complete') || validReport('legacy_review'))) fail('workflow_development_required');
+          if (stage!=='review' || task.status==='blocked' || !reportsState.source) fail('workflow_development_required');
           status='in_review';nextResult='reviewing';break;
         case 'review_passed':
         case 'review_failed':
-          if (stage!=='review' || task.status==='blocked' || !current.evidence_valid || !(validReport('development_complete') || validReport('legacy_review') && validReport('start_review')) || !['development_complete','reviewing'].includes(result)) fail('workflow_review_required');
+          if (task.status==='blocked') fail('workflow_review_required');
+          const repeatedFailure=args.action==='review_failed' && stage==='development' && result==='review_failed' && reportsState.failed;
+          if (!repeatedFailure && (stage!=='review' || result!=='reviewing' || !reportsState.reviewing || !current.evidence_valid)) fail('workflow_review_required');
           if (!evidence.length) fail('workflow_evidence_required');
+          if (repeatedFailure) evidence.splice(0,evidence.length,...new Set([...current.reports.review_failed.evidence,...evidence]));
           nextResult=args.action;
           if (args.action==='review_passed') status=manual.length?'in_review':'done';
           else {status='in_progress';nextStage='development';}
@@ -117,12 +161,16 @@ function createTaskWorkflow({ store }) {
           if (task.status==='done') fail('workflow_transition_invalid');
           blockedFrom=task.status==='blocked'?blockedFrom:task.status;status='blocked';break;
         case 'resume':
-          if (task.status!=='blocked' || !blockedFrom) fail('workflow_transition_invalid');
-          status=blockedFrom;blockedFrom=null;break;
+          if (task.status!=='blocked') fail('workflow_transition_invalid');
+          status=['backlog','todo','in_progress','in_review'].includes(blockedFrom)?blockedFrom:
+            reportsState.failed?'in_progress':reportsState.source?'in_review':reportsState.valid('start_development')?'in_progress':'todo';
+          nextStage=status==='in_review'?'review':status==='in_progress'?'development':'todo';
+          if (nextStage==='todo') nextResult=null;
+          blockedFrom=null;break;
         case 'accept':
           if (actor!=='user') fail('workflow_user_acceptance_required');
           if (activity.busy) fail('issue_execution_running');
-          if (task.status!=='in_review' || result!=='review_passed' || !current.pending_manual.length || !current.evidence_valid || !validReport('review_passed') || !current.reports.review_passed.evidence?.length) fail('workflow_acceptance_required');
+          if (task.status!=='in_review' || result!=='review_passed' || !current.pending_manual.length || !current.evidence_valid || !reportsState.passed) fail('workflow_acceptance_required');
           status='done';nextResult='accepted';break;
         default:fail('invalid_workflow_action');
       }
@@ -155,7 +203,7 @@ function createTaskWorkflow({ store }) {
       const status=saved.status==='blocked'?'blocked':'todo',allowed=columns('issues');
       const setters=['status=?'];if(allowed.has('needs_attention'))setters.push('needs_attention=0');if(allowed.has('pending_actor'))setters.push("pending_actor='user'");
       db.prepare('UPDATE issues SET '+setters.join(',')+' WHERE id=? AND version=?').run(status,saved.id,saved.version);
-      Object.assign(saved,issue(saved.id));stage='todo';result='scope_changed';evidence=[];summary='Task scope changed; development and review required';if(status==='blocked')blocked='todo';
+      Object.assign(saved,issue(saved.id));stage='todo';result='scope_changed';evidence=[];summary='任务要求已调整，请重新开发和审核。';if(status==='blocked')blocked='todo';
       const report={summary,scope_hash:scope,previous_scope_hash:current.scope_hash,task_version:saved.version,pending_manual:current.pending_manual,updated_at:timestamp};
       reports={...reports,scope_invalidated:report};
       db.prepare('INSERT INTO issue_task_workflow_events VALUES(?,?,?,?,?,?,?)').run(randomUUID(),saved.id,'scope_invalidated','user',saved.version,JSON.stringify(report),timestamp);
@@ -191,6 +239,6 @@ function createTaskWorkflow({ store }) {
       db.exec('COMMIT');return {migrated:candidates.length,backup_path:backup};
     } catch(error) {db.exec('ROLLBACK');throw error;}
   }
-  return {get,ensure,transition,migratePlanningTasks,turnFailed,manualStatus};
+  return {get,ensure,transition,migratePlanningTasks,turnFailed,manualStatus,schema_backup_path:schemaBackupPath};
 }
 module.exports={createTaskWorkflow};

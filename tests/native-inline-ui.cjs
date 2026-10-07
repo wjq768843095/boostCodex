@@ -189,6 +189,7 @@ class NodeFixture {
     document: { createElement() { const root = new NodeFixture('root'); root.parts = { '.better-codex-inline-resize': new NodeFixture('resize') }; return root; } }
   });
   vm.runInContext(readFunction('inlineConversationTarget'), layoutCtx);
+  vm.runInContext(readFunction('bindInlineConversationColumnResize'), layoutCtx);
   vm.runInContext(readFunction('mountInlineConversation'), layoutCtx);
   for (let index = 0; index < 20; index++) layoutCtx.mountInlineConversation(surface);
   assert.equal(surface.children[0], native, 'React native layout stays at its original position');
@@ -360,17 +361,22 @@ class NodeFixture {
   const projectColumn = new NodeFixture('projects'), conversationColumn = new NodeFixture('conversations'), detailsColumn = new NodeFixture('details');
   planningRoot.parts = { '.better-codex-inline-heading': new NodeFixture('heading'), '.bc-planning-projects': projectColumn, '.bc-planning-conversations': conversationColumn, '.better-codex-inline-details': detailsColumn, '.better-codex-inline-resize': new NodeFixture('resize'), '.better-codex-inline-notice': new NodeFixture('notice'), '.better-codex-inline-status': new NodeFixture('status') };
   planningRoot.closest = () => planningSurface;
+  planningRoot.parts['.bc-conversations-resize'] = new NodeFixture('conversation-resize');
+  const columnWidths = new Map();
   let compactWorkspace = false;
   const renderCtx = vm.createContext({ state: { issues: [], projectDetailId: 'p1', projects: [{ id: 'p1', name: 'Project one' }, { id: 'p2', name: 'Project two' }], nativeConversations: { p1: [{ conversation_id: 'A', kind: 'charter', title: 'Architecture A', status: 'draft' }, { conversation_id: 'B', kind: 'charter', title: 'Architecture B', thread_id: 'thread-B' }] } },
     inlineConversation: { target: { project_id: 'p1', kind: 'charter', conversation_id: 'A' }, context: { charter: { status: 'confirmed' } }, mode: 'draft' }, inlineConversationRoot: planningRoot,
     inlineConversationHeaderMarkup: '', inlineConversationNavigationMarkup: '', inlineConversationDetailsMarkup: '', inlineConversationError: '', inlineConversationCacheRestoring: false, inlineConversationLoading: false, projectSurfaceCache: null,
     inlineConversationDetailsOpen: true, inlineConversationCompactDetailsOpen: false, inlineConversationWidth: 360, innerWidth: 1326,
+    localStorage: { getItem: key => columnWidths.get(key), setItem: (key, value) => columnWidths.set(key, value) },
     window: { matchMedia: () => ({ matches: compactWorkspace }) }, document: { documentElement: { style: new NodeFixture('html').style } },
     t: value => value, te: value => value, escapeHtml2: value => String(value), icon: name => '<i>' + name + '</i>', projectLabel: project => project.name,
     normalizeSessionId: value => String(value || ''), READ_ONLY: false,
     statusLabels: { todo: '待办', backlog: '待规划', in_progress: '进行中', done: '已完成' },
     projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {}, syncInlineNativeFilePanel() {} });
   for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineTaskAcceptanceMarkup', 'inlineWorkDetailsMarkup', 'inlineConversationUnbindState', 'inlineConversationUnbindMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
+  vm.runInContext(readFunction('inlineConversationColumnSizing'), renderCtx);
+  vm.runInContext(readFunction('bindInlineConversationColumnResize'), renderCtx);
   renderCtx.renderInlineConversation();
   renderCtx.inlineConversationLoading = true;
   renderCtx.inlineConversationCacheRestoring = true;
@@ -388,6 +394,32 @@ class NodeFixture {
   assert.equal(projectColumn.hidden, false); assert.equal(conversationColumn.hidden, false); assert.equal(detailsColumn.hidden, false);
   assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '370px');
   assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '360px');
+  const columnHandle = planningRoot.parts['.bc-conversations-resize'];
+  let capturedPointer = null;
+  columnHandle.setPointerCapture = id => { capturedPointer = id; };
+  columnHandle.hasPointerCapture = id => capturedPointer === id;
+  columnHandle.releasePointerCapture = () => { capturedPointer = null; };
+  renderCtx.bindInlineConversationColumnResize(columnHandle);
+  const pointer = (x, id = 7) => ({ button: 0, pointerId: id, clientX: x, preventDefault() {} });
+  columnHandle.listeners.pointerdown(pointer(370));
+  columnHandle.listeners.pointermove(pointer(470, 8));
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 190, 'unrelated pointer cannot resize the column');
+  columnHandle.listeners.pointermove(pointer(470));
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 290);
+  assert.equal(planningSurface.style.values.get('--bc-inline-nav-space'), '470px', 'chat offset follows the dragged column');
+  columnHandle.listeners.pointerup(pointer(470));
+  assert.equal(capturedPointer, null, 'finishing releases capture');
+  renderCtx.inlineConversation.target.kind = 'work';
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 190, 'work and planning widths remain independent');
+  columnHandle.listeners.keydown({ key: 'ArrowRight', preventDefault() {} });
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 210);
+  renderCtx.innerWidth = 900;
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 160, 'narrow viewport constrains the saved width');
+  renderCtx.innerWidth = 1326;
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 210, 'widening restores the saved preference');
+  renderCtx.inlineConversation.target.kind = 'charter';
+  assert.equal(renderCtx.inlineConversationColumnSizing().width, 290, 'returning restores planning preference');
+  columnWidths.clear(); renderCtx.renderInlineConversation();
   renderCtx.inlineConversationWidth = 900; renderCtx.innerWidth = 1920; renderCtx.renderInlineConversation();
   assert.equal(planningSurface.style.values.get('--bc-inline-details-space'), '900px', 'dragged details can exceed the old 600px and 24 percent limits');
   renderCtx.innerWidth = 1324; renderCtx.renderInlineConversation();

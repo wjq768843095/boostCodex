@@ -544,10 +544,18 @@ function rollbackCompatibility(expectedVersion) {
   writeCompatibilityPointer({ current: target, previous: pointer.current, failures: 0, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
   return manifest;
 }
+function isAuxiliaryDesktopUrl(value) {
+  try {
+    const url = new URL(value);
+    const route = new URL(url.searchParams.get("initialRoute") || url.pathname + url.search, "https://codex.local");
+    return /detached-window|global-dictation|avatar-overlay/i.test(url.pathname + route.pathname) ||
+      route.searchParams.get("window") === "page" || route.searchParams.get("prewarm") === "1";
+  } catch { return false; }
+}
 function targetAllowed(target) {
   const compatibility = activeCompatibility();
   const url = target.url ?? "";
-  if (/detached-window|global-dictation|avatar-overlay/i.test(url)) return false;
+  if (isAuxiliaryDesktopUrl(url)) return false;
   if (compatibility.targetRules.excludedRoutes.some((route) => url.includes(route))) return false;
   if (/^https?:\/\//i.test(url)) return false;
   return compatibility.targetRules.urlPrefixes.some((prefix) => url.startsWith(prefix));
@@ -61914,6 +61922,7 @@ var init_codex_activity = __esm({
 
 // src/codex-usage.ts
 function finiteNumber(value) {
+  if (value === null || value === void 0 || typeof value === "boolean" || typeof value === "string" && !value.trim()) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -61935,17 +61944,20 @@ function normalizeWindow(value) {
 function normalizeCodexUsage(value) {
   if (!value || typeof value !== "object") return null;
   const result2 = value;
-  const rateLimits = result2.rateLimits;
-  if (!rateLimits || typeof rateLimits !== "object") return null;
-  const source = rateLimits;
-  const primary = normalizeWindow(source.primary);
-  const secondary = normalizeWindow(source.secondary);
-  if (!primary && !secondary) return null;
-  return {
-    planType: typeof source.planType === "string" ? source.planType.trim().slice(0, 40) : "",
-    primary,
-    secondary
-  };
+  const buckets = result2.rateLimitsByLimitId;
+  const codexBucket = buckets && typeof buckets === "object" ? buckets.codex ?? Object.values(buckets).find((bucket) => bucket && typeof bucket === "object" && bucket.limitId === "codex") : null;
+  for (const source of [codexBucket, result2.rateLimits]) {
+    if (!source || typeof source !== "object") continue;
+    const primary = normalizeWindow(source.primary);
+    const secondary = normalizeWindow(source.secondary);
+    if (!primary && !secondary) continue;
+    return {
+      planType: typeof source.planType === "string" ? source.planType.trim().slice(0, 40) : "",
+      primary,
+      secondary
+    };
+  }
+  return null;
 }
 function queryCodexUsage(executable) {
   return new Promise((resolve11, reject) => {
@@ -61955,6 +61967,7 @@ function queryCodexUsage(executable) {
     let output = "";
     let outputBytes = 0;
     let settled = false;
+    let initialized = false;
     const finish = (error2, usage2) => {
       if (settled) return;
       settled = true;
@@ -61969,17 +61982,29 @@ function queryCodexUsage(executable) {
     };
     const timer = setTimeout(() => finish(new Error("codex_usage_timeout")), 5e3);
     child.on("error", (error2) => finish(error2));
+    child.stdin.on("error", (error2) => finish(error2));
+    child.on("close", () => finish(new Error("codex_usage_process_closed")));
+    const send = (message) => child.stdin.write(JSON.stringify(message) + "\n");
     child.stdout.on("data", (chunk) => {
       if (settled) return;
       outputBytes += Buffer.byteLength(chunk);
       if (outputBytes > maxOutputBytes) return finish(new Error("codex_usage_output_too_large"));
       output += String(chunk);
-      if (Buffer.byteLength(output) > maxLineBytes2) return finish(new Error("codex_usage_line_too_large"));
       const lines = output.split(/\r?\n/);
       output = lines.pop() || "";
+      if (Buffer.byteLength(output) > maxLineBytes2) return finish(new Error("codex_usage_line_too_large"));
       for (const line of lines) {
+        if (Buffer.byteLength(line) > maxLineBytes2) return finish(new Error("codex_usage_line_too_large"));
         try {
           const message = JSON.parse(line);
+          if (message.id === 1 && !initialized) {
+            if (message.error || !message.result) return finish(new Error("codex_usage_initialize_failed"));
+            initialized = true;
+            send({ method: "initialized", params: {} });
+            send({ id: 2, method: "account/rateLimits/read", params: {} });
+            continue;
+          }
+          if (!initialized) continue;
           if (message.id !== 2) continue;
           if (message.error) return finish(new Error("codex_usage_request_failed"));
           const usage2 = normalizeCodexUsage(message.result);
@@ -61988,9 +62013,7 @@ function queryCodexUsage(executable) {
         }
       }
     });
-    child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "better-codex", title: "Better Codex", version: coreVersion }, capabilities: { experimentalApi: true } } }) + "\n");
-    child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
-    child.stdin.write(JSON.stringify({ id: 2, method: "account/rateLimits/read", params: {} }) + "\n");
+    send({ id: 1, method: "initialize", params: { clientInfo: { name: "better-codex", title: "Better Codex", version: coreVersion }, capabilities: { experimentalApi: true } } });
   });
 }
 function refreshCodexUsage() {
@@ -73195,7 +73218,7 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
     path = typeof request2.path === "string" ? request2.path : "";
     method = typeof request2.method === "string" ? request2.method : "GET";
     traceId = typeof request2.traceId === "string" && /^[A-Za-z0-9_-]{8,200}$/.test(request2.traceId) ? request2.traceId : (0, import_node_crypto3.randomUUID)();
-    if (!requestId || request2.token !== accessToken3 || !/^\/api\/(?:bootstrap(?:[?]|$)|commands(?:[/?]|$)|profile(?:[?]|$)|scheduled-tasks(?:[/?]|$)|sessions(?:[/?]|$)|system\/(?:directories(?:\/create)?|directory)(?:[?]|$)|update(?:\/(?:install|check))?(?:[?]|$)|projects(?:[/?]|$)|issues(?:[/?]|$)|session-relay(?:[/?]|$)|agents(?:[/?]|$)|skills(?:[/?]|$)|project-tools(?:[/?]|$)|native-conversations(?:[/?]|$)|mockup\/(?:state|reset)(?:[?]|$)|settings\/auto-dispatch(?:[?]|$)|settings\/scheduler-model(?:[?]|$)|settings\/scheduler-reasoning-effort(?:[?]|$))/.test(path) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("invalid_bridge_request");
+    if (!requestId || request2.token !== accessToken3 || !/^\/api\/(?:bootstrap(?:[?]|$)|account\/usage(?:[?]|$)|commands(?:[/?]|$)|profile(?:[?]|$)|scheduled-tasks(?:[/?]|$)|sessions(?:[/?]|$)|system\/(?:directories(?:\/create)?|directory)(?:[?]|$)|update(?:\/(?:install|check))?(?:[?]|$)|projects(?:[/?]|$)|issues(?:[/?]|$)|session-relay(?:[/?]|$)|agents(?:[/?]|$)|skills(?:[/?]|$)|project-tools(?:[/?]|$)|native-conversations(?:[/?]|$)|mockup\/(?:state|reset)(?:[?]|$)|settings\/auto-dispatch(?:[?]|$)|settings\/scheduler-model(?:[?]|$)|settings\/scheduler-reasoning-effort(?:[?]|$))/.test(path) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) || /^\/api\/account\/usage(?:[?]|$)/.test(path) && method !== "GET") throw new Error("invalid_bridge_request");
     const response = await fetch(`http://127.0.0.1:${runtimePort2}${path}`, {
       method,
       signal: AbortSignal.timeout(cdpCommandTimeoutMs),

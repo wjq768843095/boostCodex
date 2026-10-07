@@ -38,7 +38,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     updateIssue: (id, version, patch) => store.updateIssue(id, version, patch)
   });
   planning.migrate();
-  const workflow = store.taskWorkflow || (store.taskWorkflow = createTaskWorkflow({ store }));
+  const workflow = store.taskWorkflow || (store.taskWorkflow = createTaskWorkflow({ store, home }));
   workflow.migratePlanningTasks(home);
   const skills = createManagedSkills({ db: store.db, home, userHome, codexHome, profiles: store.listAgentProfiles(), resolveProject: id => store.getProject(id), listProjects: () => store.listProjects?.() || [] });
   let exportStatus = skills.exportOwned();
