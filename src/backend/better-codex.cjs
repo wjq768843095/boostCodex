@@ -52390,6 +52390,8 @@ var init_dom = __esm({
       terminal: import_lucide_static.Terminal,
       wrench: import_lucide_static.Wrench,
       fast: import_lucide_static.Zap,
+      settings: import_lucide_static.Settings,
+      grip: import_lucide_static.GripVertical,
       code: import_lucide_static.FileCode2,
       test: import_lucide_static.FlaskConical,
       docs: import_lucide_static.BookOpen,
