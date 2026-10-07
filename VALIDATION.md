@@ -313,3 +313,22 @@ Skill 支持通用/项目归属、项目范围筛选、从托管或外部 Skill 
 - 实际只读核对截图失败线程：原生 thread/read 返回 idle、完整 turns 数为 0；对应 operation 为 native_operation_timeout，原 binding 保留。核对期间未发送业务模型请求。当前另一个总纲线程仍有 inProgress turn，自动应用等待空闲，未中断该线程。实际解除阻塞及源码生效结果待更新后记录。
 - 实际阻塞已单独修复：再次核对完整空线程及无在途请求后，在权威数据库事务内严格检查原 operation、任务版本/状态、原 binding、会话及执行活动，先保存单记录元数据恢复备份，再以 request_id/thread_id/updated_at/status 的条件更新且影响恰好 1 条，将该坏发送预留置 failed/native_recovered_not_sent。没有覆盖数据库、修改任务/聊天、关闭其他会话或补发消息。备份保存在权威数据目录 backups/native-operation-repair-1791205847600.json。
 - 修复后通过当前实际 Runtime 的 context 接口回读：mode=thread、原线程 01a10c1b-c051-7791-ba0d-68bf6b510798、binding.status=idle、read_only=false、pending_operation=null。原工作会话已解除元数据阻塞。长期恢复代码仍待运行中的总纲会话结束后自动应用；真实消息发送由用户回到原会话手动提交验证。
+
+
+# 2026-10-07 Codex 更新后的原生会话适配修复
+
+- 根因：当前 app-shared/app-initial 打包导出名称变化，旧 GJt/Pyt/VIn 等名称不再对应原生草稿作用域，导致 ensureHost 拒绝打开页内会话。
+- 修改：原生草稿适配集中维护旧版与当前版能力映射，并验证真实 own scope 标识、草稿原子归属及必需方法；移除未使用的项目/文档原子门槛。保留原生输入框、草稿、附件和模型配置的既有处理。
+- 回归：native-conversation-adapter、native-inline-ui、native-ui 及源码语法检查通过。新增新版导出错位、已有线程打开、会话间草稿恢复、错误作用域拒绝测试；fixture 不产生真实模型请求。
+- 实际运行：新版已自动应用；当前桌面能力连接 available/native_composer/dynamic_tools/scoped_prewarm/isolated_native_drafts 全为 true。原截图线程 01a10c1b-c051-7791-ba0d-68bf6b510798 通过当前适配 open 返回 thread/ready，实际 inspectLayout 为 composer_visible=true、ancestry_consistent=true、route_kind=local-thread、context_matches=true。未发送模型业务请求、未改聊天或数据库。
+- 同期其他源码保存多次触发后台重载，整页工作区恢复曾遇到 injection_destroyed；最终应用状态 ready/error=null。原生接口和输入框实际验证通过，长时间切换及未来 Codex 更新仍需继续观察。
+
+## 2026-10-07：任务流会话解除绑定
+
+- 总纲、任务规划和工作会话顶部提供“解除绑定”；仅真实绑定会话显示，运行中、待批准/用户输入和待核对发送结果时阻止操作。
+- 保留同一个原生 Codex 会话及聊天记录、总纲、计划、任务和历史执行证据。解除后撤销专属工具权限、任务上下文和状态回流，永久解绑记录阻止旧事件、工具缓存和重启恢复重新绑定。
+- 前端清除会话入口、持久浏览记录及保留页面缓存，继续打开同一原生会话。既有未提交的任务阶段流程修改已保留。
+- 验证：`npm test` 整套回归通过；新增 `native-conversation-unbind.cjs`、`native-unbind-ui.cjs` 和适配层解绑测试通过；隔离 HTTP 测试覆盖缓存调用撤权、迟到事件、历史线程查询及重启恢复。未发送模型请求，未解除真实业务会话绑定。
+- 实际应用核对：自动应用阶段为 ready；源码与应用版本一致；运行中后端版本与源码一致；readyz 正常、原生会话中继连接；打开 Skill 页面后 UI ready=true、bootstrapError=null，桌面 bundleChecksum 与已应用 UI 文件 SHA256 一致。随后恢复原浏览位置。
+- 通用 `installed-native.cjs --check-reload` 在并发源码重载期间遇到注入对象暂时缺失，未完成该完整脚本；最终以上述源码稳定后的专项只读核对确认本次应用状态。
+- 人工验收：打开一个空闲的总纲/规划/工作会话，点击顶部“解除绑定”并确认；应保留同一聊天、退出任务流外壳，原任务资料仍保留。之后继续普通对话及重启 Codex，均不应重新出现任务流绑定。本轮未在真实业务数据上执行此操作。

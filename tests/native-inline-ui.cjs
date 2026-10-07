@@ -367,9 +367,10 @@ class NodeFixture {
     inlineConversationDetailsOpen: true, inlineConversationCompactDetailsOpen: false, inlineConversationWidth: 360, innerWidth: 1326,
     window: { matchMedia: () => ({ matches: compactWorkspace }) }, document: { documentElement: { style: new NodeFixture('html').style } },
     t: value => value, te: value => value, escapeHtml2: value => String(value), icon: name => '<i>' + name + '</i>', projectLabel: project => project.name,
+    normalizeSessionId: value => String(value || ''), READ_ONLY: false,
     statusLabels: { todo: '待办', backlog: '待规划', in_progress: '进行中', done: '已完成' },
     projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {}, syncInlineNativeFilePanel() {} });
-  for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineWorkDetailsMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
+  for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineTaskAcceptanceMarkup', 'inlineWorkDetailsMarkup', 'inlineConversationUnbindState', 'inlineConversationUnbindMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
   renderCtx.renderInlineConversation();
   renderCtx.inlineConversationLoading = true;
   renderCtx.inlineConversationCacheRestoring = true;

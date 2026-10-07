@@ -49,7 +49,7 @@ function createFixture({threadAction,semanticRequest}={}) {
       db.exec('BEGIN IMMEDIATE');
       try {
         db.prepare('INSERT INTO issues VALUES(?,?,?,?,?,?,1,?,?,?,NULL,?,NULL,NULL,NULL)').run(input.id,input.projectId,'FIX-'+number,
-          input.title,input.description,input.status,Number(input.agentEnabled),Number(userAssigned),Number(input.agentEnabled&&input.status!=='backlog'), 'existing history');
+          input.title,input.description,input.status,Number(input.agentEnabled),Number(userAssigned),Number(Boolean(input.needsAttention)), 'existing history');
         db.exec('COMMIT');
       } catch(error) {db.exec('ROLLBACK');throw error;}
       return this.getIssue(input.id);
@@ -179,7 +179,7 @@ async function run() {
     assert.equal(plan.value.items[0].directories.length,2);assert.equal(plan.value.items[0].contract_owner,'共享接口');
     const converted = await api('/api/projects/p1/plan/convert','POST',{expected_revision:1,item_ids:['deliver-login']});
     const issue = converted.value.issues[0];
-    assert.equal(issue.status,'backlog');assert.equal(issue.agent_enabled,1);assert.equal(issue.needs_attention,0);
+    assert.equal(issue.status,'todo');assert.equal(issue.agent_enabled,1);assert.equal(issue.needs_attention,0);
     assert.equal(issue.thread_id,null);assert.equal(issue.skill_id,'better-codex-plan');
     assert.equal(state.dispatch,0);assert.equal(state.wake,0);
     await api('/api/projects/p1/plan/convert','POST',{expected_revision:1,item_ids:['deliver-login']});
@@ -281,7 +281,8 @@ async function run() {
     await assert.rejects(api('/api/project-tools/project_charter_save','POST',f.charterArgs('p1','work-p1',{expected_revision:3})),/session_thread_mismatch/);
     const payload = workPayload(store,store.getIssue(issue.id),f.roots[0],'现在开发',[{type:'text',text:'现在开发'}]);
     assert.equal(payload.native_defaults,true);assert.deepEqual(payload.root_paths,f.roots);
-    assert.equal(payload.dynamic_tools.length,5);assert(payload.dynamic_tools.every(tool=>tool.name.startsWith('better_codex_project_')));
+    assert.equal(payload.dynamic_tools.length,6);assert(payload.dynamic_tools.every(tool=>tool.name.startsWith('better_codex_project_')));
+    assert.ok(payload.dynamic_tools.some(tool=>tool.name==='better_codex_project_task_transition'));
     assert.ok(payload.message.includes('项目总纲版本：2'));assert.ok(payload.message.includes('规划项：deliver-login'));
     assert.ok(payload.message.includes('Web前端'));assert.ok(payload.message.includes('本地源码'));
     assert.ok(!payload.message.includes('外部目录'));
@@ -380,7 +381,7 @@ async function run() {
     createNativeProjectRuntime({store,worker:{wake(){throw Error('unexpected migration wake');}},home:f.home,userHome:f.userHome,codexHome:f.codexHome});
     assert.deepEqual(fs.readdirSync(path.join(f.home,'backups','native-conversations')),migrationBackups,'idempotent migration only backs up actual affected records once');
     assert.equal(state.dispatch,0);assert.equal(state.wake,0);
-    console.log('PASS: native project runtime lifecycle, confirmation evidence, safe backlog conversion, pinned work payload and Skill API');
+    console.log('PASS: native project runtime lifecycle, confirmation evidence, safe todo conversion, pinned work payload and Skill API');
   } finally { f.cleanup(); }
 }
 

@@ -98,6 +98,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     return session;
   }
   function getSessionByThread(threadId) {
+    if (db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) return null;
     return db.prepare('SELECT * FROM project_native_conversations WHERE thread_id=? AND archived_at IS NULL').get(threadId) ||
       db.prepare('SELECT * FROM project_native_sessions WHERE thread_id=?').get(threadId) || null;
   }
@@ -106,6 +107,7 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
     project(args.project_id); kind(args.kind);
     const threadId = string(args.thread_id, 'thread_id', true);
     if (threadId.length > 200) fail('invalid_thread_id');
+    if (db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) fail('native_conversation_unbound');
     const current = getSession(args.project_id, args.kind);
     checkRevision(args.expected_revision, current?.revision);
     if (current && current.thread_id !== threadId) fail('session_thread_mismatch');
@@ -462,7 +464,8 @@ function createProjectPlanning({ db, getProject, createIssue, getIssue, listIssu
         issue = getIssue(issueId);
         if (issue && issue.project_id !== args.project_id) fail('issue_project_mismatch');
         if (!issue) issue = createIssue({ id: issueId, projectId: args.project_id, title: item.title, description,
-          status: 'backlog', agentEnabled: true, userAssigned: true, workspacePath: currentProject.workspace_path || undefined });
+          status: 'todo', agentEnabled: true, userAssigned: true, workflowManaged: true,
+          needsAttention: false, pendingActor: 'user', workspacePath: currentProject.workspace_path || undefined });
       }
       if (!issue || !issue.id) fail('issue_creation_failed');
       const timestamp = now();

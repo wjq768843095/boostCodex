@@ -77,7 +77,7 @@ async function run() {
     assert.equal(converted.items[0].issue_id,repeated.items[0].issue_id);
     assert.equal(f.state.create,1);assert.equal(f.state.dispatch,0);assert.equal(f.state.wake,0);
     const shared=(await get(boundPlanB)).context;
-    assert.equal(shared.planning_links[0].issue_id,converted.items[0].issue_id);assert.equal(shared.planning_links[0].status,'backlog');
+    assert.equal(shared.planning_links[0].issue_id,converted.items[0].issue_id);assert.equal(shared.planning_links[0].status,'todo');
     assert.equal(shared.tasks[0].item_id,'deliver-login');
     const reset=(await post('restart',{project_id:'p1',kind:'charter',conversation_id:first.conversation_id,expected_revision:1,explicit:true})).value;
     assert.notEqual(reset.conversation_id,first.conversation_id);assert.equal(reset.thread_id,null);

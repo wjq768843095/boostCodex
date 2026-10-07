@@ -5,6 +5,7 @@ const properties = {
   project_id: { type: 'string', description: 'Better Codex project ID.' },
   thread_id: { type: 'string', description: 'The bound native conversation ID.' },
   expected_revision: { type: 'integer', minimum: 0 },
+  expected_version: { type: 'integer', minimum: 1 },
   revision: { type: 'integer', minimum: 1 },
   section_ids: { type: 'array', items: { type: 'string' } },
   title: { type: 'string' },
@@ -16,6 +17,8 @@ const properties = {
   charter_revision: { type: 'integer', minimum: 1 },
   plan_revision: { type: 'integer', minimum: 1 },
   summary: { type: 'string' },
+  evidence: { type: 'array', items: { type: 'string' } },
+  pending_manual: { type: 'array', items: { type: 'string' } },
   items: { type: 'array', items: { type: 'object', properties: {
     id: { type: 'string' }, title: { type: 'string' }, goal: { type: 'string' }, scope: { type: 'string' }, detail: { type: 'string' },
     requirement_refs: { type: 'array', items: { type: 'string' } }, contract_refs: { type: 'array', items: { type: 'string' } },
@@ -33,10 +36,12 @@ const definitions = [
   ['project_charter_save', 'Save a draft of the single project charter from its bound native conversation, preserving directory responsibilities in metadata.workspace_map and version evidence in facts. Does not modify project source files.', ['project_id', 'thread_id', 'expected_revision', 'sections'], ['title', 'requirements', 'metadata', 'facts'], false],
   ['project_charter_confirm', 'Confirm the current draft using a real user confirmation message observed in the bound native conversation.', ['project_id', 'thread_id', 'expected_revision', 'message_id'], [], false],
   ['project_plan_save', 'Save business-complete planning items based on a confirmed charter, including dependencies and acceptance paths. Does not execute tasks.', ['project_id', 'thread_id', 'expected_revision', 'charter_revision', 'items'], ['summary'], false],
-  ['project_plan_convert', 'Convert only explicitly selected planning items to backlog work tasks. Does not start tasks; repeated conversion is idempotent. Updating an existing task requires its current issue_versions entry.', ['project_id', 'thread_id', 'expected_revision', 'item_ids'], ['action', 'issue_versions'], false]
+  ['project_plan_convert', 'Convert only explicitly selected planning items to todo work tasks, awaiting an explicit development start. Does not dispatch tasks; repeated conversion is idempotent. Updating an existing task requires its current issue_versions entry.', ['project_id', 'thread_id', 'expected_revision', 'item_ids'], ['action', 'issue_versions'], false],
+  ['project_task_transition', 'Record the current bound work task development or verification stage and evidence. Read task.version first; use the returned version for subsequent updates. Development completion moves to review. Verification passes complete the task only when no required manual checks remain. Does not dispatch work or confirm on behalf of a human; planning and historical conversations cannot use this tool.', ['project_id', 'thread_id', 'expected_version', 'action', 'summary'], ['evidence', 'pending_manual'], false]
 ];
+const workflowAction = { type: 'string', enum: ['start_development', 'development_complete', 'start_review', 'review_passed', 'review_failed', 'block', 'resume'] };
 const tools = definitions.map(([name, description, required, optional, readOnlyHint]) => ({
-  name, description, inputSchema: { type: 'object', required, properties: Object.fromEntries([...required, ...optional].map(key => [key, properties[key]])), additionalProperties: false },
+  name, description, inputSchema: { type: 'object', required, properties: Object.fromEntries([...required, ...optional].map(key => [key, name === 'project_task_transition' && key === 'action' ? workflowAction : properties[key]])), additionalProperties: false },
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
 }));
 async function call(name, args, options = {}) {

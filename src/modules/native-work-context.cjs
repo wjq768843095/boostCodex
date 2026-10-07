@@ -33,6 +33,12 @@ function buildWorkContextText({ project, task, planningItem, charter, plan, work
   };
   field('项目', text(project.name));field('项目编号', project.id);
   field('任务', text(task.title));field('任务编号', task.id);field('任务版本', task.version);
+  field('任务状态', task.status);
+  if (task.workflow) {
+    field('当前工作阶段', task.workflow.stage);field('最近阶段结果', task.workflow.result);
+    field('阶段交付摘要', task.workflow.summary);field('阶段验证证据', task.workflow.evidence);
+    field('待人工验收', task.workflow.pending_manual);
+  }
   field('任务完整说明', text(task.description));
   if (task.plan_revision !== undefined) field('关联规划版本', task.plan_revision);
   if (planningItem) {

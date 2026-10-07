@@ -8,6 +8,7 @@ const { getWorkspaceContext } = require('./workspace-context.cjs');
 const { createNativeConversationRuntime, ensureConversationTables } = require('./native-conversation-runtime.cjs');
 const { nativeTools } = require('./project-mcp.cjs');
 const { readPinnedPlanningItem, buildWorkContextText } = require('./native-work-context.cjs');
+const { createTaskWorkflow } = require('./task-workflow.cjs');
 
 function directoryBrief(workspace) {
   return workspace.workspaces.map(entry => `- ${entry.id}: ${entry.path}；职责：${entry.role === 'unknown' ? '待确认' : entry.role}；数据来源：${entry.source_of_truth === 'unknown' ? '待核对' : entry.source_of_truth}${entry.availability === 'available' ? '' : '（无法访问，待核对）'}`).join('\n');
@@ -37,6 +38,8 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     updateIssue: (id, version, patch) => store.updateIssue(id, version, patch)
   });
   planning.migrate();
+  const workflow = store.taskWorkflow || (store.taskWorkflow = createTaskWorkflow({ store }));
+  workflow.migratePlanningTasks(home);
   const skills = createManagedSkills({ db: store.db, home, userHome, codexHome, profiles: store.listAgentProfiles(), resolveProject: id => store.getProject(id), listProjects: () => store.listProjects?.() || [] });
   let exportStatus = skills.exportOwned();
   const projectSignature = () => JSON.stringify((store.listProjects?.() || []).map(project => [project.id, project.workspace_path]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
@@ -113,9 +116,11 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     const selected = store.db.prepare('SELECT skill_id FROM issue_managed_skills WHERE issue_id=?').get(issue.id);
     const skill = selected ? findSkill(selected.skill_id, issue.project_id) : skills.list({ includeExternal: false, projectId: issue.project_id }).managed.find(entry => entry.legacy_agent_id === issue.agent_id);
     return { ...issue, skill_id: skill?.id || '', skill_name: skill?.name || '',
+      workflow: workflow.get(issue.id),
       session_native_owned: Boolean(store.db.prepare('SELECT 1 FROM issue_native_ownership WHERE issue_id=?').get(issue.id)) };
   }
   function context(projectId, options = {}) {
+    if (options.thread_id && store.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(options.thread_id)) throw Error('native_conversation_unbound');
     const sessions = ['charter', 'planning'].map(kind => planning.getSession(projectId, kind));
     const tasks = store.listIssues({ projectId });
     const threadBinding = options.thread_id && store.db.prepare('SELECT project_id,issue_id,kind FROM native_conversation_bindings WHERE thread_id=? AND archived_at IS NULL').get(options.thread_id);
@@ -148,7 +153,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     const workspace = getWorkspaceContext(project, { workspaceMap: value.charter?.metadata?.workspace_map });
     const planningItem = readPinnedPlanningItem(link);
     const task = workTask ? { id: workTask.id, project_id: projectId, version: workTask.version,
-      title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),
+      title: workTask.title, description: workTask.description, status:workTask.status,agent_enabled:Boolean(workTask.agent_enabled),workflow:workflow.get(workTask.id),
       active_run_status:workTask.active_run_status || null,session_status:workTask.session_status || null,session_active_turn_id:workTask.session_active_turn_id || null,
       reply_status:workTask.reply_status || store.getIssueReplyState?.(workTask.id)?.status || 'idle',archived_at:workTask.archived_at || null,
       ...(link ? { item_id: link.item_id, charter_revision: link.charter_revision, plan_revision: link.plan_revision } : {}), planning_item: planningItem } : null;
@@ -167,6 +172,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     return { ...value, session: value.binding, command: null };
   }
   function handleProjectEvent(method, params) {
+    if (conversations.unboundThread(params.threadId || params.thread_id)) return false;
     const work = conversations.handleWorkEvent(method, params);
     if (work) {
       if (!work.ignored && store.getIssueSession?.(work.issue_id)?.thread_id === params.threadId) worker.handleSessionEvent?.(method, params);
@@ -208,6 +214,15 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     const send = (value, status = 200) => { sendJson(response, status, value); return true; };
     if (parts[0] !== 'api') return false;
+    if (parts[1] === 'issues' && parts[2] && parts[3] === 'workflow' && method === 'POST') {
+      const body = await readBody(request);
+      if (Object.hasOwn(body, 'history_id')) throw Error('native_history_read_only');
+      // Human acceptance is a UI action, never a model-callable transition.
+      if (body.action !== 'accept') throw Error('invalid_workflow_action');
+      const value = workflow.transition({ issue_id: parts[2], expected_version: body.expected_version,
+        action: 'accept', summary: '人工验收已确认' }, { actor: 'user' });
+      publishChange(); return send({ ...value, issue: enrichIssue(store.getIssue(parts[2])) });
+    }
     if (parts[1] === 'native-conversations' && parts[2] === 'validate-input' && method === 'POST') {
       const body = await readBody(request);
       if (!store.nativeSessionProxyIsLeader(body.relay_id)) throw Error('session_relay_not_leader');
@@ -302,6 +317,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     }
     const value = planning.convertItems(body);
     for (const result of value.items) {
+      workflow.ensure(result.issue_id);
       const link = store.db.prepare('SELECT item_json FROM project_planning_issue_links WHERE issue_id=?').get(result.issue_id);
       const selected = link && JSON.parse(link.item_json).skill_id;
       if (selected) { assertSkill(selected, body.project_id); setIssueSkill(result.issue_id, selected); }
@@ -329,7 +345,13 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
     if (Object.hasOwn(body,'history_id')) throw Error('native_history_read_only');
     let value;
     if (name === 'project_context_read') return context(body.project_id, body);
-    if (name === 'project_charter_save') value = planning.saveCharter(body);
+    if (name === 'project_task_transition') {
+      const bound = conversations.trustedBinding(body.thread_id, 'local');
+      if (bound.project_id !== body.project_id) throw Error('session_thread_mismatch');
+      if (bound.kind !== 'work' || !bound.issue_id) throw Error('work_task_required');
+      value = workflow.transition({ ...body, issue_id: bound.issue_id }, { actor: 'skill' });
+    }
+    else if (name === 'project_charter_save') value = planning.saveCharter(body);
     else if (name === 'project_charter_confirm') value = planning.confirmCharter(body);
     else if (name === 'project_plan_save') value = planning.savePlan(body);
     else if (name === 'project_plan_convert') value = convert(body);
@@ -350,7 +372,7 @@ function createNativeProjectRuntime({ store, worker, home, userHome = process.en
       if (typeof worker.sessionRelay?.threadAction!=='function') throw Error('native_archive_unavailable');
       return worker.sessionRelay.threadAction(threadIds,action);
     },onProjectEvent: handleProjectEvent, publishChange });
-  return { planning, skills, conversations, context, handle, startSession, handleProjectEvent, commandReceipt, enrichIssue, setIssueSkill, findSkill, assertSkill, assertSkillPaths, refreshSkillExports, activeTurns };
+  return { planning, workflow, skills, conversations, context, handle, startSession, handleProjectEvent, commandReceipt, enrichIssue, setIssueSkill, findSkill, assertSkill, assertSkillPaths, refreshSkillExports, activeTurns };
 }
 
 function workPayload(store, issue, workspacePath, message, input) {

@@ -56875,6 +56875,7 @@ var init_db = __esm({
         this.ensureEnrichmentColumn();
         this.ensureReplyDraftColumns();
         this.ensureProjectColumns();
+        this.taskWorkflow = require('../modules/task-workflow.cjs').createTaskWorkflow({ store: this });
         this.recoverProjectPlanning();
         this.ensureSyncTriggers();
         const integrity = this.db.prepare("PRAGMA quick_check").get();
@@ -57498,6 +57499,7 @@ var init_db = __esm({
               AND issue_runs.thread_id IS NOT NULL
               AND issue_runs.thread_id NOT LIKE 'local:%'
               AND issue_runs.thread_id NOT LIKE 'cloud:%'
+            AND NOT EXISTS(SELECT 1 FROM native_conversation_unbindings WHERE native_conversation_unbindings.thread_id=issue_runs.thread_id)
             ORDER BY issue_runs.started_at DESC, issue_runs.rowid DESC
             LIMIT 1
           ),
@@ -57510,6 +57512,7 @@ var init_db = __esm({
             AND issue_runs.thread_id IS NOT NULL
             AND issue_runs.thread_id NOT LIKE 'local:%'
             AND issue_runs.thread_id NOT LIKE 'cloud:%'
+            AND NOT EXISTS(SELECT 1 FROM native_conversation_unbindings WHERE native_conversation_unbindings.thread_id=issue_runs.thread_id)
           ORDER BY issue_runs.started_at DESC, issue_runs.rowid DESC
           LIMIT 1
         ) AS turn_id
@@ -57524,6 +57527,7 @@ var init_db = __esm({
       ) VALUES (?, 'local', ?, 'idle', NULL, NULL, ?, '', '', NULL, ?, ?)
     `);
         for (const row of rows) {
+          if (row.thread_id && this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(row.thread_id)) continue;
           if (!row.thread_id || !/^[a-f0-9-]{36}$/i.test(row.thread_id)) {
             console.error(`BETTER_CODEX_DIAGNOSTIC ${JSON.stringify({ timestamp: now(), scope: "session_binding", event: "handoff_binding_recovery_skipped", issue_id: row.issue_id, thread_id: row.thread_id, session_handoff_at: row.session_handoff_at, error: "thread_id_missing_or_invalid" })}`);
             continue;
@@ -58355,7 +58359,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
       }
       isDispatchable(issue) {
         return Boolean(
-          !this.isTitleRegenerationPending(issue) && issue.needs_attention && issue.pending_actor === "agent" && issue.agent_enabled && !issue.archived_at && issue.status !== "backlog" && issue.status !== "done" && !this.db.prepare("SELECT 1 FROM native_conversation_operations WHERE issue_id=? AND status IN ('prepared','allocated','bound','outcome_unknown')").get(issue.id)
+          !this.taskWorkflow.get(issue.id) && !this.isTitleRegenerationPending(issue) && issue.needs_attention && issue.pending_actor === "agent" && issue.agent_enabled && !issue.archived_at && issue.status !== "backlog" && issue.status !== "done" && !this.db.prepare("SELECT 1 FROM native_conversation_operations WHERE issue_id=? AND status IN ('prepared','allocated','bound','outcome_unknown')").get(issue.id)
         );
       }
       isEnrichmentPending(issue) {
@@ -58716,6 +58720,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             AND issue_runs.thread_id IS NOT NULL
             AND issue_runs.thread_id NOT LIKE 'local:%'
             AND issue_runs.thread_id NOT LIKE 'cloud:%'
+            AND NOT EXISTS(SELECT 1 FROM native_conversation_unbindings WHERE native_conversation_unbindings.thread_id=issue_runs.thread_id)
           ORDER BY issue_runs.started_at DESC, issue_runs.rowid DESC
           LIMIT 1
         )
@@ -58725,6 +58730,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         return rows.map(issueFromRow);
       }
       getIssueByThreadId(threadId) {
+        if (this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) return void 0;
         const candidates = [threadId, `local:${threadId}`, `cloud:${threadId}`];
         const rows = this.db.prepare(`
       SELECT issue_id, MIN(source_order) AS source_order
@@ -58742,6 +58748,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         return rows[0] ? this.getIssue(rows[0].issue_id) : void 0;
       }
       writeImportedSession(issueId, input, timestamp) {
+        if (this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(input.threadId)) throw new Error('native_conversation_unbound');
         const status = input.active ? "active" : "idle";
         const activeTurnId = input.active && input.turnId ? input.turnId : null;
         const lastTurnId = !input.active && input.turnId ? input.turnId : null;
@@ -58869,6 +58876,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             AND issue_runs.thread_id IS NOT NULL
             AND issue_runs.thread_id NOT LIKE 'local:%'
             AND issue_runs.thread_id NOT LIKE 'cloud:%'
+            AND NOT EXISTS(SELECT 1 FROM native_conversation_unbindings WHERE native_conversation_unbindings.thread_id=issue_runs.thread_id)
           ORDER BY issue_runs.started_at DESC, issue_runs.rowid DESC
           LIMIT 1
         )) AS run_thread_id,
@@ -58911,7 +58919,9 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         return row ? issueFromRow(row) : void 0;
       }
       createIssue(input) {
-        return this.createIssueRequest(input).issue;
+        const created = this.createIssueRequest(input).issue;
+        if (input.workflowManaged) this.taskWorkflow.ensure(created.id);
+        return created;
       }
       createIssueRequest(input, requestId = "") {
         const project = this.getProject(input.projectId);
@@ -58940,8 +58950,8 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         if (enrichmentStatus !== null && enrichmentStatus !== "pending" && enrichmentStatus !== "regenerating" && enrichmentStatus !== "failed") throw new Error("invalid_enrichment_status");
         const status = importedSession ? importedSession.active ? "in_progress" : "in_review" : enrichmentStatus === "pending" ? "todo" : input.status ?? "todo";
         const userHandoff = status === "blocked" || status === "in_review";
-        const needsAttention = importedSession ? Number(!importedSession.active) : userHandoff ? 1 : agentEnabled && status !== "backlog" && status !== "done" ? 1 : 0;
-        const pendingActor = importedSession ? importedSession.active ? "agent" : "user" : agentEnabled && !userHandoff && status !== "done" ? "agent" : "user";
+        const needsAttention = input.workflowManaged ? 0 : importedSession ? Number(!importedSession.active) : userHandoff ? 1 : agentEnabled && status !== "backlog" && status !== "done" ? 1 : 0;
+        const pendingActor = input.workflowManaged ? 'user' : importedSession ? importedSession.active ? "agent" : "user" : agentEnabled && !userHandoff && status !== "done" ? "agent" : "user";
         const id = input.id ?? (0, import_node_crypto13.randomUUID)();
         if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/.test(id)) throw new Error("invalid_issue_id");
         const timestamp = now();
@@ -59028,6 +59038,12 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
           const issue = this.getIssue(id);
           if (!issue) throw new Error("issue_not_found");
           if (issue.version !== version) throw new Error("version_conflict");
+          if (this.taskWorkflow.get(issue.id)) {
+            if (patch.status === 'done' && issue.status !== 'done') throw new Error('workflow_review_required');
+            // Assignment or editing must not silently dispatch a workflow task.
+            patch.needs_attention = false;
+            patch.pending_actor = 'user';
+          }
           if (this.isTitleRegenerationPending(issue) && patch.enrichment_status === void 0) throw new Error("issue_enrichment_pending");
           const titleChanged = patch.title !== void 0 && patch.title !== issue.title;
           const descriptionChanged = patch.description !== void 0 && patch.description !== issue.description;
@@ -59101,6 +59117,10 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             reply_draft: "reply_draft",
             reply_draft_attachments: "reply_draft_attachments_json"
           };
+          if (this.taskWorkflow.get(issue.id)) {
+            patch.needs_attention = false;
+            patch.pending_actor = 'user';
+          }
           const assignments = [];
           const values = [];
           for (const [key, value] of Object.entries(patch)) {
@@ -59119,6 +59139,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
           const result2 = this.db.prepare(`UPDATE issues SET ${assignments.join(", ")} WHERE id = ? AND version = ?`).run(...values);
           if (result2.changes !== 1) throw new Error("version_conflict");
           const updated = this.getIssue(issue.id);
+          if (this.taskWorkflow.get(issue.id)) this.taskWorkflow.manualStatus(issue, updated);
           this.db.exec("COMMIT");
           return updated;
         } catch (error2) {
@@ -59268,7 +59289,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
               pending_actor = 'user',
               version = version + 1,
               updated_at = ?
-          WHERE id = ?
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
             AND status = 'in_progress'
         `).run(timestamp, row.issue_id);
           }
@@ -59304,7 +59325,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
               pending_actor = 'user',
               version = version + 1,
               updated_at = ?
-          WHERE id = ?
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
             AND status = 'in_progress'
             AND archived_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM issue_runs WHERE issue_id = issues.id AND status IN ('claimed', 'running', 'scheduling'))
@@ -59333,6 +59354,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         JOIN projects ON projects.id = issues.project_id
         LEFT JOIN agent_profiles ON agent_profiles.id = issues.agent_id
         WHERE issues.needs_attention = 1
+          AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
           AND issues.pending_actor = 'agent'
           AND issues.agent_enabled = 1
           ${issueId ? "AND issues.id = ?" : ""}
@@ -59383,7 +59405,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         SET needs_attention = 0,
             version = version + 1,
             updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
           AND version = ?
           AND needs_attention = 1
           AND pending_actor = 'agent'
@@ -59435,6 +59457,10 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         return rows.flatMap((row) => {
           const issue = this.getIssue(row.issue_id);
           if (!issue) return [];
+          if (this.taskWorkflow.get(issue.id)) {
+            this.db.prepare("UPDATE issue_runs SET status=?,finished_at=?,scheduler_pid=NULL,scheduler_status='skipped',scheduler_error=NULL WHERE id=? AND status='scheduling'").run(row.execution_success?'completed':'failed',now(),row.run_id);
+            return [];
+          }
           return [{
             claim: { runId: row.run_id, issue, workspacePath: row.workspace_path },
             executionSuccess: Boolean(row.execution_success),
@@ -59480,17 +59506,17 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             issueId
           );
           if (result2.changes !== 1) throw new Error("run_transition_conflict");
-          this.db.prepare(`
+          if (!this.taskWorkflow.get(issueId)) this.db.prepare(`
         UPDATE issues
         SET status = ?,
             needs_attention = ?,
             pending_actor = 'user',
             version = version + 1,
             updated_at = ?
-        WHERE id = ? AND status IN ('todo', 'in_progress')
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status IN ('todo', 'in_progress')
       `).run(status, Number(status !== "done"), timestamp, issueId);
           this.db.exec("COMMIT");
-          return status;
+          return this.taskWorkflow.get(issueId) ? this.getIssue(issueId)?.status : status;
         } catch (error2) {
           this.db.exec("ROLLBACK");
           throw error2;
@@ -59579,7 +59605,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             pending_actor = 'agent',
             version = version + 1,
             updated_at = ?
-        WHERE id = ? AND archived_at IS NULL
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
       `).run(timestamp, issueId);
           this.db.exec("COMMIT");
           return this.getIssue(issueId);
@@ -59599,7 +59625,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             pending_actor = 'user',
             version = version + 1,
             updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
           AND status = 'in_progress'
           AND archived_at IS NULL
       `).run(success ? "in_review" : "blocked", timestamp, issueId);
@@ -59622,7 +59648,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
               pending_actor = 'user',
               version = version + 1,
               updated_at = ?
-          WHERE id = ?
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
             AND (
               status = 'in_progress'
               OR (status = 'todo' AND (? = 0 OR (needs_attention = 0 AND pending_actor = 'agent')))
@@ -59654,7 +59680,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
               pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END,
               version = version + 1,
               updated_at = ?
-          WHERE id = ? AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
         `).run(timestamp, issueId);
           }
           this.db.exec("COMMIT");
@@ -59664,6 +59690,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         }
       }
       reconcileInterruptedRun(issueId, threadId, completedAt, startedAt) {
+        if (this.taskWorkflow.get(issueId)) return false;
         const timestamp = now();
         const completedTime = Date.parse(completedAt);
         const startedTime = startedAt ? Date.parse(startedAt) : null;
@@ -59703,7 +59730,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             pending_actor = 'user',
             version = version + 1,
             updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id)
           AND status IN ('blocked', 'in_review')
           AND ? = (
             SELECT latest.id
@@ -59736,6 +59763,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
         }
       }
       syncSessionReply(issueId, threadId, activity) {
+        if (this.taskWorkflow.get(issueId)) return false;
         if (activity.status === "idle") return false;
         const startedTime = Date.parse(activity.started_at || "");
         const evidenceAt = activity.status === "running" ? activity.updated_at : activity.completed_at;
@@ -59826,7 +59854,7 @@ ${transferred.paths.map((path) => `- ${path}`).join("\n")}` : "";
             pending_actor = ?,
             version = version + 1,
             updated_at = ?
-        WHERE id = ? AND status = ? AND updated_at = ? AND archived_at IS NULL
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status = ? AND updated_at = ? AND archived_at IS NULL
       `).run(
             activity.status === "running" ? "in_progress" : activity.status === "completed" ? "in_review" : "blocked",
             Number(activity.status !== "running"),
@@ -60065,7 +60093,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
               reply_draft_attachments_json = CASE WHEN ? THEN '[]' ELSE reply_draft_attachments_json END,
               version = version + 1,
               updated_at = ?
-          WHERE id = ? AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
         `).run(Number(clearDraft), Number(clearDraft), timestamp, input.issueId);
             this.db.prepare(`
           INSERT INTO issue_replies (issue_id, request_id, status, message, error, started_at, finished_at)
@@ -60472,7 +60500,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             this.db.prepare("UPDATE issue_sessions SET status = 'failed', last_error = ?, updated_at = ? WHERE issue_id = ? AND active_turn_id = ?").run(commandError, timestamp, command2.issue_id, command2.turn_id);
             this.db.prepare(`
           UPDATE issues SET status = 'blocked', needs_attention = 1, pending_actor = 'user', version = version + 1, updated_at = ?
-          WHERE id = ? AND status != 'done' AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status != 'done' AND archived_at IS NULL
         `).run(timestamp, command2.issue_id);
           }
           failed.push({ ...command2, status: "failed", error: commandError, finished_at: timestamp });
@@ -60574,7 +60602,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
           UPDATE issues
           SET status = 'in_progress', needs_attention = 0, pending_actor = 'agent',
               version = version + 1, updated_at = ?
-          WHERE id = ? AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
         `).run(timestamp, command2.issue_id);
           }
           this.db.exec("COMMIT");
@@ -60592,6 +60620,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
           const command2 = sessionCommandFromRow(row);
           if (!["bind", "start", "turn", "review"].includes(command2.kind)) throw new Error("session_command_checkpoint_invalid");
           const threadId = typeof result2.thread_id === "string" ? result2.thread_id : command2.thread_id;
+          if (threadId && this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) throw new Error('native_conversation_unbound');
           const turnId = typeof result2.turn_id === "string" ? result2.turn_id : command2.turn_id;
           if (!threadId || !/^[a-f0-9-]{36}$/i.test(threadId)) throw new Error("session_thread_invalid");
           if (turnId && !/^[a-f0-9-]{36}$/i.test(turnId)) throw new Error("session_turn_invalid");
@@ -60646,7 +60675,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             this.db.prepare(`
           UPDATE issues
           SET status = 'in_progress', needs_attention = 0, pending_actor = 'agent', version = version + 1, updated_at = ?
-          WHERE id = ? AND status != 'done' AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status != 'done' AND archived_at IS NULL
             AND (status != 'in_progress' OR needs_attention != 0 OR pending_actor != 'agent')
         `).run(timestamp, command2.issue_id);
           }
@@ -60659,6 +60688,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
           if (!row) throw new Error("session_command_not_claimed");
           const command2 = sessionCommandFromRow(row);
           const threadId = typeof result2.thread_id === "string" ? result2.thread_id : command2.thread_id;
+          if (threadId && this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) throw new Error('native_conversation_unbound');
           const turnId = typeof result2.turn_id === "string" ? result2.turn_id : command2.turn_id;
           const timestamp = now();
           if (command2.kind !== "interrupt" && (!threadId || !/^[a-f0-9-]{36}$/i.test(threadId))) throw new Error("session_thread_invalid");
@@ -60700,7 +60730,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             if (!binding || binding.thread_id !== threadId) throw new Error("issue_session_mismatch");
             this.db.prepare("UPDATE issue_sessions SET status = 'idle', active_turn_id = NULL, active_command_id = NULL, last_error = NULL, updated_at = ? WHERE issue_id = ? AND thread_id = ?").run(timestamp, command2.issue_id, threadId);
             this.db.prepare("UPDATE issue_replies SET status = 'succeeded', error = NULL, finished_at = ? WHERE issue_id = ? AND status = 'running'").run(timestamp, command2.issue_id);
-            this.db.prepare("UPDATE issues SET status = CASE WHEN status = 'done' THEN status ELSE 'in_review' END, needs_attention = CASE WHEN status = 'done' THEN needs_attention ELSE 1 END, pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END, version = version + 1, updated_at = ? WHERE id = ? AND archived_at IS NULL").run(timestamp, command2.issue_id);
+            this.db.prepare("UPDATE issues SET status = CASE WHEN status = 'done' THEN status ELSE 'in_review' END, needs_attention = CASE WHEN status = 'done' THEN needs_attention ELSE 1 END, pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END, version = version + 1, updated_at = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL").run(timestamp, command2.issue_id);
           } else if (command2.kind === "native") {
             const binding = this.db.prepare("SELECT thread_id FROM issue_sessions WHERE issue_id = ?").get(command2.issue_id);
             if (!binding || binding.thread_id !== command2.thread_id) throw new Error("issue_session_mismatch");
@@ -60732,7 +60762,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             this.db.prepare(`
           UPDATE issues
           SET status = 'in_progress', needs_attention = 0, pending_actor = 'agent', version = version + 1, updated_at = ?
-          WHERE id = ? AND status != 'done' AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status != 'done' AND archived_at IS NULL
             AND (status != 'in_progress' OR needs_attention != 0 OR pending_actor != 'agent')
         `).run(timestamp, command2.issue_id);
           }
@@ -60796,6 +60826,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
           let boundThreadId = threadId;
           let boundTurnId = turnId;
           if ((command2.kind === "bind" || command2.kind === "start") && threadId) {
+            if (this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) throw new Error('native_conversation_unbound');
             const existingBinding = this.db.prepare("SELECT thread_id FROM issue_sessions WHERE issue_id = ?").get(command2.issue_id);
             const existingOwner = this.db.prepare("SELECT issue_id FROM issue_sessions WHERE thread_id = ?").get(threadId);
             const bindingConflict = Boolean(existingBinding && existingBinding.thread_id !== threadId) || Boolean(existingOwner && existingOwner.issue_id !== command2.issue_id);
@@ -60859,7 +60890,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             this.db.prepare("UPDATE issue_sessions SET status = 'failed', last_error = ?, updated_at = ? WHERE issue_id = ? AND active_turn_id = ?").run(commandError, timestamp, command2.issue_id, command2.turn_id);
             this.db.prepare(`
           UPDATE issues SET status = 'blocked', needs_attention = 1, pending_actor = 'user', version = version + 1, updated_at = ?
-          WHERE id = ? AND status != 'done' AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status != 'done' AND archived_at IS NULL
         `).run(timestamp, command2.issue_id);
           }
           return { ...command2, status: "failed", thread_id: boundThreadId || null, turn_id: boundTurnId || null, error: commandError, finished_at: timestamp };
@@ -60936,6 +60967,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
         return command2;
       }
       sessionTurnStarted(threadId, turnId, startedAt) {
+        if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_conversation_unbindings'").get() && this.db.prepare('SELECT 1 FROM native_conversation_unbindings WHERE thread_id=?').get(threadId)) return void 0;
         const timestamp = now();
         const replyStartedAt = startedAt && Number.isFinite(Date.parse(startedAt)) ? startedAt : timestamp;
         return this.transaction(() => {
@@ -60944,6 +60976,8 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             return void 0;
           }
           if (!session.active_turn_id && session.last_turn_id === turnId) return void 0;
+          // Native turns record activity. Development/review actions own task status.
+          this.taskWorkflow.ensure(String(session.issue_id));
           if (session.active_turn_id && session.active_turn_id !== turnId) {
             this.db.prepare(`
           UPDATE issue_runs
@@ -60986,14 +61020,14 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
             started_at = excluded.started_at,
             finished_at = NULL
         `).run(session.issue_id, `native:${threadId}:${turnId}`, replyStartedAt);
-            this.db.prepare(`
+            if (!this.taskWorkflow.get(String(session.issue_id))) this.db.prepare(`
           UPDATE issues
           SET status = 'in_progress',
               needs_attention = 0,
               pending_actor = 'agent',
               version = version + 1,
               updated_at = ?
-          WHERE id = ? AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
         `).run(timestamp, session.issue_id);
           }
           return { issue_id: session.issue_id, thread_id: threadId, turn_id: turnId };
@@ -61045,14 +61079,14 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
         const timestamp = now();
         return this.transaction(() => {
           this.db.prepare("UPDATE issue_sessions SET status = ?, retry_json = CASE WHEN ? IN ('active', 'waiting_on_approval', 'waiting_on_user') THEN retry_json ELSE NULL END, updated_at = ? WHERE issue_id = ?").run(nextStatus, nextStatus, timestamp, session.issue_id);
-          if (["active", "waiting_on_approval", "waiting_on_user", "failed"].includes(nextStatus)) {
+          if (!this.taskWorkflow.get(String(session.issue_id)) && ["active", "waiting_on_approval", "waiting_on_user", "failed"].includes(nextStatus)) {
             const issueStatus = nextStatus === "failed" ? "blocked" : "in_progress";
             const pendingActor = nextStatus === "active" ? "agent" : "user";
             const needsAttention = Number(nextStatus !== "active");
             this.db.prepare(`
           UPDATE issues
           SET status = ?, needs_attention = ?, pending_actor = ?, version = version + 1, updated_at = ?
-          WHERE id = ? AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
             AND (? != 'blocked' OR status != 'done')
             AND (status != ? OR needs_attention != ? OR pending_actor != ?)
         `).run(issueStatus, needsAttention, pendingActor, timestamp, session.issue_id, issueStatus, issueStatus, needsAttention, pendingActor);
@@ -61082,6 +61116,12 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
         WHERE issue_id = ? AND active_turn_id = ?
       `).run(nextStatus, turnId, error2 || null, timestamp, String(session.issue_id), turnId);
           const message = String(session.last_agent_message || "").trim();
+          if (this.taskWorkflow.get(String(session.issue_id))) {
+            if (run) this.db.prepare("UPDATE issue_runs SET status=?,finished_at=?,error=?,execution_result=?,pid=NULL WHERE id=? AND issue_id=? AND status IN ('claimed','running')").run(status==='completed'?'completed':status==='interrupted'?'interrupted':'failed',timestamp,error2 || null,message,run.id,String(session.issue_id));
+            this.db.prepare("UPDATE issue_replies SET status=?,error=?,finished_at=? WHERE issue_id=? AND status='running'").run(status==='completed'?'succeeded':status==='interrupted'?'interrupted':'failed',error2 || null,timestamp,String(session.issue_id));
+            if (status==='failed') this.taskWorkflow.turnFailed(String(session.issue_id),threadId,turnId,error2);
+            return {issue_id:String(session.issue_id),run_id:run?.id || null,thread_id:threadId,turn_id:turnId,status,error:error2 || null,message,should_schedule:false};
+          }
           if (run) {
             if (status === "interrupted") {
               this.db.prepare(`
@@ -61095,7 +61135,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
                 needs_attention = CASE WHEN status = 'done' THEN needs_attention ELSE 1 END,
                 pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END,
                 version = version + 1, updated_at = ?
-            WHERE id = ? AND archived_at IS NULL
+            WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
           `).run(timestamp, String(session.issue_id));
             } else {
               const executionSuccess = status === "completed";
@@ -61119,7 +61159,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
                 needs_attention = CASE WHEN status = 'done' THEN needs_attention ELSE 1 END,
                 pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END,
                 version = version + 1, updated_at = ?
-            WHERE id = ? AND archived_at IS NULL
+            WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
           `).run(timestamp, String(session.issue_id));
             } else {
               this.db.prepare(`
@@ -61128,7 +61168,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
                 needs_attention = CASE WHEN status = 'done' THEN needs_attention ELSE 1 END,
                 pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END,
                 version = version + 1, updated_at = ?
-            WHERE id = ? AND archived_at IS NULL
+            WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND archived_at IS NULL
           `).run(status === "failed" ? "blocked" : "in_review", timestamp, String(session.issue_id));
             }
           }
@@ -61162,7 +61202,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
               pending_actor = 'user',
               version = version + 1,
               updated_at = ?
-          WHERE id = ? AND status = 'in_progress'
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status = 'in_progress'
         `).run(timestamp, issueId);
           } else {
             this.db.prepare(`
@@ -61172,7 +61212,7 @@ ${draftPaths.map((path) => `- ${path}`).join("\n")}`].filter(Boolean).join("\n\n
               pending_actor = CASE WHEN status = 'done' THEN pending_actor ELSE 'user' END,
               version = version + 1,
               updated_at = ?
-          WHERE id = ? AND status = 'in_progress' AND archived_at IS NULL
+          WHERE id = ? AND NOT EXISTS (SELECT 1 FROM issue_task_workflow WHERE issue_id=issues.id) AND status = 'in_progress' AND archived_at IS NULL
         `).run(status === "failed" ? "blocked" : "in_review", timestamp, issueId);
           }
           this.db.exec("COMMIT");
@@ -71213,6 +71253,7 @@ function errorCode4(error2) {
   return message;
 }
 function errorStatus(code2) {
+  if (code2 === 'native_conversation_unbound') return 409;
   if (code2 === 'native_archive_unavailable') return 503;
   if (code2 === 'native_conversation_archived') return 409;
   if (code2 === 'native_history_read_only') return 403;
@@ -72358,7 +72399,7 @@ data: ${JSON.stringify({ revision })}
             projectRuntime.conversations.recoverRelay(result2.previous_relay_id);
           }
           if (capability === "ready" && body.busy !== true && !result2.command) result2.command = projectRuntime.planning.claimCommand(relayId) || null;
-          const projectThreads = store.db.prepare("SELECT thread_id FROM project_native_sessions UNION SELECT thread_id FROM project_native_conversations WHERE thread_id IS NOT NULL").all().map(row => row.thread_id);
+          const projectThreads = store.db.prepare("SELECT thread_id FROM project_native_sessions WHERE NOT EXISTS(SELECT 1 FROM native_conversation_unbindings WHERE native_conversation_unbindings.thread_id=project_native_sessions.thread_id) UNION SELECT thread_id FROM project_native_conversations WHERE thread_id IS NOT NULL AND archived_at IS NULL").all().map(row => row.thread_id);
           result2.thread_ids = [...new Set([...(result2.thread_ids || []), ...projectThreads])];
           result2.active_turns = [...(result2.active_turns || []), ...(projectRuntime.activeTurns?.() || [])];
         }
@@ -72390,6 +72431,10 @@ data: ${JSON.stringify({ revision })}
         const eventMethod = cleanString(body.method, 100);
         const params = body.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {};
         const eventThreadId = normalizeSessionId(cleanString(params.threadId, 200));
+        if (projectRuntime.conversations.unboundThread(eventThreadId)) {
+          if (!store.nativeSessionProxyIsLeader(relayId)) throw new Error('session_relay_not_leader');
+          return sendJson(response, 200, {accepted:false});
+        }
         const projectBinding = eventThreadId && projectRuntime.planning.getSessionByThread(eventThreadId);
         const workBinding = eventThreadId && store.db.prepare('SELECT conversation_id FROM issue_native_conversations WHERE thread_id=?').get(eventThreadId);
         if (!relayId || !eventThreadId || (projectBinding || workBinding ? !store.nativeSessionProxyIsLeader(relayId) : !store.sessionCommandRelayOwnsThread(relayId, eventThreadId))) throw new Error("session_relay_not_leader");

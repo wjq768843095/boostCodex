@@ -12,7 +12,7 @@
   const toolNames = new Set([
     "better_codex_project_context_read", "better_codex_project_charter_save",
     "better_codex_project_charter_confirm", "better_codex_project_plan_save",
-    "better_codex_project_plan_convert"
+    "better_codex_project_plan_convert", "better_codex_project_task_transition"
   ]);
   const normalizePath = value => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase();
   const conversationId = context => context.conversation_id || "";
@@ -67,10 +67,11 @@
 
   function toolsForThread(context, existing) {
     const supplied = context.dynamic_tools || [];
-    if (!Array.isArray(supplied) || supplied.length !== toolNames.size) throw Error("项目资料工具暂时不可用");
+    const requiredNames = new Set([...toolNames].filter(name => context.kind === "work" || name !== "better_codex_project_task_transition"));
+    if (!Array.isArray(supplied) || supplied.length !== requiredNames.size) throw Error("项目资料工具暂时不可用");
     const names = new Set();
     for (const tool of supplied) {
-      if (!toolNames.has(tool.name) || names.has(tool.name) || !tool.inputSchema || typeof tool.description !== "string") throw Error("项目资料工具暂时不可用");
+      if (!requiredNames.has(tool.name) || names.has(tool.name) || !tool.inputSchema || typeof tool.description !== "string") throw Error("项目资料工具暂时不可用");
       names.add(tool.name);
     }
     const native = Array.isArray(existing) ? existing : [];
@@ -296,15 +297,34 @@
     return { router, view, selected: location.pathname === path && !(location.search || "") && !(location.hash || "") };
   }
 
-  function nativeDraftAccess(namespace, composer) {
+  function nativeDraftProfile(namespace, initial) {
+    // Bundler export names change between desktop releases. Keep verified
+    // profiles together and validate the actual scope ownership before use.
+    const profiles = [
+      { descriptor: namespace.GJt, identity: namespace.Pyt, location: namespace.hbt, composer: initial },
+      { descriptor: namespace.kQt, identity: namespace.ZSt, location: namespace.MCt, composer: {
+        VIn: namespace.AH, KZt: initial?.l1t, DQt: initial?.W1t,
+        XQt: initial?.u0t, 'o$t': initial?.b0t, ZQt: initial?.d0t, FZt: initial?.['Q$t']
+      } }
+    ];
+    const own = (value, key) => value && Object.getOwnPropertyDescriptor(value, key)?.value;
+    for (const profile of profiles) {
+      const { descriptor, identity, location, composer } = profile;
+      if (typeof own(descriptor, '__scopeBrand') !== 'string' || own(identity, 'scope') !== descriptor || typeof location !== 'function' ||
+          typeof own(composer?.VIn, '__scopeBrand') !== 'string' || own(composer?.KZt, 'scope') !== composer.VIn || own(composer?.DQt, 'scope') !== composer.VIn ||
+          !['XQt', 'o$t', 'ZQt', 'FZt'].every(name => typeof composer?.[name] === 'function')) continue;
+      if (location({ entrypoint: 'home' }) === 'new-conversation') return profile;
+    }
+    return null;
+  }
+
+  function nativeDraftAccess(namespace, initial) {
     // Source-managed capability profile for the installed native scope runtime.
     // Each role is verified; a changed host fails closed instead of navigating
     // to an unregistered worktree draft and leaving a permanently busy composer.
-    const descriptor = namespace.GJt;
-    const identity = namespace.Pyt;
-    const location = namespace.hbt;
-    const project = namespace.ZTt;
-    if (!descriptor?.__scopeBrand || identity?.scope !== descriptor || typeof location !== "function" || !project?.resolve || !composer?.VIn?.__scopeBrand || composer.KZt?.scope !== composer.VIn || composer.DQt?.scope !== composer.VIn || composer._Qt?.scope !== composer.VIn || !["XQt", "o$t", "ZQt", "FZt"].every(name => typeof composer[name] === "function")) return null;
+    const profile = nativeDraftProfile(namespace, initial);
+    if (!profile) return null;
+    const { descriptor, identity, location, composer } = profile;
     const draftLocation = location({ entrypoint: "home" });
     if (draftLocation !== "new-conversation") return null;
     const getParts = () => {
@@ -501,6 +521,7 @@
     // as if it were the original host sender.
     hub.host = host;
     hub.factory = createHub;
+    hub.unboundThreads ||= new Set();
 
     // The desktop's dynamic-tool executor also listens directly on window.
     // Capture our same-page calls before that independent native listener can
@@ -723,11 +744,13 @@
     const hostId = message.hostId || LOCAL;
     const key = JSON.stringify([hostId, request?.id, params.threadId, params.callId, name, params.arguments]);
     let response;
-    if (hub.calls.has(key)) response = await hub.calls.get(key);
+    if (hub.unboundThreads.has(threadKey(hostId, params.threadId))) response = { success: false, contentItems: [{ type: "inputText", text: "此会话已解除绑定" }] };
+    else if (hub.calls.has(key)) response = await hub.calls.get(key);
     else {
       const work = (async () => {
         try {
           const client = hub.latestClient();
+          if (hub.unboundThreads.has(threadKey(hostId, params.threadId))) throw Error("此会话已解除绑定");
           const scope = hub.threads.get(threadKey(hostId, params.threadId)) || (client && params.threadId ? { hub, client, context: { host_id: hostId, thread_id: params.threadId } } : null);
           // A restored native thread need not have been opened through this UI
           // process. The backend verifies the trusted server envelope against
@@ -805,6 +828,7 @@
       registerBindings(values) {
         registry = (Array.isArray(values) ? values : []).filter(value => value && !value.history_id && value.host_id === LOCAL && typeof value.project_id === "string" && value.project_id && typeof value.thread_id === "string" && value.thread_id && ["charter", "planning", "work"].includes(value.kind) && (value.kind !== "work" || typeof value.issue_id === "string" && value.issue_id) && (value.kind === "work" || !value.conversation_id || typeof value.conversation_id === "string")).map(value => ({ ...targetIdentity(value), host_id: LOCAL, thread_id: value.thread_id, mode: "thread", read_only: value.read_only === true }));
         if (!hub || this.disposed) return { registered: 0 };
+        registry = registry.filter(context => !hub.unboundThreads.has(threadKey(context.host_id, context.thread_id)));
         const keys = new Set(registry.map(context => threadKey(context.host_id, context.thread_id)));
         for (const [key, scope] of hub.threads) {
           if (scope.client === this && readOnly(scope.context) && this.current && targetKey(scope.context) === targetKey(this.current)) continue;
@@ -825,6 +849,18 @@
           } else hub.threads.set(key, { hub, client: this, registryClient: this, context, operation: null });
         }
         return { registered: registry.length };
+      },
+      unregisterBinding(threadId, hostId = LOCAL) {
+        const key = threadKey(hostId, threadId);
+        registry = (registry || []).filter(context => threadKey(context.host_id, context.thread_id) !== key);
+        if (hub) {
+          hub.unboundThreads.add(key);
+          hub.threads.delete(key);
+          for (const owner of hub.clients) {
+            if (owner.current && threadKey(owner.current.host_id, owner.current.thread_id) === key) owner.leave(true);
+          }
+        } else if (this.current && threadKey(this.current.host_id, this.current.thread_id) === key) this.leave(true);
+        return { unregistered: true };
       },
       route() {
         const actual = options.getActiveRoute?.() || (root.location.pathname + root.location.search);
@@ -929,6 +965,7 @@
         try {
           await this.ensureHost();
           if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
+          if (context.thread_id && hub.unboundThreads.has(threadKey(context.host_id, context.thread_id))) { this.leave(true); throw Error("此会话已解除绑定"); }
           context = (await recoverPending(hub, this, context)).context;
           if (generation !== navigationGeneration || this.disposed) return { cancelled: true };
           this.current = context;
@@ -980,6 +1017,7 @@
       resumeRetained(value, resumeOptions = {}) {
         if (this.disposed || !host || !hub || options.navigate) return false;
         const context = flattenContext(value);
+        if (hub.unboundThreads.has(threadKey(context.host_id, context.thread_id))) return false;
         if (!context.project_id || !["charter", "planning", "work"].includes(context.kind) || context.kind === "work" && !context.issue_id || !context.thread_id || context.mode === "legacy_busy" || context.mode === "handoff_required") return false;
         if (context.conversation_id && typeof context.conversation_id !== "string" || context.history_id && (context.kind !== "work" || typeof context.history_id !== "string")) return false;
         const path = "/local/" + encodeURIComponent(context.thread_id);
@@ -1225,6 +1263,7 @@
     return {
       connect: client.ensureHost.bind(client),
       registerBindings: client.registerBindings.bind(client),
+      unregisterBinding: client.unregisterBinding.bind(client),
       mount: client.open.bind(client), open: client.open.bind(client),
       leave: () => client.leave(), destroy: client.destroy.bind(client),
       capture: client.capture.bind(client), restore: client.restore.bind(client),

@@ -2139,6 +2139,12 @@ var BetterCodexInjected = (() => {
       "已确认": "Confirmed",
       "确认总纲": "Confirm charter",
       "正在确认…": "Confirming…",
+      "解除绑定": "Unbind conversation",
+      "正在解除…": "Unbinding…",
+      "解除后，此会话将作为普通 Codex 会话继续使用，聊天记录会保留。": "This conversation will continue as an ordinary Codex chat, with its chat history preserved.",
+      "会话正在运行，请等待完成后再解除绑定。": "Wait for the conversation to finish before unbinding it.",
+      "会话绑定已更新，请重新打开后再试。": "The conversation binding has changed. Reopen it and try again.",
+      "会话仍在处理消息，请等待完成后再操作。": "Wait for the conversation to finish processing before continuing.",
       "总纲会话正在运行，请等待回复完成后再确认。": "The charter conversation is running. Wait for the reply before confirming.",
       "暂无可确认的总纲，请先完成总纲内容。": "Complete the charter before confirming it.",
       "历史会话仅供查看。": "Historical conversations are read-only.",
@@ -3046,10 +3052,12 @@ var BetterCodexInjected = (() => {
     }
     async function lookupNativeProjectBinding(threadId) {
       if (!threadId || !state.nativePlanningEnabled) return null;
+      if (state.nativeUnboundThreads?.[threadId]) return null;
       const cached = state.nativeThreadLinks?.[threadId];
       if (cached) return cached;
       try {
         const binding = await api("/api/projects/from-thread?thread_id=" + encodeURIComponent(threadId));
+        if (state.nativeUnboundThreads?.[threadId]) return null;
         if (!binding?.project_id) return null;
         state.nativeThreadLinks ||= {};
         state.nativeThreadLinks[threadId] = { thread_id: threadId, project_id: binding.project_id, kind: binding.kind, ...(binding.conversation_id ? { conversation_id: binding.conversation_id } : {}) };
@@ -3065,7 +3073,7 @@ var BetterCodexInjected = (() => {
       try { saved = JSON.parse(sessionStorage.getItem("better-codex-native-return") || "null"); } catch { saved = null; }
       const threadId = currentRouteThreadId() || activeThreadId();
       const issue = state.issues.find((item) => issueSessionId(item) === threadId);
-      const context = issue ? { thread_id: threadId, issue_id: issue.id, project_id: issue.project_id } : state.nativeThreadLinks?.[threadId] || (saved?.thread_id === threadId ? saved : null);
+      const context = state.nativeUnboundThreads?.[threadId] ? null : issue ? { thread_id: threadId, issue_id: issue.id, project_id: issue.project_id } : state.nativeThreadLinks?.[threadId] || (saved?.thread_id === threadId ? saved : null);
       if (!context && threadId && state.nativePlanningEnabled && state.nativeReturnLookupThread !== threadId) {
         state.nativeReturnLookupThread = threadId;
         void lookupNativeProjectBinding(threadId).then((binding) => { if (binding && !destroyed) ensureEntry(); }).catch((error) => appendDiagnostic("native_return_lookup_failed", { error: String(error) }));
@@ -4403,11 +4411,17 @@ var BetterCodexInjected = (() => {
       if (value === "charter_confirmation_busy") return t("总纲会话正在运行，请等待回复完成后再确认。");
       if (value === "charter_not_found") return t("暂无可确认的总纲，请先完成总纲内容。");
       if (value === "native_history_read_only") return t("历史会话仅供查看。");
+      if (value === "workflow_review_required" || value === "workflow_acceptance_required") return t("请先完成任务验收，再确认完成。");
+      if (["workflow_transition_required", "invalid_workflow_transition", "workflow_transition_invalid"].includes(value)) return t("当前任务阶段已变化，请核对任务状态后重试。");
+      if (value === "workflow_development_required") return t("请先完成开发并提交开发结果。");
+      if (["pending_manual_acceptance_required", "workflow_user_acceptance_required"].includes(value)) return t("仍有人工验收项目待确认，请完成后确认验收通过。");
+      if (value === "workflow_evidence_required") return t("请先记录验收结果。");
+      if (value === "work_task_required") return t("请在对应任务的工作会话中操作。");
       if (["invalid_item_ids", "plan_item_not_found"].includes(value)) return t("所选任务已发生变化，请重新选择。");
       if (value === "skill_name_and_instructions_required") return t("请填写 Skill 名称和指令。");
       if (value === "skill_slug_conflict") return t("已存在同名 Skill，请修改名称。");
       if (value === "skill_name_conflict") return t("已存在同名 Skill，请修改名称。");
-      if (value === "project_backup_failed") return t("项目资料备份未能完成，本次操作已停止，请稍后重试。");
+      if (["project_backup_failed", "workflow_backup_failed", "workflow_backup_home_required"].includes(value)) return t("项目资料备份未能完成，本次操作已停止，请稍后重试。");
       if (value === "skill_export_path_conflict") return t("Skill 保存位置已被占用，请调整名称后重试。");
       if (value === "skill_project_root_shared") return t("项目目录与其他项目重叠，请选择独立目录后重试。");
       if (value === "skill_project_required") return t("请选择此 Skill 所属的项目。");
@@ -4446,7 +4460,8 @@ var BetterCodexInjected = (() => {
       if (["runtime_response_invalid", "invalid_projects_response", "invalid_issues_response", "invalid_agents_response"].includes(value)) return t("列表数据暂时无法读取，请稍后重试。");
       if (value === "issue_archived") return t("该会话对应的 Issue 已归档，请先取消归档。");
       if (value === "issue_not_archived") return t("该任务尚未归档。");
-      if (["native_conversation_busy", "native_operation_busy", "native_outcome_unknown"].includes(value)) return t("会话仍在处理消息，请等待完成后再归档。");
+      if (["native_conversation_busy", "native_operation_busy", "native_outcome_unknown"].includes(value)) return t("会话仍在处理消息，请等待完成后再操作。");
+      if (["native_conversation_binding_changed", "native_conversation_unbound", "native_thread_unbound", "native_binding_required"].includes(value)) return t("会话绑定已更新，请重新打开后再试。");
       if (["native_archive_unavailable", "session_host_unavailable", "session_host_timeout", "session_host_thread_action_unavailable", "native_host_mismatch"].includes(value)) return t("暂时无法归档会话，请稍后重试。");
       if (value === "native_conversation_archived") return t("该会话已归档，请选择其他会话。");
       if (["project_planning_busy", "project_planning_agent_locked", "project_planning_unavailable", "project_planning_invalid_output", "project_planning_session_missing"].includes(value)) return projectPlanningErrorLabel(value);
@@ -5847,6 +5862,7 @@ var BetterCodexInjected = (() => {
           if (threadId) relayThreads.add(threadId);
           const origin = result?.origin_target || result?.target || result?.context?.target || result?.context;
           const conversationId = result?.context?.target?.conversation_id || result?.context?.conversation_id || result?.binding?.conversation_id || origin?.conversation_id;
+          if (threadId && state.nativeUnboundThreads?.[threadId]) return;
           if (threadId && origin?.project_id && !origin.history_id && ["charter", "planning", "work"].includes(origin.kind)) {
             state.nativeThreadLinks ||= {};
             state.nativeThreadLinks[threadId] = { thread_id: threadId, host_id: origin.host_id || "local", project_id: origin.project_id, kind: origin.kind, ...(origin.issue_id ? { issue_id: origin.issue_id } : {}), ...(conversationId ? { conversation_id: conversationId } : {}) };
@@ -5876,7 +5892,7 @@ var BetterCodexInjected = (() => {
     function registerInlineConversationBindings() {
       if (typeof inlineConversationAdapter?.registerBindings !== "function") return;
       const bindings = Object.values(state.nativeThreadLinks || {}).filter((binding) =>
-        binding?.host_id === "local" && normalizeSessionId(binding.thread_id) && binding.project_id && !binding.archived_at && !binding.history_id && !binding.read_only &&
+        binding?.host_id === "local" && normalizeSessionId(binding.thread_id) && !state.nativeUnboundThreads?.[binding.thread_id] && binding.project_id && !binding.archived_at && !binding.history_id && !binding.read_only &&
         ["charter", "planning", "work"].includes(binding.kind) && (binding.kind !== "work" || binding.issue_id)
       ).map((binding) => ({ project_id: binding.project_id, kind: binding.kind, host_id: "local", thread_id: normalizeSessionId(binding.thread_id), ...(binding.issue_id ? { issue_id: binding.issue_id } : {}), ...(binding.conversation_id ? { conversation_id: binding.conversation_id } : {}) }));
       inlineConversationAdapter.registerBindings(bindings);
@@ -5895,6 +5911,7 @@ var BetterCodexInjected = (() => {
       const target = inlineConversationTarget();
       const response = await api(inlineConversationQuery(target), { passive: options.background !== false });
       if (!inlineConversation || request !== inlineConversationRequest || inlineConversationKey(inlineConversation) !== key) return;
+      if (state.nativeUnboundThreads?.[normalizeSessionId(response.thread_id || response.binding?.thread_id)]) return;
       const oldMode = inlineConversation.mode;
       inlineConversation = { ...inlineConversation, ...response, target: { ...target, ...(response.target || {}) } };
       inlineConversation.read_only = response.read_only === true || Boolean(target.history_id) || target.kind === "planning" && response.mode === "thread" && response.planning_available !== true && response.context?.charter?.status !== "confirmed";
@@ -6129,6 +6146,31 @@ var BetterCodexInjected = (() => {
       document.querySelectorAll("[data-better-codex-inline-content]").forEach((node) => { if (node !== projectSurfaceCache?.nativeLayout) node.removeAttribute("data-better-codex-inline-content"); });
       document.querySelectorAll("[data-better-codex-inline-host]").forEach((node) => { if (node === projectSurfaceCache?.nativeSurface) return; node.querySelectorAll("[data-better-codex-native-panel]").forEach(panel => panel.removeAttribute("data-better-codex-native-panel")); node.removeAttribute("data-better-codex-inline-host"); node.style.removeProperty("--bc-inline-details-space"); node.style.removeProperty("--bc-inline-nav-space"); node.style.removeProperty("--bc-inline-native-panel-width"); });
     }
+    function workflowActivityState(issue, fallback) {
+      if (!issue?.workflow) return fallback;
+      return { backlog: "not-started", todo: "not-started", in_progress: "in_progress", in_review: "in_review", blocked: "blocked", done: "completed" }[issue.status] || fallback;
+    }
+    function inlineTaskAcceptanceMarkup(issue, readOnly = false) {
+      const pending = issue.workflow?.pending_manual;
+      if (issue.status !== "in_review" || issue.workflow?.result !== "review_passed" || !Array.isArray(pending) || !pending.length) return "";
+      const disabled = readOnly || Boolean(issue.session_active_turn_id || issue.task_execution_running || issue.active_run_status);
+      return '<section class="better-codex-project-plan-section"><header><strong>' + te("待人工验收") + '</strong></header><ul>' + pending.map(item => '<li>' + escapeHtml2(item) + '</li>').join("") + '</ul>' + (readOnly ? "" : '<button type="button" class="better-codex-submit" data-inline-accept-task' + (disabled ? ' disabled' : '') + '>' + te("确认验收通过") + '</button>') + '</section>';
+    }
+    async function confirmInlineTaskAcceptance(button) {
+      if (!inlineConversation || inlineConversation.read_only || inlineConversationTarget().history_id || button.disabled) return;
+      const current = inlineConversationTarget();
+      const originKey = inlineConversationKey(inlineConversation);
+      const issue = inlineConversation.context?.task;
+      if (!issue || issue.id !== current.issue_id || issue.workflow?.result !== "review_passed" || issue.status !== "in_review") return;
+      button.disabled = true;
+      try {
+        const confirmed = await confirmAction("确认验收通过", "请确认列出的人工验收项目均已通过，确认后任务将进入已完成。", "确认通过");
+        if (!confirmed || !inlineConversation || inlineConversationKey(inlineConversation) !== originKey || inlineConversation.read_only) return;
+        await api("/api/issues/" + encodeURIComponent(issue.id) + "/workflow", { method: "POST", body: JSON.stringify({ expected_version: issue.version, action: "accept" }) });
+        await loadIssues();
+        if (inlineConversation && inlineConversationKey(inlineConversation) === originKey) await reloadInlineConversationContext();
+      } finally { if (button.isConnected) button.disabled = false; }
+    }
     function inlineWorkDetailsMarkup() {
       const target = inlineConversationTarget();
       const context = inlineConversation.context || {};
@@ -6138,7 +6180,7 @@ var BetterCodexInjected = (() => {
       const planItem = plan?.items?.find((item) => item.id === issue.item_id || item.issue_id === target.issue_id) || plan?.items?.find((item) => plan.issue_links?.some((link) => link.item_id === item.id && link.issue_id === target.issue_id));
       const sections = Array.isArray(charter?.sections) ? charter.sections : Object.values(charter?.sections || {});
       const charterMarkup = charter ? '<details><summary>' + te("引用的项目总纲") + ' · ' + te("版本") + ' ' + escapeHtml2(charter.revision || issue.charter_revision || "") + '</summary>' + sections.map((section) => '<section class="better-codex-project-plan-section"><header><strong>' + escapeHtml2(section.title || section.id || "项目章节") + '</strong></header>' + documentTextMarkup(section.content || section.markdown || section.text) + '</section>').join("") + (charter.markdown ? documentTextMarkup(charter.markdown) : "") + '</details>' : "";
-      return '<div class="better-codex-inline-details-body"><h3>' + te("任务资料") + '</h3><strong>' + escapeHtml2(issue.title || t("工作任务")) + '</strong><span class="better-codex-inline-work-state">' + te("任务状态") + ' · ' + escapeHtml2(inlineWorkStateLabel(issue)) + '</span><section class="better-codex-project-plan-section"><header><strong>' + te("任务要求") + '</strong></header>' + documentTextMarkup(issue.description || issue.goal) + '</section>' + issuePlanDetailMarkup(issue) + (planItem ? planItemDetailsMarkup(planItem) + issuePlanDetailMarkup(planItem) : "") + charterMarkup + '</div>';
+      return '<div class="better-codex-inline-details-body"><h3>' + te("任务资料") + '</h3><strong>' + escapeHtml2(issue.title || t("工作任务")) + '</strong><span class="better-codex-inline-work-state">' + te("任务状态") + ' · ' + escapeHtml2(inlineWorkStateLabel(issue)) + '</span>' + inlineTaskAcceptanceMarkup(issue, inlineConversation.read_only || Boolean(target.history_id)) + '<section class="better-codex-project-plan-section"><header><strong>' + te("任务要求") + '</strong></header>' + documentTextMarkup(issue.description || issue.goal) + '</section>' + issuePlanDetailMarkup(issue) + (planItem ? planItemDetailsMarkup(planItem) + issuePlanDetailMarkup(planItem) : "") + charterMarkup + '</div>';
     }
     function inlineNativeElementVisible(element) {
       if (!(element instanceof HTMLElement) || !element.isConnected) return false;
@@ -6187,6 +6229,76 @@ var BetterCodexInjected = (() => {
         if (!destroyed && inlineConversation) renderInlineConversation();
       });
     }
+    function inlineConversationUnbindState() {
+      const target = inlineConversationTarget();
+      const threadId = normalizeSessionId(inlineConversation?.thread_id || inlineConversation?.binding?.thread_id);
+      const conversationId = target.conversation_id || inlineConversation?.conversation?.conversation_id;
+      const issue = inlineConversation?.context?.task || inlineConversation?.context?.issue;
+      const busy = Boolean(inlineConversationLoading || inlineConversation?.pending_operation || inlineConversation?.binding?.active_turn_id || inlineConversation?.conversation?.active_turn_id || ["running", "active", "starting", "stopping", "waiting_on_approval", "waiting_on_user"].some(status => status === inlineConversation?.binding?.status || status === inlineConversation?.conversation?.status) || issueExecutionRunning(issue));
+      const pending = Boolean(state.nativeUnbindPending);
+      return { target: { ...target, conversation_id: conversationId }, threadId, busy, pending, visible: !READ_ONLY && Boolean(threadId && conversationId && target.project_id && ["charter", "planning", "work"].includes(target.kind) && !target.history_id && !inlineConversation?.history && inlineConversation?.source !== "history" && inlineConversation?.mode === "thread" && !state.nativeUnboundThreads?.[threadId]) };
+    }
+    function inlineConversationUnbindMarkup() {
+      const action = inlineConversationUnbindState();
+      if (!action.visible) return "";
+      return '<button type="button" data-inline-unbind' + (action.busy || action.pending ? ' disabled' : '') + (action.busy ? ' title="' + te("会话正在运行，请等待完成后再解除绑定。") + '"' : '') + (action.pending ? ' aria-busy="true"' : '') + '>' + te(action.pending ? "正在解除…" : "解除绑定") + '</button>';
+    }
+    function clearUnboundConversationView(result) {
+      const projectId = result.project_id;
+      const conversationId = result.unbound_conversation_id;
+      const threadId = normalizeSessionId(result.thread_id);
+      const view = readProjectView(projectId);
+      if (view.conversations?.[result.kind] === conversationId) delete view.conversations[result.kind];
+      if (view.target?.conversation_id === conversationId) delete view.target;
+      try { localStorage.setItem("better-codex-project-view:" + projectId, JSON.stringify(view)); } catch {}
+      if (state.nativeWorkSelections?.[projectId]?.conversation_id === conversationId) delete state.nativeWorkSelections[projectId];
+      if (state.nativeConversationSelections?.[projectId] === conversationId) state.nativeConversationSelections[projectId] = result.selected_conversation_id || "";
+      for (const name of ["nativeConversations", "nativeWorkConversations"]) if (state[name]?.[projectId]) state[name][projectId] = state[name][projectId].filter(row => row.conversation_id !== conversationId && normalizeSessionId(row.thread_id) !== threadId);
+      delete state.planningContexts?.[projectId];
+      state.projectResumePending = "";
+      try {
+        const saved = JSON.parse(sessionStorage.getItem("better-codex-native-return") || "null");
+        if (saved?.thread_id === threadId || saved?.conversation_id === conversationId) sessionStorage.removeItem("better-codex-native-return");
+        sessionStorage.removeItem(RESUME_SURFACE_KEY);
+      } catch {}
+    }
+    async function unbindInlineConversation(button) {
+      const action = inlineConversationUnbindState();
+      if (button.disabled || !action.visible || action.busy || action.pending) return;
+      const originKey = inlineConversationKey(inlineConversation);
+      const navigation = inlineConversationNavigationRequest;
+      state.nativeUnbindPending = originKey;
+      state.error = "";
+      renderInlineConversation();
+      try {
+        const confirmed = await confirmAction("解除绑定", "解除后，此会话将作为普通 Codex 会话继续使用，聊天记录会保留。", "解除绑定");
+        if (!confirmed || !inlineConversation || inlineConversationKey(inlineConversation) !== originKey || navigation !== inlineConversationNavigationRequest) return;
+        const current = await api(inlineConversationQuery(action.target));
+        if (!inlineConversation || inlineConversationKey(inlineConversation) !== originKey || navigation !== inlineConversationNavigationRequest) return;
+        if (normalizeSessionId(current.thread_id || current.binding?.thread_id) !== action.threadId || current.conversation?.conversation_id !== action.target.conversation_id) throw new Error("native_conversation_binding_changed");
+        const result = await api("/api/native-conversations/unbind", { method: "POST", body: JSON.stringify({ ...action.target, expected_revision: current.conversation.revision, ...(action.target.kind === "work" ? { expected_issue_version: current.expected_revision } : {}) }) });
+        const threadId = normalizeSessionId(result.thread_id);
+        state.nativeUnboundThreads ||= {};
+        state.nativeUnboundThreads[threadId] = true;
+        try { sessionStorage.setItem("better-codex-unbound-threads", JSON.stringify(state.nativeUnboundThreads)); } catch {}
+        if (state.nativeThreadLinks) delete state.nativeThreadLinks[threadId];
+        inlineConversationAdapter?.unregisterBinding?.(threadId, result.host_id || "local");
+        registerInlineConversationBindings();
+        const stillCurrent = !destroyed && inlineConversation && inlineConversationKey(inlineConversation) === originKey && navigation === inlineConversationNavigationRequest;
+        if (stillCurrent) { leaveInlineConversation(); close(); }
+        if (stillCurrent || projectSurfaceCache?.conversation && normalizeSessionId(projectSurfaceCache.conversation.thread_id || projectSurfaceCache.conversation.binding?.thread_id) === threadId) releaseProjectSurfaceCache();
+        clearUnboundConversationView(result);
+        if (stillCurrent) { await openThread(threadId); releaseProjectSurfaceCache(); }
+        else if (inlineConversation) renderInlineConversation();
+      } catch (error) {
+        const value = String(error instanceof Error ? error.message : error);
+        if (inlineConversation && inlineConversationKey(inlineConversation) === originKey) state.error = value.includes("busy") ? t("会话正在运行，请等待完成后再解除绑定。") : value === "native_conversation_binding_changed" ? t("会话绑定已更新，请重新打开后再试。") : errorLabel(error);
+        throw error;
+      } finally {
+        state.nativeUnbindPending = null;
+        if (inlineConversation) renderInlineConversation();
+      }
+    }
     function renderInlineConversation() {
       if (!inlineConversation || !inlineConversationRoot) return;
       const target = inlineConversationTarget();
@@ -6200,7 +6312,7 @@ var BetterCodexInjected = (() => {
       const taskStart = workWorkspace && !task?.archived_at ? '<button type="button" data-work-create="' + escapeHtml2(target.issue_id) + '">' + icon("plus") + te("新建会话") + '</button>' : "";
       const compact = window.matchMedia("(max-width: 980px)").matches;
       const detailsOpen = compact ? inlineConversationCompactDetailsOpen : inlineConversationDetailsOpen;
-      const header = '<div class="better-codex-inline-heading-leading"><button type="button" data-inline-back aria-label="' + te(workWorkspace ? "返回任务看板" : "返回项目") + '">' + icon("back") + te("返回") + '</button><span class="better-codex-inline-title" title="' + escapeHtml2(title) + '">' + escapeHtml2(title) + '</span>' + tabs + '</div>' + stageTabs + '<div class="better-codex-inline-heading-actions">' + (workWorkspace ? '<nav class="bc-project-work-views" aria-label="' + te("工作视图") + '"><button type="button" data-inline-work-view="board">' + te("状态看板") + '</button><button type="button" aria-current="page" data-inline-work-view="conversations">' + te("工作会话") + '</button></nav>' : '') + taskStart + '<button type="button" data-inline-details aria-expanded="' + String(detailsOpen) + '">' + icon("docs") + te(workWorkspace ? "资料" : "总纲与任务") + '</button>' + (workWorkspace && !inlineConversation.read_only && !target.history_id && inlineConversation.mode !== "legacy_busy" && !issueExecutionRunning(task) ? '<button type="button" data-inline-restart>' + te("重新开始") + '</button>' : '') + '<button type="button" data-inline-retry aria-label="' + te("重新连接会话") + '" title="' + te("重新连接会话") + '">' + icon("refresh") + '</button></div>';
+      const header = '<div class="better-codex-inline-heading-leading"><button type="button" data-inline-back aria-label="' + te(workWorkspace ? "返回任务看板" : "返回项目") + '">' + icon("back") + te("返回") + '</button><span class="better-codex-inline-title" title="' + escapeHtml2(title) + '">' + escapeHtml2(title) + '</span>' + tabs + '</div>' + stageTabs + '<div class="better-codex-inline-heading-actions">' + (workWorkspace ? '<nav class="bc-project-work-views" aria-label="' + te("工作视图") + '"><button type="button" data-inline-work-view="board">' + te("状态看板") + '</button><button type="button" aria-current="page" data-inline-work-view="conversations">' + te("工作会话") + '</button></nav>' : '') + taskStart + inlineConversationUnbindMarkup() + '<button type="button" data-inline-details aria-expanded="' + String(detailsOpen) + '">' + icon("docs") + te(workWorkspace ? "资料" : "总纲与任务") + '</button>' + (workWorkspace && !inlineConversation.read_only && !target.history_id && inlineConversation.mode !== "legacy_busy" && !issueExecutionRunning(task) ? '<button type="button" data-inline-restart>' + te("重新开始") + '</button>' : '') + '<button type="button" data-inline-retry aria-label="' + te("重新连接会话") + '" title="' + te("重新连接会话") + '">' + icon("refresh") + '</button></div>';
       const heading = inlineConversationRoot.querySelector(".better-codex-inline-heading");
       if (header !== inlineConversationHeaderMarkup) { heading.innerHTML = header; inlineConversationHeaderMarkup = header; }
       const projects = inlineConversationRoot.querySelector(".bc-planning-projects");
@@ -6362,6 +6474,7 @@ var BetterCodexInjected = (() => {
       const projectRow = target.closest("[data-project-id]");
       if (projectRow && target.closest(".bc-planning-projects")) return void perform(() => openProjectDetail(projectRow.dataset.projectId));
       if (target.matches("[data-project-sidebar-create]")) return openCreateProjectDialog();
+      if (target.matches("[data-inline-unbind]")) return target.disabled ? void 0 : void perform(() => unbindInlineConversation(target));
       if (target.matches("[data-planning-archive]")) return target.disabled ? void 0 : void perform(async () => {
         target.disabled = true;
         try { await archiveProjectNativeConversation(inlineConversationTarget().project_id, target.dataset.planningArchive); }
@@ -6405,6 +6518,7 @@ var BetterCodexInjected = (() => {
         return openRoute("projects", { projectId, resume: false });
       }
       if (target.matches("[data-inline-work-task]")) return void perform(() => openIssueNativeConversation({ id: target.dataset.inlineWorkTask, project_id: inlineConversationTarget().project_id }));
+      if (target.matches("[data-inline-accept-task]")) return void perform(() => confirmInlineTaskAcceptance(target));
       if (target.matches("[data-inline-back]")) {
         const current = inlineConversationTarget();
         const surface = inlineConversation.return_surface || (current.kind === "work" ? "issues" : "projects");
@@ -7747,7 +7861,7 @@ var BetterCodexInjected = (() => {
       const confirmTitle = confirmation.readOnly ? "当前页面仅供查看。" : confirmation.busy ? "总纲会话正在运行，请等待回复完成后再确认。" : !confirmation.revision ? "暂无可确认的总纲，请先完成总纲内容。" : "";
       const confirmButton = ready ? '<button type="button" class="better-codex-submit" data-project-charter-confirm="' + escapeHtml2(project.id) + '" data-charter-revision="' + escapeHtml2(String(confirmation.revision)) + '"' + (confirmation.threadId ? ' data-charter-thread="' + escapeHtml2(confirmation.threadId) + '"' : '') + (!confirmation.available ? ' disabled' : '') + (confirmation.pending ? ' aria-busy="true"' : '') + (confirmTitle ? ' title="' + te(confirmTitle) + '"' : '') + '>' + te(confirmation.pending ? "正在确认…" : confirmation.confirmed ? "已确认" : "确认总纲") + '</button>' : '';
       const confirmationError = state.charterConfirmationError?.projectId === project.id ? '<p class="better-codex-project-document-notice is-error" role="alert">' + escapeHtml2(state.charterConfirmationError.message) + '</p>' : '';
-      return '<section class="better-codex-project-document-panel bc-native-planning">' + actions + '<article class="better-codex-project-plan"><header class="better-codex-project-planning-panel-head"><div><span>' + te("项目总纲") + '</span><strong>' + te(charter.status === "confirmed" ? "已确认" : "待确认") + ' · ' + te("版本") + ' ' + escapeHtml2(String(charter.revision || 0)) + '</strong></div>' + confirmButton + '</header>' + confirmationError + '<div class="better-codex-project-plan-scroll">' + (options.inline ? '<details class="bc-planning-fold" data-planning-fold="charter:' + escapeHtml2(project.id) + '"><summary>' + te("总纲内容") + '</summary><div class="bc-planning-fold-body">' + document + '</div></details>' : document) + '<section class="better-codex-project-plan-section"><header><strong>' + te("任务规划") + '</strong><span>' + te("版本") + ' ' + escapeHtml2(String(plan.revision || 0)) + '</span></header>' + warningMarkup + (taskRows || '<div class="better-codex-project-dashboard-empty">' + te("暂无规划任务") + '</div>') + (ready && items.length ? '<button type="button" class="better-codex-submit" data-plan-convert="' + escapeHtml2(project.id) + '"' + (!selected.length ? ' disabled' : '') + '>' + te("将所选任务加入待规划") + '</button>' : '') + '</section></div></article></section>';
+      return '<section class="better-codex-project-document-panel bc-native-planning">' + actions + '<article class="better-codex-project-plan"><header class="better-codex-project-planning-panel-head"><div><span>' + te("项目总纲") + '</span><strong>' + te(charter.status === "confirmed" ? "已确认" : "待确认") + ' · ' + te("版本") + ' ' + escapeHtml2(String(charter.revision || 0)) + '</strong></div>' + confirmButton + '</header>' + confirmationError + '<div class="better-codex-project-plan-scroll">' + (options.inline ? '<details class="bc-planning-fold" data-planning-fold="charter:' + escapeHtml2(project.id) + '"><summary>' + te("总纲内容") + '</summary><div class="bc-planning-fold-body">' + document + '</div></details>' : document) + '<section class="better-codex-project-plan-section"><header><strong>' + te("任务规划") + '</strong><span>' + te("版本") + ' ' + escapeHtml2(String(plan.revision || 0)) + '</span></header>' + warningMarkup + (taskRows || '<div class="better-codex-project-dashboard-empty">' + te("暂无规划任务") + '</div>') + (ready && items.length ? '<button type="button" class="better-codex-submit" data-plan-convert="' + escapeHtml2(project.id) + '"' + (!selected.length ? ' disabled' : '') + '>' + te("将所选任务转为开发") + '</button>' : '') + '</section></div></article></section>';
     }
     async function loadPlanningContext(projectId, options = {}) {
       if (!state.nativePlanningEnabled || !projectId) return;
@@ -9112,11 +9226,11 @@ var BetterCodexInjected = (() => {
           const activityAgent = assignee || defaultAgent || { name: "Codex", is_default: true };
           const latestRunStatus = issue.latest_run_status || "";
           const replyResultState = issue.reply_status === "succeeded" ? "completed" : ["failed", "interrupted"].includes(issue.reply_status) ? issue.reply_status : "";
-          const executionState = issue.status === "done" ? "completed" : issue.status === "cancelled" ? "interrupted" : issue.status === "blocked" ? "blocked" : issue.status === "in_review" ? issue.latest_scheduler_status === "failed" ? "scheduler-failed" : "in_review" : replyResultState || (latestRunStatus === "failed" ? "failed" : latestRunStatus === "interrupted" ? "interrupted" : latestRunStatus === "scheduling" ? "scheduling" : latestRunStatus === "running" ? "running" : latestRunStatus === "claimed" ? "claimed" : issue.agent_enabled ? "not-started" : "");
+          const executionState = workflowActivityState(issue, issue.status === "done" ? "completed" : issue.status === "cancelled" ? "interrupted" : issue.status === "blocked" ? "blocked" : issue.status === "in_review" ? issue.latest_scheduler_status === "failed" ? "scheduler-failed" : "in_review" : replyResultState || (latestRunStatus === "failed" ? "failed" : latestRunStatus === "interrupted" ? "interrupted" : latestRunStatus === "scheduling" ? "scheduling" : latestRunStatus === "running" ? "running" : latestRunStatus === "claimed" ? "claimed" : issue.agent_enabled ? "not-started" : ""));
           const sessionExecutionState = issue.session_status === "stopping" ? "stopping" : issue.session_status === "starting" ? "claimed" : ["active", "waiting_on_approval", "waiting_on_user"].includes(issue.session_status) ? "running" : "";
           const activeExecutionState = issue.active_run_status || (issue.reply_status === "running" ? "running" : sessionExecutionState);
           const activityState = permissions.remotePending ? "remote-pending" : permissions.remoteConflict ? "remote-conflict" : enrichmentLocked ? "thinking" : issue.session_status === "stopping" ? "stopping" : issue.session_retry ? "retrying" : activeExecutionState || (issue.enrichment_status === "failed" ? "title-regeneration-failed" : executionState);
-          const activityLabel = activityState === "retrying" ? escapeHtml2(sessionRetryCardLabel(issue.session_retry)) : t(activityState === "remote-pending" ? "同步中" : activityState === "remote-conflict" ? "同步冲突" : issue.enrichment_status === "regenerating" ? "标题生成中" : activityState === "title-regeneration-failed" ? "标题生成失败" : activityState === "stopping" ? "正在停止…" : activityState === "running" ? "工作中" : activityState === "scheduling" ? "调度中" : activityState === "scheduler-failed" ? "调度失败" : activityState === "claimed" ? "排队中" : activityState === "in_review" ? "待审核" : activityState === "completed" ? "已完成" : activityState === "blocked" ? "已阻塞" : activityState === "failed" ? "执行失败" : activityState === "interrupted" ? "已停止" : activityState === "not-started" ? "未开始" : "");
+          const activityLabel = activityState === "retrying" ? escapeHtml2(sessionRetryCardLabel(issue.session_retry)) : t(activityState === "remote-pending" ? "同步中" : activityState === "remote-conflict" ? "同步冲突" : issue.enrichment_status === "regenerating" ? "标题生成中" : activityState === "title-regeneration-failed" ? "标题生成失败" : activityState === "stopping" ? "正在停止…" : activityState === "running" ? "工作中" : activityState === "scheduling" ? "调度中" : activityState === "scheduler-failed" ? "调度失败" : activityState === "claimed" ? "排队中" : activityState === "in_progress" ? "进行中" : activityState === "in_review" ? "待审核" : activityState === "completed" ? "已完成" : activityState === "blocked" ? "已阻塞" : activityState === "failed" ? "执行失败" : activityState === "interrupted" ? "已停止" : activityState === "not-started" ? "未开始" : "");
           const activityIcon = activityState === "retrying" ? '<span class="better-codex-activity-dot" aria-hidden="true"></span>' : activityState === "scheduling" ? '<span class="better-codex-activity-dot better-codex-scheduler-dot" aria-hidden="true"></span>' : activityState === "scheduler-failed" ? '<span class="better-codex-activity-dot better-codex-scheduler-failed-dot" aria-hidden="true"></span>' : ["completed", "interrupted", "not-started"].includes(activityState) ? '<span class="better-codex-activity-dot" aria-hidden="true"></span>' : ["failed", "blocked", "remote-conflict", "title-regeneration-failed"].includes(activityState) ? icon("close") : agentAvatarMarkup(activityAgent, "better-codex-card-avatar");
           const activity = activityState ? '<span class="better-codex-activity" data-run="' + escapeHtml2(activityState) + '" title="' + (activityState === "retrying" ? escapeHtml2(sessionRetryDetail(issue.session_retry)) : activityLabel) + '">' + activityIcon + '<span class="' + ((enrichmentLocked || executionRunning || permissions.remotePending) && activityState !== "retrying" ? "better-codex-shimmer" : "") + '">' + activityLabel + "</span></span>" : "";
           const description = mockupText(issue.description).replace(/[#*_`~>[]()]/g, "").replace(/\s+/g, " ").trim();
@@ -9255,10 +9369,11 @@ var BetterCodexInjected = (() => {
         if (HOST_KIND === "web") window.dispatchEvent(new CustomEvent("better-codex:bootstrap", { detail: { user: state.user, locale: state.locale } }));
         state.mockup = Boolean(bootstrap.mockup);
         state.nativePlanningEnabled = bootstrap.native_planning_enabled === true;
+        try { state.nativeUnboundThreads = JSON.parse(sessionStorage.getItem("better-codex-unbound-threads") || "{}"); } catch { state.nativeUnboundThreads = {}; }
         state.nativeThreadLinks ||= {};
         for (const binding of bootstrap.native_thread_bindings || []) {
           const threadId = normalizeSessionId(binding?.thread_id);
-          if (!threadId || binding.host_id !== "local" || !binding.project_id || !["charter", "planning", "work"].includes(binding.kind)) continue;
+          if (!threadId || state.nativeUnboundThreads?.[threadId] || binding.host_id !== "local" || !binding.project_id || !["charter", "planning", "work"].includes(binding.kind)) continue;
           state.nativeThreadLinks[threadId] = { ...binding, thread_id: threadId };
         }
         if (state.nativePlanningEnabled) await loadSkills();
@@ -10160,14 +10275,14 @@ var BetterCodexInjected = (() => {
       function conversationStatusMarkup(replyStatus) {
         const enrichmentLocked2 = issuePermissions(issue).enrichmentPending;
         const latestRunStatus = issue?.latest_run_status || "";
-        const executionState = issue?.status === "done" ? "completed" : issue?.status === "cancelled" ? "interrupted" : issue?.status === "blocked" ? "blocked" : issue?.latest_scheduler_status === "failed" && issue?.status === "in_review" ? "scheduler-failed" : latestRunStatus === "completed" ? "completed" : latestRunStatus === "failed" ? "failed" : latestRunStatus === "interrupted" ? "interrupted" : latestRunStatus === "scheduling" ? "scheduling" : latestRunStatus === "running" ? "running" : latestRunStatus === "claimed" ? "claimed" : issue?.agent_enabled ? "not-started" : "";
+        const executionState = workflowActivityState(issue, issue?.status === "done" ? "completed" : issue?.status === "cancelled" ? "interrupted" : issue?.status === "blocked" ? "blocked" : issue?.latest_scheduler_status === "failed" && issue?.status === "in_review" ? "scheduler-failed" : latestRunStatus === "completed" ? "completed" : latestRunStatus === "failed" ? "failed" : latestRunStatus === "interrupted" ? "interrupted" : latestRunStatus === "scheduling" ? "scheduling" : latestRunStatus === "running" ? "running" : latestRunStatus === "claimed" ? "claimed" : issue?.agent_enabled ? "not-started" : "");
         const sessionExecutionState = issue?.session_status === "stopping" ? "stopping" : issue?.session_status === "starting" ? "claimed" : ["active", "waiting_on_approval", "waiting_on_user"].includes(issue?.session_status) ? "running" : "";
         const activeExecutionState = issue?.active_run_status || (replyStatus === "running" ? "running" : sessionExecutionState);
-        const replyResultState = replyStatus === "succeeded" ? "completed" : ["failed", "interrupted"].includes(replyStatus) ? replyStatus : conversationFailureState;
+        const replyResultState = replyStatus === "succeeded" ? issue?.workflow ? "" : "completed" : ["failed", "interrupted"].includes(replyStatus) ? replyStatus : conversationFailureState;
         const relayFailure = issue?.session_relay_error && !issue?.session_relay_connected && issue?.active_run_status === "claimed";
         const activityState = enrichmentLocked2 ? "thinking" : issue?.session_status === "stopping" ? "stopping" : issue?.session_retry ? "retrying" : relayFailure ? "relay-failed" : activeExecutionState || (issue?.enrichment_status === "failed" ? "title-regeneration-failed" : replyResultState || executionState);
         if (!activityState) return "";
-        const activityLabel = activityState === "retrying" ? sessionRetryCardLabel(issue.session_retry) : t(issue?.enrichment_status === "regenerating" ? "标题生成中" : activityState === "title-regeneration-failed" ? "标题生成失败" : activityState === "stopping" ? "正在停止…" : activityState === "relay-failed" ? "Codex 会话连接失败" : activityState === "running" ? "工作中" : activityState === "scheduling" ? "调度中" : activityState === "scheduler-failed" ? "调度失败" : activityState === "claimed" ? "排队中" : activityState === "in_review" ? "待审核" : activityState === "completed" ? "已完成" : activityState === "blocked" ? "已阻塞" : activityState === "failed" ? "执行失败" : activityState === "interrupted" ? "已停止" : activityState === "not-started" ? "未开始" : "");
+        const activityLabel = activityState === "retrying" ? sessionRetryCardLabel(issue.session_retry) : t(issue?.enrichment_status === "regenerating" ? "标题生成中" : activityState === "title-regeneration-failed" ? "标题生成失败" : activityState === "stopping" ? "正在停止…" : activityState === "relay-failed" ? "Codex 会话连接失败" : activityState === "running" ? "工作中" : activityState === "scheduling" ? "调度中" : activityState === "scheduler-failed" ? "调度失败" : activityState === "claimed" ? "排队中" : activityState === "in_progress" ? "进行中" : activityState === "in_review" ? "待审核" : activityState === "completed" ? "已完成" : activityState === "blocked" ? "已阻塞" : activityState === "failed" ? "执行失败" : activityState === "interrupted" ? "已停止" : activityState === "not-started" ? "未开始" : "");
         const agent = state.agents.find((item) => item.id === issue?.agent_id) || state.agents.find((item) => item.is_default) || { name: "Codex", is_default: true };
         const activityIcon = activityState === "scheduling" ? '<span class="better-codex-activity-dot better-codex-scheduler-dot" aria-hidden="true"></span>' : activityState === "scheduler-failed" ? '<span class="better-codex-activity-dot better-codex-scheduler-failed-dot" aria-hidden="true"></span>' : ["completed", "interrupted", "not-started"].includes(activityState) ? '<span class="better-codex-activity-dot" aria-hidden="true"></span>' : activityState === "retrying" ? '<span class="better-codex-activity-dot" aria-hidden="true"></span>' : ["failed", "blocked", "relay-failed"].includes(activityState) ? icon("close") : agentAvatarMarkup(agent, "better-codex-bubble-avatar better-codex-conversation-status-avatar");
         return '<span class="better-codex-activity" data-run="' + activityState + '">' + activityIcon + '<span class="' + ((enrichmentLocked2 || issueExecutionRunning(issue)) && activityState !== "retrying" ? "better-codex-shimmer" : "") + '">' + escapeHtml2(activityLabel) + "</span></span>";
@@ -12791,9 +12906,10 @@ var BetterCodexInjected = (() => {
     async function openThread(threadId) {
       const expected = normalizeSessionId(threadId);
       if (!expected) throw new Error("thread_id_invalid");
-      const work = state.issues.find((candidate) => issueSessionId(candidate) === expected) || state.projectIssues.find((candidate) => issueSessionId(candidate) === expected);
+      const unbound = Boolean(state.nativeUnboundThreads?.[expected]);
+      const work = !unbound && (state.issues.find((candidate) => issueSessionId(candidate) === expected) || state.projectIssues.find((candidate) => issueSessionId(candidate) === expected));
       if (work) return openIssueNativeConversation(work);
-      const projectLink = state.nativeThreadLinks?.[expected] || (state.nativePlanningEnabled ? await lookupNativeProjectBinding(expected) : null);
+      const projectLink = unbound ? null : state.nativeThreadLinks?.[expected] || (state.nativePlanningEnabled ? await lookupNativeProjectBinding(expected) : null);
       if (projectLink?.issue_id && projectLink?.project_id) return openIssueNativeConversation({ id: projectLink.issue_id, project_id: projectLink.project_id });
       if (projectLink?.project_id) return openProjectNativeSession(projectLink.project_id, projectLink.kind, projectLink.conversation_id);
       try {
@@ -12837,6 +12953,7 @@ var BetterCodexInjected = (() => {
       return !nestedUtility;
     }
     function isManagedNativeThread(threadId) {
+      if (state.nativeUnboundThreads?.[threadId]) return false;
       const binding = state.nativeThreadLinks?.[threadId];
       if (binding && (!binding.host_id || binding.host_id === "local")) return true;
       return Boolean(active && threadId && ((state.issues || []).some((candidate) => !candidate.session_native_owned && issueSessionId(candidate) === threadId) || (state.projectIssues || []).some((candidate) => !candidate.session_native_owned && issueSessionId(candidate) === threadId)));
@@ -13029,11 +13146,12 @@ var BetterCodexInjected = (() => {
       }, 15e3);
     }
     function captureReloadState() {
-      return {surface:state.surface,open:active,project:state.projectDetailId,tab:state.projectPage,documentView:state.projectDocumentView,agentPane:state.agentPane,agent:state.selectedAgentId,skill:state.selectedSkillId,skillDraft:state.skillDraft,skillEditDrafts:state.skillEditDrafts,skillScopeFilter:state.skillScopeFilter,planSelections:state.planSelections,nativeWorkSelections:state.nativeWorkSelections,planningDrafts:[...projectPlanningDrafts],nativeConversation:inlineConversation ? {target:{...inlineConversationTarget()},context:{target:{...inlineConversationTarget()},mode:inlineConversation.mode,binding:inlineConversation.binding,expected_revision:inlineConversation.expected_revision,thread_id:inlineConversation.thread_id,read_only:inlineConversation.read_only,start_requested:inlineConversation.start_requested,route:inlineConversation.route,return_surface:inlineConversation.return_surface},adapterSnapshot:inlineConversationAdapter?.capture?.(),detailsOpen:inlineConversationDetailsOpen,compactDetailsOpen:inlineConversationCompactDetailsOpen,detailsWidth:inlineConversationWidth} : null};
+      return {nativeUnboundThreads:state.nativeUnboundThreads,surface:state.surface,open:active,project:state.projectDetailId,tab:state.projectPage,documentView:state.projectDocumentView,agentPane:state.agentPane,agent:state.selectedAgentId,skill:state.selectedSkillId,skillDraft:state.skillDraft,skillEditDrafts:state.skillEditDrafts,skillScopeFilter:state.skillScopeFilter,planSelections:state.planSelections,nativeWorkSelections:state.nativeWorkSelections,planningDrafts:[...projectPlanningDrafts],nativeConversation:inlineConversation ? {target:{...inlineConversationTarget()},context:{target:{...inlineConversationTarget()},mode:inlineConversation.mode,binding:inlineConversation.binding,expected_revision:inlineConversation.expected_revision,thread_id:inlineConversation.thread_id,read_only:inlineConversation.read_only,start_requested:inlineConversation.start_requested,route:inlineConversation.route,return_surface:inlineConversation.return_surface},adapterSnapshot:inlineConversationAdapter?.capture?.(),detailsOpen:inlineConversationDetailsOpen,compactDetailsOpen:inlineConversationCompactDetailsOpen,detailsWidth:inlineConversationWidth} : null};
     }
     async function restoreReloadState(saved) {
       await ensureBootstrapReady();
       releaseProjectSurfaceCache();
+      state.nativeUnboundThreads = { ...saved.nativeUnboundThreads, ...state.nativeUnboundThreads };
       state.projectDetailId=saved.project || state.projectDetailId;
       state.projectPage=saved.tab || state.projectPage;
       state.projectDocumentView=saved.documentView || state.projectDocumentView;
@@ -13048,7 +13166,9 @@ var BetterCodexInjected = (() => {
       for(const [id,draft] of saved.planningDrafts || [])projectPlanningDrafts.set(id,draft);
       const message=(saved.fields || []).find(f=>f.key==='message');
       if(message&&state.projectDetailId)projectPlanningDrafts.set(state.projectDetailId,message.value);
-      if (saved.open && saved.nativeConversation) {
+      const restoredThread = normalizeSessionId(saved.nativeConversation?.context?.thread_id || saved.nativeConversation?.context?.binding?.thread_id);
+      if (state.nativeUnboundThreads?.[restoredThread]) { close(); await openThread(restoredThread); }
+      else if (saved.open && saved.nativeConversation) {
         inlineConversationDetailsOpen = saved.nativeConversation.detailsOpen !== false;
         inlineConversationCompactDetailsOpen = saved.nativeConversation.compactDetailsOpen === true;
         inlineConversationWidth = Math.min(4096, Math.max(280, Number(saved.nativeConversation.detailsWidth) || 360));

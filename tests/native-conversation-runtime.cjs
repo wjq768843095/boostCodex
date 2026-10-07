@@ -122,7 +122,7 @@ async function run() {
     for (const [kind,issueId] of [['charter'],['planning'],['work',issue.id]]) {
       const opened = (await get('p1',kind,issueId)).value;
       assert.equal(opened.mode,'draft'); assert.equal(opened.thread_id,null); assert.equal(opened.draft_generation,0);
-      assert.equal(opened.pending_operation,null); assert.equal(opened.dynamic_tools.length,5);
+      assert.equal(opened.pending_operation,null); assert.equal(opened.dynamic_tools.length,kind==='work'?6:5);
       assert(opened.dynamic_tools.every(tool=>!('project_id' in tool.inputSchema.properties)&&!('thread_id' in tool.inputSchema.properties)));
       if (kind==='work') assert.equal(opened.context.task.description,'交付需求和验收步骤');
     }

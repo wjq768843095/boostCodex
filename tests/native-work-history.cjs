@@ -59,7 +59,7 @@ async function run() {
     const rows=(await list()).value.conversations;
     assert.equal(rows.filter(row=>row.source==='current').length,3);
     const current=rows.find(row=>row.issue_id===issue.id&&row.source==='current');
-    assert.equal(current.thread_id,'current-work');assert.equal(current.title,issue.title);assert.equal(current.mode,'thread');assert.equal(current.status,'backlog');
+    assert.equal(current.thread_id,'current-work');assert.equal(current.title,issue.title);assert.equal(current.mode,'thread');assert.equal(current.status,'todo');
     assert.equal(rows.find(row=>row.issue_id==='empty-work').mode,'draft');
     const legacy=rows.find(row=>row.issue_id==='legacy-work');assert.equal(legacy.mode,'legacy_busy');assert.equal(legacy.thread_id,null);assert.equal(legacy.binding.thread_id,'legacy-thread');
     assert.equal(rows.filter(row=>row.source==='history').length,5,'valid durable histories survive damaged optional JSON; conflicting identities stay out');

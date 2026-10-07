@@ -8,6 +8,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function settle(check) { for (let i = 0; i < 60; i++) { await tick(); if (!check || check()) return; } throw Error('Fixture did not settle'); }
 const tools = ['context_read', 'charter_save', 'charter_confirm', 'plan_save', 'plan_convert'].map(name => ({ name: 'better_codex_project_' + name, description: name, inputSchema: { type: 'object', properties: {} } }));
+const workTools = [...tools,{name:'better_codex_project_task_transition',description:'Update the bound task workflow',inputSchema:{type:'object',properties:{}}}];
 
 function fixture(config = {}) {
   const sent = [], delivered = [], http = [], bounds = [], turns = [], errors = [], away = [], routerNavigations = [], retainedViews = [], expiredViews = [], expirySlots = [], animationFrames = new Map();
@@ -89,6 +90,14 @@ function fixture(config = {}) {
   if (config.discovery) {
     root.testNamespace = { rpc: new Proxy({}, { get: () => () => {}, set: () => { throw Error('Cannot assign properties on RPC stubs'); } }), sender, dispatcher, GJt: draftDescriptor, Pyt: draftAtom, hbt: () => 'new-conversation', ZTt: projectAtom };
     root.testComposerNamespace = { VIn: composerDescriptor, KZt: promptAtom, DQt: viewAtom, _Qt: documentAtom, XQt(scope, draft) { richDraft = draft; }, 'o$t'(scope, fn) { fn(richState); }, ZQt() {}, FZt() { richDraft = undefined; richState = { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }; } };
+    if (config.updatedHost) {
+      const previous = root.testComposerNamespace;
+      root.testNamespace = { rpc: root.testNamespace.rpc, sender, dispatcher, kQt: draftDescriptor, ZSt: draftAtom, MCt: () => 'new-conversation', AH: composerDescriptor,
+        GJt: projectAtom, Pyt() {}, hbt() {}, ZTt() {} };
+      root.testComposerNamespace = { l1t: promptAtom, W1t: viewAtom, u0t: previous.XQt, b0t: previous['o$t'], d0t: previous.ZQt, 'Q$t': previous.FZt,
+        VIn() {}, KZt() {}, DQt() {} };
+      if (config.wrongScope) root.testComposerNamespace.W1t = { scope: draftDescriptor };
+    }
   }
   const reloadSource = () => vm.runInNewContext(config.discovery ? source.replace('await import(moduleUrl.href)', 'root.testNamespace').replace('await import(new URL(initialName, entry).href)', 'root.testComposerNamespace') : source, { window: root, URL, URLSearchParams, Error, Map, Set, Promise });
   reloadSource();
@@ -96,6 +105,7 @@ function fixture(config = {}) {
   const context = (overrides = {}) => {
     const value = { project_id: 'project-one', kind: 'charter', native_project_id: 'native-project', host_id: 'local', cwd: 'D:\\中文项目', workspace_path: 'D:\\中文项目', root_paths: ['D:\\中文项目', 'E:\\关联后台'], expected_revision: 0, draft_generation: 0, mode: 'draft', dynamic_tools: tools, ...overrides };
     if (value.kind === 'work') {
+      if (!Object.hasOwn(overrides,'dynamic_tools')) value.dynamic_tools=workTools;
       if (!Object.hasOwn(overrides,'task')) value.task={id:value.issue_id,project_id:value.project_id,version:1,title:'当前工作任务',description:'完成本工作项'};
       if (!Object.hasOwn(overrides,'work_context_text')) value.work_context_text='当前工作任务：'+value.issue_id+'\n任务要求：完成本工作项。';
     }
@@ -117,7 +127,7 @@ function fixture(config = {}) {
       if (config.enrollLegacy && body.kind !== 'work' && !body.conversation_id) { target.conversation_id = config.enrollLegacy; records.set(key(target), { ...known, ...target }); }
       const operation = { ...target, request_id: body.request_id, status: 'prepared', thread_id: known?.thread_id || null, expected_revision: body.expected_revision };
       operations.set(body.request_id, operation);
-      return { target, operation, dynamic_tools: tools };
+      return { target, operation, dynamic_tools: body.kind==='work'?workTools:tools };
     }
     if (url.endsWith('/bind')) {
       const operation = operations.get(body.request_id);
@@ -149,6 +159,31 @@ function fixture(config = {}) {
 }
 
 (async () => {
+  {
+    const f = fixture();
+    const work = f.remember(f.context({ kind: 'work', issue_id: 'unbind-task', conversation_id: 'unbind-conversation', thread_id: 'unbind-thread', mode: 'thread' }));
+    await f.adapter.open(work);
+    f.adapter.registerBindings([work]);
+    const tool = { type: 'dynamic-tool-call-requested', hostId: 'local', serverRequest: { id: 'unbind-tool', method: 'item/tool/call', params: { threadId: work.thread_id, callId: 'unbind-call', tool: 'better_codex_project_context_read', arguments: {} } } };
+    f.dispatcher.dispatchHostMessage(tool);
+    await settle(() => f.sent.some(message => message.response?.id === 'unbind-tool'));
+    assert.equal(f.sent.at(-1).response.result.success, true);
+    const requests = f.http.length;
+    f.adapter.unregisterBinding(work.thread_id);
+    assert.equal(f.adapter.getCurrentContext(), null);
+    assert(!f.root.__betterCodexNativeConversationHub__.threads.has('local:' + work.thread_id));
+    f.adapter.registerBindings([work]);
+    assert(!f.root.__betterCodexNativeConversationHub__.threads.has('local:' + work.thread_id), 'stale bootstrap cannot restore an explicitly detached binding');
+    const ordinary = f.send('turn/start', { threadId: work.thread_id, input: [{ type: 'text', text: 'Ordinary follow-up' }] }, 'unbind-ordinary');
+    assert.equal(f.sent.at(-1), ordinary, 'detached conversation uses the original native sender');
+    assert.equal(f.http.length, requests, 'ordinary follow-up never prepares task execution');
+    f.dispatcher.dispatchHostMessage(tool);
+    await settle(() => f.sent.at(-1)?.response?.id === 'unbind-tool');
+    assert.equal(f.sent.at(-1).response.result.success, false, 'cached project tool success cannot survive explicit detachment');
+    assert.equal(f.http.length, requests, 'detached project tools are rejected locally');
+    f.adapter.destroy();
+    console.log('PASS: explicit unbinding releases native send and revokes stale registry and cached tool authorization');
+  }
   {
     let restored;
     const f = fixture({ api: (url, body) => {
@@ -199,6 +234,26 @@ function fixture(config = {}) {
     f.reply('new-user-turn', { turn: { id: 'new-user-turn-id' } });
     await settle(() => f.delivered.some(x => x.message?.id === 'new-user-turn'));
     f.adapter.destroy();
+  }
+  {
+    const f = fixture({ discovery: true, updatedHost: true });
+    await f.adapter.connect();
+    assert.equal(f.adapter.capabilities().available, true);
+    const first = f.remember(f.context({ conversation_id: 'updated-draft-one' }));
+    assert.equal((await f.adapter.open(first)).mode, 'draft');
+    const savedDraft = { draft: { prompt: 'preserve updated native draft', pullRequestChecks: [] }, view_state: { imageAttachments: [], attachmentOrder: [], fileAttachments: [] }, document_json: { type: 'doc', content: [] } };
+    f.setRich(savedDraft);
+    await f.adapter.open(f.remember(f.context({ conversation_id: 'updated-draft-two' })));
+    await f.adapter.open(first);
+    assert.deepEqual(f.rich(), savedDraft);
+    assert.equal((await f.adapter.open(f.context({ mode: 'thread', thread_id: 'updated-existing-thread' }))).mode, 'thread');
+    assert.equal(f.nativeRoute(), '/local/updated-existing-thread');
+    assert.equal(f.sent.length, 0, 'updated host discovery and navigation never send model requests');
+    f.adapter.destroy();
+    const invalid = fixture({ discovery: true, updatedHost: true, wrongScope: true });
+    assert.equal((await invalid.adapter.open(invalid.context())).mode, 'unavailable');
+    assert.equal(invalid.sent.length, 0);
+    invalid.adapter.destroy();
   }
   {
     const f = fixture({ discovery: true });
@@ -861,6 +916,15 @@ function fixture(config = {}) {
     dispatch(call);
     await settle(()=>f.sent.filter(message=>message.response?.id==='window-tool').length===2);
     assert.equal(f.http.filter(entry=>entry.url.endsWith('/tool')).length,1,'window replay does not execute twice');
+    const transition={...call,serverRequest:{...call.serverRequest,id:'window-transition',params:{...call.serverRequest.params,callId:'transition-call',tool:'better_codex_project_task_transition',arguments:{expected_version:1,action:'start_development',summary:'开始开发'}}}};
+    dispatch(transition);
+    await settle(()=>f.sent.some(message=>message.response?.id==='window-transition'));
+    assert.equal(f.sent.find(message=>message.response?.id==='window-transition').response.result.success,true);
+    assert.equal(nativeCalls.length,0,'task workflow calls are owned by the project capture listener');
+    assert.equal(f.http.filter(entry=>entry.url.endsWith('/tool')).length,2);
+    dispatch(transition);
+    await settle(()=>f.sent.filter(message=>message.response?.id==='window-transition').length===2);
+    assert.equal(f.http.filter(entry=>entry.url.endsWith('/tool')).length,2,'replayed workflow calls do not execute twice');
     const foreign = {...call,serverRequest:{...call.serverRequest,params:{...call.serverRequest.params,tool:'native_tool'}}};
     dispatch(foreign); dispatch(call,{source:{}}); dispatch(call,{origin:'https://foreign.invalid'});
     dispatch({...call,hostId:'remote-host'});

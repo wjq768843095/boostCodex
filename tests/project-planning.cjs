@@ -16,7 +16,9 @@ const api = createProjectPlanning({ db,
   listIssues: () => db.prepare('SELECT * FROM issues').all(), home: 'unused-memory-fixture',
   createIssue(input) {
     creates++;
-    assert.equal(input.status, 'backlog'); assert.equal(input.agentEnabled, true);
+    assert.equal(input.status, 'todo'); assert.equal(input.agentEnabled, true);
+    assert.equal(input.needsAttention, false); assert.equal(input.pendingActor, 'user');
+    assert.equal(input.workflowManaged, true);
     // Model the real Store's transaction: conversion must not nest BEGIN.
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -108,7 +110,7 @@ try {
   throws(() => convert({item_ids:['stable-task','unknown']}), 'plan_item_not_found'); assert.equal(creates,0);
   throws(() => convert({expected_revision:0}), 'version_conflict');
   const first = convert(); const issueId = first.items[0].issue_id;
-  assert.equal(creates,1); assert.equal(getIssue(issueId).status,'backlog');
+  assert.equal(creates,1); assert.equal(getIssue(issueId).status,'todo');
   assert.match(getIssue(issueId).description,/D:\\projects\\one/);
   assert.match(getIssue(issueId).description,/版本冲突拒绝写入/); assert.match(getIssue(issueId).description,/人工验收步骤/);
   assert.equal(convert().items[0].replayed,true); assert.equal(creates,1); assert.equal(updates,0);

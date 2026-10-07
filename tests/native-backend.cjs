@@ -136,7 +136,7 @@ async function main() {
   await new Promise(resolve => setTimeout(resolve, 200));
   poll = await api('/api/session-relay/poll', 'POST', pollBody); assert.equal(poll.status, 200); assert.equal(poll.value.command?.issue_id, issue.value.id);
   assert.equal(poll.value.command.payload.native_defaults, true); assert(poll.value.command.payload.input.some(item => item.type === 'skill'));
-  assert.equal(poll.value.command.payload.dynamic_tools.length,5,'explicit starts must declare the same scoped project tools as composer starts');
+  assert.equal(poll.value.command.payload.dynamic_tools.length,6,'explicit starts must declare the same scoped work tools as composer starts');
   assert(poll.value.command.payload.dynamic_tools.every(tool=>tool.name.startsWith('better_codex_project_')&&!('project_id' in tool.inputSchema.properties)&&!('thread_id' in tool.inputSchema.properties)));
   const manualThread=randomUUID();
   const manualCheckpoint=await api('/api/session-relay/commands/'+poll.value.command.id+'/checkpoint','POST',{relay_id:relayId,result:{thread_id:manualThread}});
@@ -225,6 +225,55 @@ async function main() {
   assert.equal(buttonConfirmed.value.status,'confirmed');
   assert.match(buttonConfirmed.value.confirmation_message_id,/^ui-charter-confirm:/);
   assert.equal((await api('/api/projects/'+project.id+'/charter-confirm','POST',{expected_revision:buttonDraft.value.revision})).status,409);
+  // Unbinding is an HTTP lifecycle change in the isolated Runtime. Preserve
+  // documents/tasks and the native identity without executing a model turn.
+  const workUnbindContext=(await api('/api/native-conversations/context?'+new URLSearchParams({project_id:project.id,kind:'work',issue_id:ordinaryIssue.value.id,conversation_id:restartedWork.value.conversation_id}))).value;
+  const beforeUnbindTask=(await api('/api/issues/'+ordinaryIssue.value.id)).value;
+  const workUnbindArgs={project_id:project.id,kind:'work',issue_id:ordinaryIssue.value.id,conversation_id:workUnbindContext.conversation.conversation_id,
+    expected_revision:workUnbindContext.conversation.revision,expected_issue_version:workUnbindContext.expected_revision};
+  const cachedUnbindTool={relay_id:relayId,host_id:'local',thread_id:newCurrentThread,call_id:randomUUID(),name:'better_codex_project_context_read',arguments:{}};
+  assert.equal((await api('/api/native-conversations/tool','POST',cachedUnbindTool)).status,200);
+  assert.equal((await api('/api/native-conversations/unbind','POST',{...workUnbindArgs,expected_issue_version:workUnbindArgs.expected_issue_version+1})).status,409);
+  const detachedWork=await api('/api/native-conversations/unbind','POST',workUnbindArgs);
+  assert.equal(detachedWork.status,200,JSON.stringify(detachedWork.value));assert.equal(detachedWork.value.thread_id,newCurrentThread);
+  assert.deepEqual((await api('/api/native-conversations/unbind','POST',workUnbindArgs)).value,detachedWork.value);
+  const afterUnbindTask=(await api('/api/issues/'+ordinaryIssue.value.id)).value;
+  for(const field of ['id','title','description','status','version','workflow']) assert.deepEqual(afterUnbindTask[field],beforeUnbindTask[field],field);
+  const deniedCachedTool=await api('/api/native-conversations/tool','POST',cachedUnbindTool);
+  assert.equal(deniedCachedTool.status,409);assert.equal(deniedCachedTool.value.error,'native_conversation_unbound');
+  const lateEvent=await api('/api/session-relay/events','POST',{relay_id:relayId,method:'turn/started',params:{threadId:newCurrentThread,turn:{id:randomUUID()}}});
+  assert.equal(lateEvent.status,200);assert.equal(lateEvent.value.accepted,false);
+  const beforeCharterUnbind=(await api('/api/projects/'+project.id+'/planning-context')).value;
+  const charterUnbindContext=(await api('/api/native-conversations/context?'+new URLSearchParams({project_id:project.id,kind:'charter',conversation_id:conversationId}))).value;
+  const charterUnbindArgs={project_id:project.id,conversation_id:conversationId,expected_revision:charterUnbindContext.conversation.revision};
+  const detachedCharter=await api('/api/native-conversations/unbind','POST',charterUnbindArgs);
+  assert.equal(detachedCharter.status,200,JSON.stringify(detachedCharter.value));assert.equal(detachedCharter.value.thread_id,threadId);
+  assert.deepEqual((await api('/api/projects/'+project.id+'/planning-context')).value.charter,beforeCharterUnbind.charter);
+  const afterUnbindBootstrap=(await api('/api/bootstrap')).value.native_thread_bindings;
+  assert(!afterUnbindBootstrap.some(value=>[newCurrentThread,threadId].includes(value.thread_id)));
+  const afterUnbindPoll=(await api('/api/session-relay/poll','POST',pollBody)).value;
+  assert(!afterUnbindPoll.thread_ids.includes(threadId),'unbound planning chats leave the relay subscription');
+  const fixtureDb=new DatabaseSync(dbFile);
+  try {
+    // Retain old run evidence pointing at the detached identity to exercise the
+    // real Store's derived references and startup handoff recovery.
+    fixtureDb.prepare('UPDATE issue_runs SET thread_id=? WHERE issue_id=?').run(newCurrentThread,ordinaryIssue.value.id);
+    assert.equal(fixtureDb.prepare('SELECT 1 FROM issue_sessions WHERE thread_id=?').get(newCurrentThread),undefined);
+  } finally {fixtureDb.close();}
+  assert.notEqual((await api('/api/issues/'+ordinaryIssue.value.id)).value.run_thread_id,newCurrentThread);
+  assert(!(await api('/api/issues/from-thread?thread_id='+newCurrentThread)).value.issue,'detached history does not resolve as a task binding');
+  await api('/api/shutdown','POST',{});
+  await new Promise(resolve=>child.exitCode===null?child.once('exit',resolve):resolve());
+  child=cp.spawn(process.execPath,[path.join(__dirname,'../src/backend/better-codex.cjs'),'runtime'],{env,cwd:workspace,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  child.stdout.on('data',data=>{output+=data;});child.stderr.on('data',data=>{output+=data;});
+  await wait(()=>{try {return JSON.parse(fs.readFileSync(state,'utf8')).pid===child.pid;} catch {return false;}});
+  const restartedRuntime=JSON.parse(fs.readFileSync(state,'utf8'));port=restartedRuntime.port;token=fs.readFileSync(path.join(home,'run/token'),'utf8').trim();
+  let reloadedBootstrap=await api('/api/bootstrap');
+  for(let retry=0;reloadedBootstrap.status===503&&retry<50;retry++) {await new Promise(resolve=>setTimeout(resolve,100));reloadedBootstrap=await api('/api/bootstrap');}
+  assert.equal(reloadedBootstrap.status,200,JSON.stringify(reloadedBootstrap.value));
+  assert(!reloadedBootstrap.value.native_thread_bindings.some(value=>[newCurrentThread,threadId].includes(value.thread_id)),'startup migration never rebinds detached chats');
+  const recoveryDb=new DatabaseSync(dbFile,{readOnly:true});
+  try {assert.equal(recoveryDb.prepare('SELECT 1 FROM issue_sessions WHERE thread_id=?').get(newCurrentThread),undefined);} finally {recoveryDb.close();}
   assert(!/codex_exec|planning_process_started|scheduler_started/.test(output), 'no model process may be started by the fixture');
   console.log('PASS: isolated real backend routes, read-only opening, first-send checkpoints, trusted native tools, confirmation events and explicit native-owned work queue without model execution');
 }

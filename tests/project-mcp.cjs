@@ -55,9 +55,12 @@ async function run() {
       assert.deepEqual(JSON.parse(result.content[0].text),result.structuredContent);
       return result.structuredContent;
     };
-    assert.deepEqual(tools.map(tool=>tool.name),['project_context_read','project_charter_save','project_charter_confirm','project_plan_save','project_plan_convert']);
+    assert.deepEqual(tools.map(tool=>tool.name),['project_context_read','project_charter_save','project_charter_confirm','project_plan_save','project_plan_convert','project_task_transition']);
     assert.equal(tools[0].annotations.readOnlyHint,true);
-    assert.ok(tools.slice(1).every(tool=>tool.inputSchema.required.includes('thread_id')&&tool.inputSchema.required.includes('expected_revision')));
+    assert.ok(tools.slice(1,5).every(tool=>tool.inputSchema.required.includes('thread_id')&&tool.inputSchema.required.includes('expected_revision')));
+    assert.deepEqual(tools[5].inputSchema.required,['project_id','thread_id','expected_version','action','summary']);
+    assert.deepEqual(tools[5].inputSchema.properties.action.enum,['start_development','development_complete','start_review','review_passed','review_failed','block','resume']);
+    checkSchema({project_id:'p1',thread_id:'work-p1',expected_version:1,action:'development_complete',summary:'实现完成',evidence:['node tests/task-workflow.cjs'],pending_manual:['真机验收']},tools[5].inputSchema);
     for (const [projectId,sessionKind,threadId] of [['p1','charter','charter-1'],['p1','planning','plan-1'],['p2','charter','charter-2']]) {
       f.runtime.planning.bindSession({project_id:projectId,kind:sessionKind,thread_id:threadId,expected_revision:0});
     }
@@ -86,7 +89,7 @@ async function run() {
     assert.deepEqual(saved.items[0].contract_refs,['api']);assert.equal(saved.items[0].contract_owner,'共享接口');
     assert.deepEqual(saved.items[0].unresolved_questions,[]);
     const converted = await invoke('project_plan_convert',{project_id:'p1',thread_id:'plan-1',expected_revision:1,item_ids:['deliver-login']});
-    assert.equal(converted.issues[0].status,'backlog');assert.equal(converted.issues[0].thread_id,null);
+    assert.equal(converted.issues[0].status,'todo');assert.equal(converted.issues[0].thread_id,null);assert.equal(converted.issues[0].needs_attention,0);
     const replayed = await invoke('project_plan_convert',{project_id:'p1',thread_id:'plan-1',expected_revision:1,item_ids:['deliver-login']});
     assert.equal(replayed.issues[0].id,converted.issues[0].id);assert.equal(f.state.create,1);
     await invoke('project_plan_save',{project_id:'p1',thread_id:'plan-1',expected_revision:1,charter_revision:2,items:[f.item({title:'修订登录闭环'})]});
@@ -114,7 +117,7 @@ async function run() {
     await assert.rejects(call('project_context_read',{project_id:'p1',model:'forbidden'}, {home:f.home,fetch:mockFetch}),/invalid_argument_model/);
     assert.equal(requests.length,beforeInvalid);
     await assert.rejects(call('project_context_read',{project_id:'p1'},{home:f.home,fetch:async()=>({ok:false,json:async()=>({error:'fixture_http_error'})})}),/fixture_http_error/);
-    console.log('PASS: project MCP schemas, mock HTTP adapter, bound thread isolation, native confirmation evidence and safe backlog conversion');
+    console.log('PASS: project MCP schemas, mock HTTP adapter, bound thread isolation, native confirmation evidence and safe todo conversion');
   } finally {f.cleanup();}
 }
 
