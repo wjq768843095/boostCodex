@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 "use strict";
+require("../modules/runtime-warnings.cjs").installSQLiteWarningFilter();
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -73268,7 +73269,10 @@ function assertTrustedCdpListener(port) {
     const script = `$ErrorActionPreference = 'Stop'
 $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
 $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$listeners = @(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique)
+$listenerErrors = @()
+$listeners = @(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue -ErrorVariable listenerErrors | Select-Object -ExpandProperty OwningProcess -Unique)
+if (@($listenerErrors | Where-Object { $_.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound,*' }).Count -gt 0) { exit 1 }
+if ($listeners.Count -eq 0) { exit 2 }
 $trusted = @($listeners | ForEach-Object {
   $process = Get-CimInstance Win32_Process -Filter "ProcessId = $_"
   if (-not $process -or $process.Name -ne 'ChatGPT.exe' -or $process.SessionId -ne $sessionId -or $process.ExecutablePath -notlike '*\\WindowsApps\\OpenAI.Codex_*') { return }
@@ -73277,10 +73281,11 @@ $trusted = @($listeners | ForEach-Object {
 if ($trusted.Count -ne 1 -or $listeners.Count -ne 1) { exit 1 }
 Write-Output $trusted[0]`;
     try {
-      const result2 = (0, import_node_child_process3.execFileSync)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 5e3 }).trim();
+      const result2 = (0, import_node_child_process3.execFileSync)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 5e3, stdio: ["ignore", "pipe", "pipe"] }).trim();
       if (!/^\d+$/.test(result2)) throw new Error("cdp_listener_untrusted");
       return;
-    } catch {
+    } catch (error2) {
+      if (error2?.status === 2) throw new Error("cdp_listener_absent");
       throw new Error("cdp_listener_untrusted");
     }
   }

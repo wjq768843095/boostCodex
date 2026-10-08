@@ -410,3 +410,10 @@ Skill 支持通用/项目归属、项目范围筛选、从托管或外部 Skill 
 
 - 按钮间距 4px 改为 2px，组内边距改为 2px/3px，文字按钮边距改为 3px/6px，闪电和齿轮占位略缩小，字号和图标尺寸保留。
 - 语法检查通过，实际自动应用 sourceMatches=true/phase=ready。当前用户配置下整体宽度 381.875px → 335.875px，高度 37.33px → 31.33px；与加号及权限入口无重叠，bootstrapError=null。仅调整样式。
+
+## 2026-10-08：启动诊断输出修复
+
+- Windows CDP 监听检查区分端口无监听与不可信监听；CIM 无匹配结果静默返回 cdp_listener_absent，其他查询失败仍拒绝连接。PowerShell 标准错误由调用方捕获，保留原进程、用户和会话校验。
+- 后端入口仅过滤 Node SQLite 的固定 ExperimentalWarning 文案，其他实验性和运行警告继续输出。
+- startup-diagnostics、reload、native-desktop-bridge 专项及源码语法检查通过。真实 Windows CIM 空端口查询标准错误为空；实际已应用版本 status --json 返回码为 0、标准错误为空。
+- 自动应用 phase=ready；源码与已接受版本一致，Runtime revision 与 backendHash 一致，数据库正常、原生会话宿主已连接。未发送模型业务请求。未执行完整测试套件或启动界面的人工操作验收。
