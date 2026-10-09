@@ -781,6 +781,7 @@ function fixture(config = {}) {
     const explicit = f.send('thread/start', { cwd: 'D:\\中文项目' }, 'queue-owned', { source: 'better-codex' });
     assert.equal(f.sent.at(-1), explicit); assert.equal(f.http.length, 0, 'explicit scheduler requests retain their existing execution reservation');
     f.send('turn/start', { threadId: 'projectless-warm-thread', input: [{ type: 'text', text: 'request' }] }, 'wrong-warm');
+    await settle(() => f.delivered.at(-1)?.message?.id === 'wrong-warm');
     assert.equal(f.sent.length, 2, 'unbound warm reservation cannot receive the Better draft');
     assert.equal(f.delivered.at(-1).message.id, 'wrong-warm');
     f.dispatcher.dispatchHostMessage({ type: 'new-chat' });
@@ -798,11 +799,51 @@ function fixture(config = {}) {
     assert.equal(f.http.length, 0, 'unrelated reservations are neither prepared nor rebound to the visible draft');
     assert.equal(f.errors.length, 0, 'unrelated native task input does not surface a draft-binding error');
     f.send('turn/start', { threadId: 'local-unbound-warm', input: [{ type: 'text', text: 'Wrong warm reservation' }] }, 'local-unbound-turn');
+    await settle(() => f.delivered.at(-1)?.message?.id === 'local-unbound-turn');
     assert.equal(f.sent.length, 2, 'local ordinary warm input remains blocked until its Better binding exists');
     assert.equal(f.delivered.at(-1).message.id, 'local-unbound-turn');
     assert.match(f.delivered.at(-1).message.error.message, /尚未绑定/);
     f.adapter.destroy();
     console.log('PASS: draft binding guard preserves explicit reservations and foreign hosts while rejecting unbound local warm turns');
+  }
+  {
+    const f = fixture();
+    const draft = f.remember(f.context({ kind: 'work', issue_id: 'already-bound-task', conversation_id: 'already-bound-conversation' }));
+    await f.adapter.open(draft);
+    const pending = { request_id: 'durable-bind-request', project_id: draft.project_id, kind: draft.kind, issue_id: draft.issue_id, conversation_id: draft.conversation_id, host_id: 'local', thread_id: 'durably-bound-thread', status: 'bound', expected_revision: draft.expected_revision };
+    f.operations.set(pending.request_id, pending);
+    f.remember(f.context({ kind: 'work', issue_id: draft.issue_id, conversation_id: draft.conversation_id, thread_id: 'durably-bound-thread', mode: 'thread', binding: { thread_id: 'durably-bound-thread', host_id: 'local' }, pending_operation: pending }));
+    f.send('turn/start', { threadId: 'durably-bound-thread', input: [{ type: 'text', text: 'Original first message' }] }, 'recovered-first-turn');
+    await settle(() => f.sent.some(message => message.request?.id === 'recovered-first-turn'));
+    assert.equal(f.bounds.length, 1, 'durable binding restores the page scope');
+    assert.equal(f.adapter.getCurrentContext().thread_id, 'durably-bound-thread');
+    assert.equal(f.sent.filter(message => message.request?.method === 'thread/start').length, 0, 'recovery does not allocate another thread');
+    assert.equal(f.http.filter(message => message.url.endsWith('/prepare')).length, 0, 'the first turn reuses the durable bound operation');
+    f.reply('recovered-first-turn', { turn: { id: 'recovered-turn' } });
+    await settle(() => f.turns.length === 1);
+    assert.equal(f.turns[0].target.issue_id, draft.issue_id);
+    f.adapter.destroy();
+    console.log('PASS: first turn recovers a durably bound thread after losing its in-memory scope');
+  }
+  {
+    let recovered = false;
+    const f = fixture({ api: (url) => {
+      if (url.endsWith('/recover')) {
+        recovered = true;
+        return { ...f.context({ kind: 'work', issue_id: 'unknown-first-task', conversation_id: 'unknown-first-conversation', thread_id: 'unknown-first-thread', mode: 'thread', binding: { thread_id: 'unknown-first-thread', host_id: 'local' }, pending_operation: null }), recovered: true };
+      }
+    } });
+    const draft = f.remember(f.context({ kind: 'work', issue_id: 'unknown-first-task', conversation_id: 'unknown-first-conversation' }));
+    await f.adapter.open(draft);
+    f.remember(f.context({ kind: 'work', issue_id: draft.issue_id, conversation_id: draft.conversation_id, thread_id: 'unknown-first-thread', mode: 'thread', binding: { thread_id: 'unknown-first-thread', host_id: 'local' }, pending_operation: { request_id: 'unknown-bind-request', project_id: draft.project_id, kind: draft.kind, issue_id: draft.issue_id, conversation_id: draft.conversation_id, host_id: 'local', thread_id: 'unknown-first-thread', status: 'outcome_unknown', expected_revision: draft.expected_revision } }));
+    f.send('turn/start', { threadId: 'unknown-first-thread', input: [{ type: 'text', text: 'Retry after verification' }] }, 'recovered-unknown-turn');
+    await settle(() => f.sent.some(message => message.request?.id === 'recovered-unknown-turn'));
+    assert.equal(recovered, true, 'unknown first-send outcome is checked before retry');
+    assert.equal(f.http.filter(message => message.url.endsWith('/prepare')).length, 1, 'verified empty thread receives a new turn reservation');
+    f.reply('recovered-unknown-turn', { turn: { id: 'recovered-unknown-result' } });
+    await settle(() => f.turns.length === 1);
+    f.adapter.destroy();
+    console.log('PASS: unknown first-turn outcome verifies native history before retrying a bound thread');
   }
   {
     const f = fixture({ api: (url, body) => { if (url.endsWith('/bind') && body.checkpoint === 'bound') throw Error('binding failure'); } });

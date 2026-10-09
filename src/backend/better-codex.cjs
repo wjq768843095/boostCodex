@@ -76458,7 +76458,7 @@ var SessionHostServer = class {
       return;
     }
     if (message.type === "semantic_request") {
-      const methods = ["model/list", "skills/list", "app/installed", "app/list", "plugin/installed", "mcpServerStatus/list", "fuzzyFileSearch"];
+      const methods = ["model/list", "skills/list", "app/installed", "app/list", "plugin/installed", "mcpServerStatus/list", "fuzzyFileSearch", "thread/read"];
       const deadline = Date.parse(message.deadline_at);
       const validParams = message.params && typeof message.params === "object" && !Array.isArray(message.params) && Buffer.byteLength(JSON.stringify(message.params)) <= 131072;
       const identity = () => {

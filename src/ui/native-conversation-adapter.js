@@ -568,9 +568,9 @@
       if (message?.type === "mcp-request" && method === "turn/start") {
         const scope = hub.threads.get(threadKey(message.hostId, request.params?.threadId));
         if (client && message.source !== "better-codex" && (message.hostId || LOCAL) === client.current.host_id && !client.current.thread_id && !scope) {
-          // A native warm reservation must never become a Better Codex binding.
-          hub.deliver(responseError(message, "当前会话尚未绑定，请重新发送"));
-          client.report(Error("当前会话尚未绑定，请重新发送"));
+          // A reload can lose the in-memory scope after the durable bind.
+          // Verify the exact thread and target with Runtime before rejecting it.
+          hub.run(recoverBoundTurn(hub, client, message));
           return;
         }
         if (scope && message.source !== "better-codex") { hub.run(beginTurn(hub, scope, message)); return; }
@@ -652,6 +652,43 @@
     assertReturnedTarget(context, result); assertReturnedTarget(context, result?.target);
     if (!result?.recovered) throw Error("上次发送结果仍在核对，请稍后重试。");
     return { context: refreshedContext(context, result), recovered: true };
+  }
+
+  async function recoverBoundTurn(hub, client, message) {
+    const draft = client.current && { ...client.current };
+    const deny = (reason = "当前会话尚未绑定，请重新发送") => {
+      hub.deliver(responseError(message, reason));
+      client.report(Error(reason), draft);
+    };
+    const threadId = message.request.params?.threadId;
+    if (!draft || !threadId || hub.unboundThreads.has(threadKey(message.hostId, threadId))) return deny();
+    try {
+      const query = new URLSearchParams({ ...targetIdentity(draft), relay_id: client.options.getRelayId?.() || draft.relay_id, host_id: draft.host_id });
+      const latest = await client.options.api(API_ROOT + "context?" + query);
+      assertReturnedTarget(draft, latest);
+      assertReturnedTarget(draft, latest?.target);
+      let context = refreshedContext(draft, latest);
+      if (latest?.mode !== "thread" || latest?.thread_id !== threadId || !latest.binding || context.host_id !== (message.hostId || LOCAL) || readOnly(context) ||
+          hub.unboundThreads.has(threadKey(context.host_id, threadId)) || client.disposed || !client.current || targetKey(client.current) !== targetKey(draft) ||
+          (client.current.thread_id && client.current.thread_id !== threadId)) return deny();
+      let pending = latest.pending_operation;
+      if (pending?.status === "outcome_unknown" && pending.thread_id === threadId) {
+        const recovered = await recoverPending(hub, client, context);
+        context = recovered.context;
+        pending = null;
+      }
+      if (pending && (pending.status !== "bound" || pending.thread_id !== threadId || pending.host_id !== context.host_id || !pending.request_id)) return deny("会话连接结果尚待核对，请稍后重试");
+      if (context.mode !== "thread" || context.thread_id !== threadId || readOnly(context) || client.disposed || !client.current || targetKey(client.current) !== targetKey(draft) ||
+          hub.unboundThreads.has(threadKey(context.host_id, threadId)) || (client.current.thread_id && client.current.thread_id !== threadId)) return deny("会话连接结果尚待核对，请稍后重试");
+      const scope = { hub, client, context, operation: pending || null, awaitingFirstTurn: !!pending };
+      hub.threads.set(threadKey(context.host_id, threadId), scope);
+      client.current = { ...client.current, ...context };
+      try { client.options.onBound?.({ target: { ...draft }, origin_target: { ...draft }, context: { ...context }, thread_id: threadId, binding: latest.binding }); }
+      catch (error) { client.report(error, draft); }
+      await beginTurn(hub, scope, message);
+    } catch (error) {
+      deny("会话连接暂时无法核对，请稍后重试");
+    }
   }
 
   async function beginTurn(hub, threadScope, message) {

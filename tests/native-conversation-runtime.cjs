@@ -33,6 +33,24 @@ async function recoveryFixture({checkpoint='allocated',kind='charter',response,o
 async function runRecovery() {
   {
     const backendSource=fs.readFileSync(path.join(__dirname,'../src/backend/better-codex.cjs'),'utf8');
+    const hostStart=backendSource.indexOf('var SessionHostServer = class');
+    const semanticStart=backendSource.indexOf('    if (message.type === "semantic_request") {',hostStart);
+    const semanticEnd=backendSource.indexOf('    if (message.type === "begin_handoff") {',semanticStart);
+    assert(semanticStart>hostStart && semanticEnd>semanticStart,'host semantic request handler must be available');
+    const responses=[],hostCalls=[];
+    const handler=vm.runInNewContext('(async function(message,connection){'+backendSource.slice(semanticStart,semanticEnd)+'})',{
+      Buffer,writeMessage:(_socket,response)=>responses.push(response),semanticResponseError:error=>error.message
+    });
+    const connection={authenticated:true,socket:{}};
+    const host={connection,hostInstanceId:'fixture-host',relay:{status:()=>({}),semanticRequest:async(method,params)=>{hostCalls.push({method,params});return {result:{thread:{id:params.threadId,turns:[]}},identity:{}};}}};
+    const request={type:'semantic_request',request_id:'history-check',method:'thread/read',params:{threadId:'01a10c1b-c051-7791-ba0d-68bf6b510798',includeTurns:true},deadline_at:new Date(Date.now()+30000).toISOString()};
+    await handler.call(host,request,connection);
+    assert.equal(hostCalls.length,1,'authenticated recovery reads pass through the host to the owning relay');
+    assert.equal(responses.at(-1).ok,true);
+    await handler.call(host,{...request,method:'turn/start'},connection);
+    assert.equal(responses.at(-1).error,'semantic_request_invalid','semantic history access does not authorize model execution');
+    await handler.call(host,request,{...connection,authenticated:false});
+    assert.equal(hostCalls.length,1,'unauthenticated history requests never reach the relay');
     const nativeReadMethod=backendSource.match(/async semanticRequest\(method, params, timeout = 8e3\) \{\n    if \(method === "thread\/read"\) \{[\s\S]*?\n  \}(?=\n  async handoffThread)/);
     assert(nativeReadMethod,'native recovery reads must use the original thread worker when it exists');
     const method=vm.runInNewContext('({'+nativeReadMethod[0]+'}).semanticRequest',{Error,sessionId:id=>/^[a-f0-9-]{36}$/i.test(id || '')?id:null});
