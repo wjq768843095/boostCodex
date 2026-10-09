@@ -75,6 +75,16 @@ class NodeFixture {
   appendChild(child) { if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(node => node !== child); this.appendCount++; this.children.push(child); child.parentElement = this; }
 }
 (async () => {
+  const projectScroll = { scrollTop: 180 }, conversationScroll = { scrollTop: 720 };
+  ctx.inlineConversation = { target: { project_id: 'p1', kind: 'work', issue_id: 'work', conversation_id: 'old' } };
+  ctx.inlineConversationRoot = { querySelector: selector => selector === '.bc-project-sidebar-list' ? projectScroll : selector === '.bc-planning-conversations nav' ? conversationScroll : null };
+  const savedMount = ctx.mountPanel;
+  ctx.mountPanel = () => { projectScroll.scrollTop = 0; conversationScroll.scrollTop = 0; };
+  await ctx.openInlineConversation({ project_id: 'p1', kind: 'work', issue_id: 'work', conversation_id: 'next' });
+  assert.equal(projectScroll.scrollTop, 180, 'project scroll survives native page remount');
+  assert.equal(conversationScroll.scrollTop, 720, 'work list scroll survives conversation switch and intermediate layout reset');
+  ctx.mountPanel = savedMount; ctx.inlineConversation = null; ctx.inlineConversationRoot = {};
+  http.length = 0; hostActions.length = 0;
   const charter = { project_id: 'p1', kind: 'charter' };
   assert.equal((await ctx.openProjectNativeSession('p1', 'charter')).opened, true);
   assert.equal(ctx.active, true);

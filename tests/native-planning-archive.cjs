@@ -88,7 +88,7 @@ async function run() {
 
     const issue=store.createIssue({id:'work-archive',projectId:'p1',title:'工作会话',description:'保留任务',status:'backlog'});
     const work=(await post('create',{project_id:'p1',kind:'work',issue_id:issue.id})).value.conversation;
-    await assert.rejects(archive(work),/invalid_session_kind/);
+    await assert.rejects(archive(work),/invalid_expected_issue_version/);
     assert(calls.every(call=>call.action==='archive'),'the lifecycle never deletes chat content');
     console.log('PASS: planning archives hide draft/native/already-archived entries, retain documents/history, survive reload and guard busy/failure/races');
   } finally {f.cleanup();}

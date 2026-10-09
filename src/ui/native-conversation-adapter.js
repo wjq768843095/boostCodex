@@ -822,6 +822,7 @@
     let internalNavigation = 0;
     let initialRoute = "";
     let currentRoute = "";
+    let boundDraftRoute = "";
     let originalNativeDraft = "";
     let registry = null;
     let retainedNavigationPromise = Promise.resolve(false);
@@ -932,13 +933,23 @@
         const supplied = String(route || "");
         const path = /^\/index\.html(?:\?|$)/.test(supplied) && currentRoute ? currentRoute : supplied;
         const context = this.current;
-        if (context.thread_id && path.split("?")[0] === "/local/" + encodeURIComponent(context.thread_id)) return true;
-        if (context.thread_id && path.split("?")[0] === "/local/" + context.thread_id) return true;
+        if (context.thread_id && ["/local/" + encodeURIComponent(context.thread_id), "/local/" + context.thread_id].includes(path.split("?")[0])) {
+          boundDraftRoute = "";
+          return true;
+        }
+        if (context.thread_id && boundDraftRoute && path === boundDraftRoute && hub?.threads.get(threadKey(context.host_id, context.thread_id))?.awaitingFirstTurn) return true;
         if (context.thread_id) return false;
         try {
           const url = new URL(path, "https://codex.local");
           return url.pathname === "/projects" && !!context.native_project_id && url.searchParams.get("projectId") === context.native_project_id;
         } catch { return false; }
+      },
+      adoptBoundRoute(context) {
+        if (!this.current || targetKey(this.current) !== targetKey(context) || this.current.thread_id !== context.thread_id) return;
+        // Electron keeps /index.html in location while its memory router moves
+        // from the project draft to the allocated native thread.
+        boundDraftRoute = currentRoute;
+        currentRoute = "/local/" + encodeURIComponent(context.thread_id);
       },
       matchesWorkspace(message) {
         if ((message.hostId || LOCAL) !== this.current.host_id) return false;
@@ -1237,6 +1248,7 @@
           }
           const receiver = hub.latestClient() || this;
           if (!receiver.disposed && receiver.current && [targetKey(scope.context), targetKey(origin)].includes(targetKey(receiver.current)) && (receiver.current.draft_generation ?? 0) === (scope.context.draft_generation ?? 0) && (!receiver.current.thread_id || receiver.current.thread_id === threadId)) receiver.current = { ...receiver.current, ...scope.context };
+          receiver.adoptBoundRoute(scope.context);
           receiver.options.onBound?.({ target: { ...origin }, origin_target: { ...origin }, context: { ...scope.context }, thread_id: threadId, binding: bound.binding, operation: bound.operation });
           // Native's thread/start continuation sends the original rich input.
           // Delivering only after both checkpoints is the binding/send barrier.
@@ -1268,7 +1280,7 @@
             }
           } catch { /* Native navigation may have already disposed its scope. */ }
         }
-        this.current = null; currentRoute = ""; originalNativeDraft = "";
+        this.current = null; currentRoute = ""; boundDraftRoute = ""; originalNativeDraft = "";
       },
       destroy() {
         if (this.disposed) return;

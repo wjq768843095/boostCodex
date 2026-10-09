@@ -2422,6 +2422,9 @@ var BetterCodexInjected = (() => {
       "已归档": "Archived",
       "打开 Issue 详情": "Open issue details",
       "取消归档后继续对话": "Unarchive to continue the conversation",
+      "删除会话": "Delete conversation",
+      "会话将从列表移除，任务与聊天记录会保留。": "The conversation will be removed from the list. Its task and chat history will be kept.",
+      "会话正在运行，请等待完成后再删除。": "The conversation is running. Wait for it to finish before deleting it.",
       "项目概况": "Project summary",
       "个项目": "projects",
       "个文件夹": "folders",
@@ -6327,6 +6330,11 @@ var BetterCodexInjected = (() => {
     }
     async function openInlineConversation(target, options = {}) {
       if (!target.project_id) throw new Error("project_required");
+      const previousTarget = inlineConversationTarget();
+      const navigationScroll = inlineConversationRoot && previousTarget.project_id === target.project_id && (previousTarget.kind === "work") === (target.kind === "work") ? {
+        project: inlineConversationRoot.querySelector?.(".bc-project-sidebar-list")?.scrollTop || 0,
+        conversation: inlineConversationRoot.querySelector?.(".bc-planning-conversations nav")?.scrollTop || 0
+      } : null;
       inlineConversationCacheRestoring = false;
       inlineConversationNavigationRequest++;
       const key = inlineConversationKey(target);
@@ -6401,6 +6409,12 @@ var BetterCodexInjected = (() => {
           inlineConversationLoading = false;
           mountPanel();
           renderInlineConversation();
+          if (navigationScroll && inlineConversationRoot) {
+            const projects = inlineConversationRoot.querySelector?.(".bc-project-sidebar-list");
+            const conversations = inlineConversationRoot.querySelector?.(".bc-planning-conversations nav");
+            if (projects) projects.scrollTop = navigationScroll.project;
+            if (conversations) conversations.scrollTop = navigationScroll.conversation;
+          }
         }
       }
     }
@@ -6459,6 +6473,29 @@ var BetterCodexInjected = (() => {
       state.nativeWorkConversations[projectId] = Array.isArray(result.conversations) ? result.conversations.filter(row => row.kind === "work" && row.project_id === projectId && row.issue_id) : [];
       return state.nativeWorkConversations[projectId];
     }
+    async function deleteWorkNativeConversation(projectId, conversationId) {
+      const row = state.nativeWorkConversations?.[projectId]?.find(item => item.conversation_id === conversationId);
+      if (!row) return;
+      const originKey = inlineConversationKey(inlineConversation);
+      const navigationRequest = inlineConversationNavigationRequest;
+      await api("/api/native-conversations/archive", { method: "POST", body: JSON.stringify({ project_id: projectId, kind: "work", issue_id: row.issue_id, conversation_id: conversationId, expected_revision: row.revision, expected_issue_version: row.version }) });
+      const rows = await loadProjectWorkConversations(projectId);
+      if (state.nativeWorkSelections?.[projectId]?.conversation_id === conversationId) delete state.nativeWorkSelections[projectId];
+      const view = readProjectView(projectId);
+      if (view.target?.conversation_id === conversationId) delete view.target;
+      if (view.work_target?.conversation_id === conversationId) delete view.work_target;
+      try { localStorage.setItem("better-codex-project-view:" + projectId, JSON.stringify(view)); } catch {}
+      if (row.thread_id && state.nativeThreadLinks) delete state.nativeThreadLinks[row.thread_id];
+      registerInlineConversationBindings();
+      if (destroyed || !inlineConversation || originKey !== inlineConversationKey(inlineConversation) || navigationRequest !== inlineConversationNavigationRequest) return;
+      const current = inlineConversationTarget();
+      if (current.project_id !== projectId) return;
+      if (current.conversation_id !== conversationId) { renderInlineConversation(); return; }
+      const next = rows.find(item => item.issue_id === row.issue_id && item.selected && !item.history_id) || rows.find(item => item.issue_id === row.issue_id && !item.history_id) || rows.find(item => item.selected && !item.history_id) || rows[0];
+      if (next?.history_id) await openInlineConversation({ project_id: projectId, kind: "work", issue_id: next.issue_id, ...(next.conversation_id ? { conversation_id: next.conversation_id } : {}), history_id: next.history_id });
+      else if (next) await openIssueNativeConversation({ project_id: projectId, id: next.issue_id }, next.conversation_id || "");
+      else { leaveInlineConversation(); state.projectPage = "work"; openRoute("projects", { projectId }); }
+    }
     async function openProjectWorkSession(projectId) {
       const request = ++inlineConversationNavigationRequest;
       const rows = await loadProjectWorkConversations(projectId);
@@ -6491,7 +6528,8 @@ var BetterCodexInjected = (() => {
         const conversations = rows.filter(row => row.issue_id === task.issue_id).map((row, index) => {
           const historical = Boolean(row.history_id || row.source === "history");
           const selected = row.issue_id === target.issue_id && (row.conversation_id ? row.conversation_id === target.conversation_id : !target.conversation_id) && (row.history_id || "") === (target.history_id || "");
-          return '<button type="button" class="bc-planning-conversation-row' + (historical ? ' bc-work-conversation-history' : '') + (selected ? ' is-active' : '') + '" data-work-conversation="' + escapeHtml2(row.issue_id) + '"' + (row.conversation_id ? ' data-work-conversation-id="' + escapeHtml2(row.conversation_id) + '"' : '') + (row.history_id ? ' data-work-history="' + escapeHtml2(row.history_id) + '"' : '') + ' aria-current="' + String(selected) + '"><span>' + icon(historical ? "docs" : "board") + '<strong>' + escapeHtml2(row.conversation_title || row.session_title || t(historical ? "历史会话" : "会话") + " " + (index + 1)) + '</strong></span><small>' + (historical ? escapeHtml2(row.archived_at || row.created_at || "") : escapeHtml2(inlineWorkStateLabel(row)) + ' · ' + te(row.thread_id ? "已有会话" : "草稿")) + '</small></button>';
+          const remove = row.conversation_id ? '<button type="button" class="bc-planning-conversation-archive" data-work-delete="' + escapeHtml2(row.conversation_id) + '" aria-label="' + te("删除会话") + ' ' + escapeHtml2(row.conversation_title || row.title || t("会话")) + '"' + (issueExecutionRunning(row) || row.task_execution_running || row.session_active_turn_id ? ' disabled title="' + te("会话正在运行，请等待完成后再删除。") + '"' : '') + '>' + te("删除") + '</button>' : '';
+          return '<div class="bc-planning-conversation-item"><button type="button" class="bc-planning-conversation-row' + (historical ? ' bc-work-conversation-history' : '') + (selected ? ' is-active' : '') + '" data-work-conversation="' + escapeHtml2(row.issue_id) + '"' + (row.conversation_id ? ' data-work-conversation-id="' + escapeHtml2(row.conversation_id) + '"' : '') + (row.history_id ? ' data-work-history="' + escapeHtml2(row.history_id) + '"' : '') + ' aria-current="' + String(selected) + '"><span>' + icon(historical ? "docs" : "board") + '<strong>' + escapeHtml2(row.conversation_title || row.session_title || t(historical ? "历史会话" : "会话") + " " + (index + 1)) + '</strong></span><small>' + (historical ? escapeHtml2(row.archived_at || row.created_at || "") : escapeHtml2(inlineWorkStateLabel(row)) + ' · ' + te(row.thread_id ? "已有会话" : "草稿")) + '</small></button>' + remove + '</div>';
         }).join("");
         const newConversation = task.archived_at && !rows.some(row => row.issue_id === task.issue_id && !row.history_id && row.source !== "history") ? "" : '<button type="button" class="bc-planning-conversation-row" data-work-create="' + escapeHtml2(task.issue_id) + '"><span>' + icon("plus") + '<strong>' + te("新建会话") + '</strong></span></button>';
         return '<section class="bc-work-conversation-group"><strong>' + escapeHtml2(task.title || t("工作任务")) + '</strong>' + conversations + newConversation + '</section>';
@@ -6918,6 +6956,16 @@ var BetterCodexInjected = (() => {
         finally { if (target.isConnected) target.disabled = false; }
       });
       if (target.matches("[data-planning-conversation]")) return target.disabled ? void 0 : void perform(() => openProjectNativeSession(inlineConversationTarget().project_id, "", target.dataset.planningConversation));
+      if (target.matches("[data-work-delete]")) {
+        if (target.disabled) return;
+        const projectId = inlineConversationTarget().project_id;
+        const conversationId = target.dataset.workDelete;
+        return void confirmAction("删除会话", "会话将从列表移除，任务与聊天记录会保留。", "删除").then(confirmed => confirmed && perform(async () => {
+          target.disabled = true;
+          try { await deleteWorkNativeConversation(projectId, conversationId); }
+          finally { if (target.isConnected) target.disabled = false; }
+        }));
+      }
       if (target.matches("[data-work-conversation]")) return void perform(() => target.dataset.workHistory ? openInlineConversation({ project_id: inlineConversationTarget().project_id, kind: "work", issue_id: target.dataset.workConversation, ...(target.dataset.workConversationId ? { conversation_id: target.dataset.workConversationId } : {}), history_id: target.dataset.workHistory }) : openIssueNativeConversation({ project_id: inlineConversationTarget().project_id, id: target.dataset.workConversation }, target.dataset.workConversationId || ""));
       if (target.matches("[data-work-create]")) return void perform(async () => {
         target.disabled = true;

@@ -868,8 +868,27 @@ function fixture(config = {}) {
     assert(f.adapter.ownsRoute('/index.html'), 'Electron memory-router shell owns tracked draft route');
     f.send('thread/start', { cwd: 'D:\\中文项目' }, 'memory-route'); await settle(() => f.sent.length === 1);
     f.reply('memory-route', { thread: { id: 'memory-thread' } }); await settle(() => f.bounds.length === 1);
+    assert(f.adapter.ownsRoute('/index.html'), 'binding keeps the Electron memory-router workspace owned before native continuation navigates');
+    assert.equal(f.adapter.capture().route, '/local/memory-thread', 'bound route replaces the old project draft route');
     f.dispatcher.dispatchHostMessage({ type: 'navigate-to-route', path: '/settings' });
     assert.equal(f.adapter.getCurrentContext(), null, 'native navigation releases Better ownership'); f.adapter.destroy();
+  }
+  {
+    const f = fixture(); await f.adapter.open(f.remember(f.context()));
+    const draftRoute = f.nativeRoute();
+    f.options.onBound = value => {
+      assert(f.adapter.ownsRoute(draftRoute), 'binding callback keeps the exact draft route during the native continuation');
+      f.bounds.push(plain(value));
+    };
+    f.send('thread/start', { cwd: 'D:\\中文项目' }, 'bound-route-transition');
+    await settle(() => f.sent.length === 1);
+    f.reply('bound-route-transition', { thread: { id: 'bound-route-thread' } });
+    await settle(() => f.bounds.length === 1);
+    assert.equal(f.adapter.ownsRoute('/projects?projectId=unrelated'), false);
+    f.dispatcher.dispatchHostMessage({ type: 'navigate-to-route', path: '/local/bound-route-thread' });
+    assert.equal(f.away.length, 0, 'normal first-send thread navigation keeps the project workspace');
+    assert.equal(f.adapter.ownsRoute(draftRoute), false, 'draft-route allowance ends when the native thread is selected');
+    f.adapter.destroy();
   }
   {
     let finishBind;
