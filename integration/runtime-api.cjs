@@ -27,6 +27,7 @@ async function handle({url,method,request,response,worker,readBody,sendJson,stop
   if(!body||Object.keys(body).some(key=>!['requestId','accountId','userId'].includes(key))||!metadataRequestId(body.requestId)){
    sendJson(response,400,{error:'ACCOUNT_METADATA_INPUT_INVALID'});return true;
   }
+  if(response.destroyed||request.aborted)return true;
   if((metadataCancelled.get(body.requestId)||0)>Date.now()){metadataCancelled.delete(body.requestId);sendJson(response,409,{error:'ACCOUNT_METADATA_ABORTED'});return true;}
   if(metadataRequests.has(body.requestId)||metadataRequests.size>=4){sendJson(response,429,{error:'ACCOUNT_METADATA_BUSY'});return true;}
   const controller=new AbortController();metadataRequests.set(body.requestId,controller);

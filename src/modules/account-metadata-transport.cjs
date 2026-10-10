@@ -6,6 +6,7 @@ const http = require('node:http');
 const https = require('node:https');
 const tls = require('node:tls');
 const { execFile } = require('node:child_process');
+const { isDeepStrictEqual } = require('node:util');
 
 const HOST = 'chatgpt.com';
 const ENDPOINT = '/backend-api/accounts/check/v4-2023-04-27';
@@ -82,7 +83,7 @@ async function nativeIdentity(deps, userId) {
 function validateMetadata(body, accountId) {
   if (!object(body) || !object(body.accounts) || !Array.isArray(body.account_ordering) || !body.account_ordering.every(id => typeof id === 'string')) throw failure('ACCOUNT_METADATA_SCHEMA_INVALID');
   const matches = Object.entries(body.accounts).filter(([, record]) => record?.account?.account_id === accountId);
-  if (matches.length !== 1 || !body.account_ordering.includes(matches[0][0])) throw failure('ACCOUNT_METADATA_SCHEMA_INVALID');
+  if (!matches.length || !matches.some(([key]) => body.account_ordering.includes(key)) || !matches.every(([, record]) => isDeepStrictEqual(record, matches[0][1]))) throw failure('ACCOUNT_METADATA_SCHEMA_INVALID');
   const record = matches[0][1];
   const account = record?.account;
   if (!object(record) || !object(account) || account.account_id !== accountId || !['account_id', 'account_user_id', 'account_user_role', 'structure', 'plan_type'].every(key => own(account, key) && typeof account[key] === 'string' && account[key].length > 0) || !own(account, 'is_zdr') || typeof account.is_zdr !== 'boolean') throw failure('ACCOUNT_METADATA_SCHEMA_INVALID');

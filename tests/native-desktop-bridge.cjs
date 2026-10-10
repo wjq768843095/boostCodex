@@ -43,6 +43,8 @@ async function bridgeFixtures() {
   }
   for (const [route, method, body] of [
     ['/api/account/usage', 'GET'],
+    ['/api/dev/account-metadata', 'POST', JSON.stringify({ requestId: 'fixture-request', accountId: 'fixture-account', userId: 'fixture-user' })],
+    ['/api/dev/account-metadata/cancel?locale=zh-CN', 'POST', JSON.stringify({ requestId: 'fixture-request' })],
     ['/api/account/usage?refresh=1', 'GET'],
     ['/api/skills', 'GET'],
     ['/api/skills?scope=managed', 'GET'],
@@ -79,7 +81,13 @@ async function bridgeFixtures() {
     ['/api/sync/status', {}],
     ['/api/account/usage-other', {}],
     ['/api/account/usage/activity', {}],
-    ['/api/account/profile', {}]
+    ['/api/account/profile', {}],
+    ['/api/dev/status', {}],
+    ['/api/dev/reload', {}],
+    ['/api/dev/account-metadata-other', {}],
+    ['/api/dev/account-metadata/cancel/other', {}],
+    ['/api/dev/account-metadata', {}],
+    ['/api/dev/account-metadata/cancel', {}]
   ]) {
     const before = requests.length;
     const result = await request(route, 'GET', extra);
@@ -94,6 +102,15 @@ async function bridgeFixtures() {
     assert.equal(requests.length, before);
     assert.equal(result.value.error, 'invalid_bridge_request');
   }
+  for (const method of ['GET', 'PATCH', 'PUT', 'DELETE']) {
+    const before = requests.length;
+    const result = await request('/api/dev/account-metadata', method);
+    assert.equal(requests.length, before);
+    assert.equal(result.value.error, 'invalid_bridge_request');
+  }
+  const before = requests.length;
+  assert.equal((await request('/api/dev/account-metadata', 'POST', { token: 'wrong-token' })).value.error, 'invalid_bridge_request');
+  assert.equal(requests.length, before);
 }
 
 async function recoveryFixtures() {

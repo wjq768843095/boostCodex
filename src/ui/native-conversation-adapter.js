@@ -17,9 +17,9 @@
   // the query's before/after identity assertions still consume the real result.
   root.__betterCodexAccountTransportRecovery__?.dispose?.();
   const accountTransport = {
-    request: null, original: null, wrapper: null, disposed: false, bridge: null,
+    request: null, original: null, wrapper: null, disposed: false, bridge: null, pending: new Set(), startupRetried: new WeakSet(),
     stats: { installed: false, attempted: 0, recovered: 0, rejected: 0, lastFailureStage: null },
-    identityFor(accountId) {
+    queryClient() {
       const stack = [root.__codexRoot?._internalRoot?.current], seen = new Set();
       let client;
       while (stack.length && seen.size < 30000) {
@@ -27,18 +27,44 @@
         if (typeof fiber.memoizedProps?.client?.getQueryCache === "function") { client = fiber.memoizedProps.client; break; }
         stack.push(fiber.child, fiber.sibling);
       }
-      const matches = client?.getQueryCache().getAll().filter(query => query.isActive() &&
+      return client;
+    },
+    identityFor(accountId) {
+      const queries = this.queryClient()?.getQueryCache().getAll() || [];
+      const matches = queries.filter(query => query.isActive() &&
         query.queryKey[0] === "usage-settings" && query.queryKey[1] === "accounts-check" &&
-        query.queryKey[2] === "v4-2023-04-27" && query.queryKey[3] === accountId) || [];
+        query.queryKey[2] === "v4-2023-04-27" && query.queryKey[3] === accountId);
       const users = new Set(matches.map(query => query.queryKey[4]));
       if (users.size !== 1) return null;
       const userId = [...users][0];
       if (typeof userId !== "string" || !userId) return null;
-      const record = matches.flatMap(query => Object.values(query.state.data?.accounts || {}))
-        .find(item => item?.account?.account_id === accountId);
+      const account = matches.flatMap(query => Object.values(query.state.data?.accounts || {}))
+        .find(item => item?.account?.account_id === accountId)?.account;
+      const check = queries.find(query => query.queryKey.length === 2 && query.queryKey[0] === "accounts" && query.queryKey[1] === "check" &&
+        query.isActive() && query.state.status === "success" && query.state.fetchStatus === "idle" && !query.state.isInvalidated);
+      const coldAccounts = Array.isArray(check?.state.data?.accounts) && check.state.data.account_ordering?.includes(accountId) ?
+        check.state.data.accounts.filter(item => item?.id === accountId) : [];
+      const coldAccount = coldAccounts.length === 1 ? coldAccounts[0] : null;
+      if (coldAccounts.length > 1 || coldAccounts.some(item => item.structure !== "personal")) return null;
       // Do not send an organization's request outside its native residency/IP
       // routing. The backend also checks the fresh response's account structure.
-      return record?.account?.structure === "personal" ? { accountId, userId } : null;
+      return (account || coldAccount)?.structure === "personal" ? { accountId, userId } : null;
+    },
+    recoverStartupErrors() {
+      if (this.disposed || !this.request || typeof this.bridge !== "function") return;
+      for (const query of this.queryClient()?.getQueryCache().getAll() || []) {
+        const error = query.state.error;
+        if (!query.isActive() || query.queryKey[0] !== "usage-settings" || query.queryKey[1] !== "accounts-check" ||
+            query.queryKey[2] !== "v4-2023-04-27" || query.state.status !== "error" || query.state.fetchStatus !== "idle" ||
+            error?.status !== 403 || error?.errorCode !== "cloudflare_challenge" || this.startupRetried.has(query) || !this.identityFor(query.queryKey[3])) continue;
+        this.startupRetried.add(query);
+        // A first query can fail before the local bridge has mounted. Retry its
+        // real native query once after installation; never synthesize success.
+        Promise.resolve().then(() => {
+          if (!this.disposed && typeof this.bridge === "function" && query.isActive() && query.state.error === error &&
+              query.state.fetchStatus === "idle" && this.identityFor(query.queryKey[3])) return query.fetch();
+        }).catch(() => {});
+      }
     },
     installRequest(request) {
       if (this.disposed || this.request || typeof request?.safeGet !== "function" || typeof request.getRequestTarget !== "function") return false;
@@ -80,6 +106,7 @@
       };
       this.request = request; this.original = original; this.wrapper = wrapper;
       request.safeGet = wrapper; this.stats.installed = true;
+      this.recoverStartupErrors();
       return true;
     },
     async installFromSource(source, sharedUrl) {
@@ -93,6 +120,7 @@
     },
     dispose() {
       this.disposed = true;
+      for (const cancel of [...this.pending]) cancel();
       this.bridge = null;
       if (this.request?.safeGet === this.wrapper) this.request.safeGet = this.original;
       this.stats.installed = false;
@@ -909,26 +937,34 @@
 
   function create(options) {
     if (typeof options?.api !== "function") throw Error("Native conversation API is required");
-    accountTransport.bridge = (identity, signal) => {
+    const bridgePending = new Set();
+    let bridgeDisposed = false;
+    const metadataBridge = (identity, signal) => {
+      if (bridgeDisposed || accountTransport.disposed) throw new DOMException("Account transport closed", "AbortError");
       signal?.throwIfAborted();
       const requestId = uuid();
       return new Promise((resolve, reject) => {
         let settled = false;
         const settle = (error, data) => {
           if (settled) return; settled = true; signal?.removeEventListener("abort", abort);
+          bridgePending.delete(abort); accountTransport.pending.delete(abort);
           if (error) reject(error); else resolve(data);
         };
         const abort = () => {
-          void options.api("/api/dev/account-metadata/cancel", { method: "POST", body: JSON.stringify({ requestId }), timeoutMs: 5000 }).catch(() => {});
-          settle(signal.reason || new DOMException("Account metadata request cancelled", "AbortError"));
+          if (settled) return;
+          try { Promise.resolve(options.api("/api/dev/account-metadata/cancel", { method: "POST", body: JSON.stringify({ requestId }), timeoutMs: 5000 })).catch(() => {}); } catch {}
+          settle(signal?.aborted && signal.reason || new DOMException("Account metadata request cancelled", "AbortError"));
         };
+        bridgePending.add(abort); accountTransport.pending.add(abort);
         signal?.addEventListener("abort", abort, { once: true });
         if (signal?.aborted) { abort(); return; }
-        Promise.resolve(options.api("/api/dev/account-metadata", {
+        Promise.resolve().then(() => settled ? null : options.api("/api/dev/account-metadata", {
           method: "POST", body: JSON.stringify({ requestId, ...identity }), timeoutMs: 15000
         })).then(data => settle(null, data), error => settle(error));
       });
     };
+    accountTransport.bridge = metadataBridge;
+    accountTransport.recoverStartupErrors();
     let hub = null;
     let host = null;
     let hostPromise = null;
@@ -1398,6 +1434,9 @@
       },
       destroy() {
         if (this.disposed) return;
+        bridgeDisposed = true;
+        for (const cancel of [...bridgePending]) cancel();
+        if (accountTransport.bridge === metadataBridge) accountTransport.bridge = null;
         // Hot reload disposes the source controller while native React stays
         // mounted. Save its draft, but never restore another home identity or
         // enqueue a late native editor write into the replacement controller.

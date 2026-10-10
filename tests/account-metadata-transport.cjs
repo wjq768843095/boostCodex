@@ -188,6 +188,19 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(await fetchAccountMetadata(input, fixture({ body: restricted }).deps), restricted, 'denial and deactivation are never rewritten');
   const defaultKey = metadata(); defaultKey.accounts.default = defaultKey.accounts[input.accountId]; delete defaultKey.accounts[input.accountId]; defaultKey.account_ordering = ['default'];
   assert.deepEqual(await fetchAccountMetadata(input, fixture({ body: defaultKey }).deps), defaultKey, 'native default map key need not equal the account UUID');
+  const alias = metadata(); alias.accounts.default = structuredClone(alias.accounts[input.accountId]);
+  assert.deepEqual(await fetchAccountMetadata(input, fixture({ body: alias }).deps), alias, 'official default and UUID aliases are accepted only when the complete records agree');
+  alias.account_ordering = ['default'];
+  assert.deepEqual(await fetchAccountMetadata(input, fixture({ body: alias }).deps), alias, 'either matching alias may be in account ordering');
+  for (const mutate of [
+    record => { record.account.account_user_role = 'reader'; },
+    record => { record.can_access_with_session = false; },
+    record => { record.permissions.future_unknown = true; },
+    record => { record.entitlement = {}; }
+  ]) {
+    const conflict = metadata(); conflict.accounts.default = structuredClone(conflict.accounts[input.accountId]); mutate(conflict.accounts.default);
+    await rejects(fixture({ body: conflict }), 'ACCOUNT_METADATA_SCHEMA_INVALID');
+  }
   const organization = metadata(); organization.accounts[input.accountId].account.structure = 'organization';
   await rejects(fixture({ body: organization }), 'ACCOUNT_METADATA_WORKSPACE_POLICY');
   for (const mutation of [
