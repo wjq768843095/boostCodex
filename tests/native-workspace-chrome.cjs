@@ -45,7 +45,7 @@ assert(Number(nativeHeaderRule.match(/z-index:\s*(\d+)/)[1]) > 41, 'native previ
 assert(/pointer-events:\s*none/.test(nativeHeaderRule), 'the transparent header must let native file-tab close buttons receive clicks');
 // Cached workspace nodes can become the active native conversation after leaving management.
 // Their markers must not override the host's browser split when management is closed.
-for (const attribute of ['inline-host', 'inline-content', 'native-panel']) {
+for (const attribute of ['inline-host', 'inline-content', 'native-panel', 'planning-native-hidden', 'planning-native-rail', 'planning-native-header']) {
   const rules = source.split('\n').filter(line => line.includes('[data-better-codex-' + attribute + '="true"]') && line.includes(' { '));
   assert(rules.length, 'workspace layout rules exist for ' + attribute);
   assert(rules.every(line => line.trim().startsWith('html[data-better-codex-open="true"] ')), 'cached ' + attribute + ' styles only apply while management is open');
