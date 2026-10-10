@@ -12854,7 +12854,7 @@ var BetterCodexInjected = (() => {
       const card = event.target.closest("[data-issue-id]");
       const issue = state.issues.find((item) => item.id === card?.dataset.issueId);
       const permissions = issuePermissions(issue);
-      if (issue && !permissions.enrichmentPending && !permissions.remotePending) return void perform(() => openEditor(issue));
+      if (issue && !permissions.enrichmentPending && !permissions.remotePending) return void perform(() => openIssueNativeConversation(issue));
     }
     function sessionThreadTitle(row) {
       const attribute = ATTRIBUTES.threadTitle ? row.getAttribute(ATTRIBUTES.threadTitle) : "";
