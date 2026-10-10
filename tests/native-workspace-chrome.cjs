@@ -43,6 +43,13 @@ assert(!/\[data-better-codex-planning-native-header="true"\][^\n]*display:\s*non
 const nativeHeaderRule = source.match(/\[data-better-codex-planning-native-header="true"\] \{([^}]+)\}/)[1];
 assert(Number(nativeHeaderRule.match(/z-index:\s*(\d+)/)[1]) > 41, 'native preview controls must sit above the installed main-content layer');
 assert(/pointer-events:\s*none/.test(nativeHeaderRule), 'the transparent header must let native file-tab close buttons receive clicks');
+// Cached workspace nodes can become the active native conversation after leaving management.
+// Their markers must not override the host's browser split when management is closed.
+for (const attribute of ['inline-host', 'inline-content', 'native-panel']) {
+  const rules = source.split('\n').filter(line => line.includes('[data-better-codex-' + attribute + '="true"]') && line.includes(' { '));
+  assert(rules.length, 'workspace layout rules exist for ' + attribute);
+  assert(rules.every(line => line.trim().startsWith('html[data-better-codex-open="true"] ')), 'cached ' + attribute + ' styles only apply while management is open');
+}
 const filePanel = node(), chatLayout = node();
 filePanel.style.width = '900px';
 const sizing = new Map([['--bc-inline-nav-space', '370px'], ['--bc-inline-details-space', '400px']]);
