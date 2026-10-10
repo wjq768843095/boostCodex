@@ -1,4 +1,6 @@
 const fs=require('node:fs'),path=require('node:path');
+const metadataRequests=new Map(),metadataCancelled=new Map();
+const metadataRequestId=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function idle(worker){
  const result=worker.updateDrainStatus();const pending=worker.store.db.prepare("SELECT count(*) AS n FROM session_commands WHERE status IN ('pending','claimed')").get().n;
  let projectPending=0,projectActive=0,nativeBindingPending=0;
@@ -10,6 +12,35 @@ function idle(worker){
 }
 async function handle({url,method,request,response,worker,readBody,sendJson,stopHost}){
  const dev=path.join(process.env.BETTER_CODEX_LOCAL_PROJECT,'.dev');
+ // The core has already required the local runtime token and rejected relay
+ // callers for /api/dev/. This route reads only native account metadata.
+ if(url.pathname==='/api/dev/account-metadata/cancel'&&method==='POST'){
+  const body=await readBody(request,4096);
+  if(!metadataRequestId(body?.requestId)){sendJson(response,400,{error:'ACCOUNT_METADATA_INPUT_INVALID'});return true;}
+  for(const [id,expires] of metadataCancelled)if(expires<Date.now())metadataCancelled.delete(id);
+  if(metadataCancelled.size>=64)metadataCancelled.delete(metadataCancelled.keys().next().value);
+  metadataCancelled.set(body.requestId,Date.now()+30000);metadataRequests.get(body.requestId)?.abort();
+  sendJson(response,200,{cancelled:true});return true;
+ }
+ if(url.pathname==='/api/dev/account-metadata'&&method==='POST'){
+  const body=await readBody(request,4096);
+  if(!body||Object.keys(body).some(key=>!['requestId','accountId','userId'].includes(key))||!metadataRequestId(body.requestId)){
+   sendJson(response,400,{error:'ACCOUNT_METADATA_INPUT_INVALID'});return true;
+  }
+  if((metadataCancelled.get(body.requestId)||0)>Date.now()){metadataCancelled.delete(body.requestId);sendJson(response,409,{error:'ACCOUNT_METADATA_ABORTED'});return true;}
+  if(metadataRequests.has(body.requestId)||metadataRequests.size>=4){sendJson(response,429,{error:'ACCOUNT_METADATA_BUSY'});return true;}
+  const controller=new AbortController();metadataRequests.set(body.requestId,controller);
+  const disconnected=()=>{if(!response.writableEnded)controller.abort();};response.once('close',disconnected);
+  try{
+   const {fetchAccountMetadata}=require('../src/modules/account-metadata-transport.cjs');
+   const data=await fetchAccountMetadata({accountId:body.accountId,userId:body.userId,signal:controller.signal});
+   if(!response.destroyed)sendJson(response,200,data);
+  }catch(error){
+   const code=/^ACCOUNT_METADATA_[A-Z_]+$/.test(error?.code||'')?error.code:'ACCOUNT_METADATA_FAILED';
+   if(!response.destroyed)sendJson(response,code==='ACCOUNT_METADATA_ABORTED'?409:502,{error:code});
+  }finally{response.removeListener('close',disconnected);metadataRequests.delete(body.requestId);metadataCancelled.delete(body.requestId);}
+  return true;
+ }
  if(url.pathname==='/api/dev/status'&&method==='GET'){
   let reload={};try{reload=JSON.parse(fs.readFileSync(path.join(dev,'status.json'),'utf8'));}catch{}
   sendJson(response,200,{pid:process.pid,revision:process.env.BC_REVISION,draining:!!worker.__devDraining,...idle(worker),reload});return true;

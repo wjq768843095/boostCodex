@@ -10,15 +10,36 @@
   const API_ROOT = "/api/native-conversations/";
   const LOCAL = "local";
 
-  // The account-list endpoint supports an authenticated request without the
-  // optional selected-workspace header. Some authenticated, scoped requests
-  // receive a Cloudflare challenge even though the unscoped account list works.
-  // Recover only that GET, once, and return the real selected membership to the
-  // unchanged native account/settings/policy checks. Never use guest responses.
+  // Recover only the account-list GET through the local authenticated transport
+  // after the native transport has completed its policy checks and returned a
+  // Cloudflare challenge. The backend verifies the native token's user, fetches
+  // fresh metadata, and refuses organization routing. Native policy checks and
+  // the query's before/after identity assertions still consume the real result.
   root.__betterCodexAccountTransportRecovery__?.dispose?.();
   const accountTransport = {
-    request: null, original: null, wrapper: null, disposed: false,
-    stats: { installed: false, attempted: 0, recovered: 0, rejected: 0 },
+    request: null, original: null, wrapper: null, disposed: false, bridge: null,
+    stats: { installed: false, attempted: 0, recovered: 0, rejected: 0, lastFailureStage: null },
+    identityFor(accountId) {
+      const stack = [root.__codexRoot?._internalRoot?.current], seen = new Set();
+      let client;
+      while (stack.length && seen.size < 30000) {
+        const fiber = stack.pop(); if (!fiber || seen.has(fiber)) continue; seen.add(fiber);
+        if (typeof fiber.memoizedProps?.client?.getQueryCache === "function") { client = fiber.memoizedProps.client; break; }
+        stack.push(fiber.child, fiber.sibling);
+      }
+      const matches = client?.getQueryCache().getAll().filter(query => query.isActive() &&
+        query.queryKey[0] === "usage-settings" && query.queryKey[1] === "accounts-check" &&
+        query.queryKey[2] === "v4-2023-04-27" && query.queryKey[3] === accountId) || [];
+      const users = new Set(matches.map(query => query.queryKey[4]));
+      if (users.size !== 1) return null;
+      const userId = [...users][0];
+      if (typeof userId !== "string" || !userId) return null;
+      const record = matches.flatMap(query => Object.values(query.state.data?.accounts || {}))
+        .find(item => item?.account?.account_id === accountId);
+      // Do not send an organization's request outside its native residency/IP
+      // routing. The backend also checks the fresh response's account structure.
+      return record?.account?.structure === "personal" ? { accountId, userId } : null;
+    },
     installRequest(request) {
       if (this.disposed || this.request || typeof request?.safeGet !== "function" || typeof request.getRequestTarget !== "function") return false;
       const original = request.safeGet, state = this;
@@ -33,28 +54,28 @@
           const headerKey = Object.keys(options?.additionalHeaders || {}).find(key => key.toLowerCase() === "chatgpt-account-id");
           const accountId = headerKey && options.additionalHeaders[headerKey];
           if (typeof accountId !== "string" || !accountId) throw primaryError;
-          const headers = { ...options.additionalHeaders };
-          // Remove all case variants, leaving authentication, cancellation and
-          // native identity assertions exactly as supplied by the native query.
-          for (const key of Object.keys(headers)) if (key.toLowerCase() === "chatgpt-account-id") delete headers[key];
-          const fallbackOptions = { ...options, additionalHeaders: headers };
-          const target = this.getRequestTarget(route, fallbackOptions);
+          const target = this.getRequestTarget(route, options);
           const targetHeaders = Object.entries(target.headers || {});
-          if (targetHeaders.some(([key]) => key.toLowerCase() === "chatgpt-account-id") ||
-              !targetHeaders.some(([key, value]) => key.toLowerCase() === "x-openai-attach-auth" && String(value) === "1")) throw primaryError;
+          if (!targetHeaders.some(([key, value]) => key.toLowerCase() === "x-openai-attach-auth" && String(value) === "1") || typeof state.bridge !== "function") throw primaryError;
+          const identity = state.identityFor(accountId);
+          if (!identity) throw primaryError;
           state.stats.attempted++;
+          state.stats.lastFailureStage = "transport";
           try {
-            const data = await Reflect.apply(original, this, [route, fallbackOptions, ...args.slice(1)]);
+            const data = await state.bridge(identity, options.signal);
             options.signal?.throwIfAborted();
+            options.assertRequestCurrent?.();
+            const currentIdentity = state.identityFor(accountId);
+            if (state.disposed || currentIdentity?.userId !== identity.userId) throw new DOMException("Account identity changed", "AbortError");
+            state.stats.lastFailureStage = "validation";
             const record = data?.accounts && Object.values(data.accounts).find(item => item?.account?.account_id === accountId);
             const account = record?.account;
-            const required = ["account_id", "account_user_id", "account_user_role", "structure", "plan_type", "is_deactivated", "is_zdr"];
-            if (!Array.isArray(data?.account_ordering) || !account || !required.every(key => Object.hasOwn(account, key)) ||
-                typeof account.account_user_id !== "string" || !account.account_user_id ||
-                typeof record.can_access_with_session !== "boolean" || !Object.hasOwn(record, "features") || !Object.hasOwn(record, "entitlement")) throw primaryError;
+            const required = ["account_id", "account_user_id", "account_user_role", "structure", "plan_type", "is_zdr"];
+            if (!Array.isArray(data?.account_ordering) || !account || !required.every(key => account[key] != null) || account.structure !== "personal") throw primaryError;
             state.stats.recovered++;
+            state.stats.lastFailureStage = null;
             return data;
-          } catch (error) { state.stats.rejected++; throw error; }
+          } catch (error) { state.stats.rejected++; if (error?.name === "AbortError") state.stats.lastFailureStage = "aborted"; throw error; }
         }
       };
       this.request = request; this.original = original; this.wrapper = wrapper;
@@ -72,6 +93,7 @@
     },
     dispose() {
       this.disposed = true;
+      this.bridge = null;
       if (this.request?.safeGet === this.wrapper) this.request.safeGet = this.original;
       this.stats.installed = false;
     }
@@ -887,6 +909,26 @@
 
   function create(options) {
     if (typeof options?.api !== "function") throw Error("Native conversation API is required");
+    accountTransport.bridge = (identity, signal) => {
+      signal?.throwIfAborted();
+      const requestId = uuid();
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (error, data) => {
+          if (settled) return; settled = true; signal?.removeEventListener("abort", abort);
+          if (error) reject(error); else resolve(data);
+        };
+        const abort = () => {
+          void options.api("/api/dev/account-metadata/cancel", { method: "POST", body: JSON.stringify({ requestId }), timeoutMs: 5000 }).catch(() => {});
+          settle(signal.reason || new DOMException("Account metadata request cancelled", "AbortError"));
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) { abort(); return; }
+        Promise.resolve(options.api("/api/dev/account-metadata", {
+          method: "POST", body: JSON.stringify({ requestId, ...identity }), timeoutMs: 15000
+        })).then(data => settle(null, data), error => settle(error));
+      });
+    };
     let hub = null;
     let host = null;
     let hostPromise = null;
