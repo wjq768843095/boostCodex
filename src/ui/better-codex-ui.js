@@ -6344,7 +6344,9 @@ var BetterCodexInjected = (() => {
         return { opened: true, mode: inlineConversation.mode };
       }
       const request = ++inlineConversationRequest;
-      if (inlineConversation && inlineConversationKey(inlineConversation) !== key) inlineConversationAdapter?.leave?.();
+      // The adapter saves the outgoing draft and switches native ownership.
+      // Keep the workspace mounted while the next conversation loads.
+      if (inlineConversationRoot && inlineConversation) inlineConversationRoot.setAttribute?.("data-better-codex-conversation-switching", "true");
       const returnSurface = inlineConversation?.return_surface || (active && state.surface === "projects" ? "projects" : target.kind === "work" ? "issues" : "projects");
       inlineConversation = { ...target, target: { ...target }, mode: "draft", route: location.pathname + location.search, return_surface: returnSurface, ...(options.restore || {}) };
       inlineConversationLoading = true;
@@ -6382,6 +6384,7 @@ var BetterCodexInjected = (() => {
         else await loadProjectNativeConversations(target.project_id);
         if (destroyed || request !== inlineConversationRequest) return { opened: false, reason: "navigation_changed" };
         if (response.mode === "legacy_busy" || response.mode === "handoff_required") {
+          inlineConversationAdapter?.leave?.();
           const history = target.issue_id ? await api("/api/issues/" + encodeURIComponent(target.issue_id) + "/conversation", { passive: true }).catch(() => null) : null;
           if (request === inlineConversationRequest) inlineConversation.history = history?.messages || [];
         } else {
@@ -6407,6 +6410,7 @@ var BetterCodexInjected = (() => {
       } finally {
         if (request === inlineConversationRequest) {
           inlineConversationLoading = false;
+          inlineConversationRoot?.removeAttribute?.("data-better-codex-conversation-switching");
           mountPanel();
           renderInlineConversation();
           if (navigationScroll && inlineConversationRoot) {
@@ -6756,6 +6760,57 @@ var BetterCodexInjected = (() => {
         update(inlineConversationColumnSizing().width + (event.key === "ArrowRight" ? 20 : -20));
       });
     }
+    function patchInlineNavigationChildren(parent, nextParent) {
+      const key = node => {
+        if (node.nodeType !== 1) return "";
+        for (const name of ["data-project-id", "data-work-group", "data-planning-conversation", "data-work-conversation-id", "data-work-history", "data-work-conversation", "data-work-create", "data-work-delete", "data-planning-archive", "data-planning-create", "data-inline-stage"]) {
+          if (node.hasAttribute(name)) return name + ":" + node.getAttribute(name) + ":" + (node.getAttribute("data-work-history") || "");
+        }
+        if (node.classList.contains("bc-planning-conversation-item")) return "item:" + key(node.firstElementChild);
+        return "";
+      };
+      const previous = Array.from(parent.childNodes), unused = new Set(previous);
+      const keyed = new Map(previous.map(node => [key(node), node]).filter(([id]) => id));
+      Array.from(nextParent.childNodes).forEach((next, index) => {
+        const id = key(next);
+        let node = id ? keyed.get(id) : previous[index];
+        if (!unused.has(node) || node.nodeType !== next.nodeType || node.nodeName !== next.nodeName || !id && key(node)) node = null;
+        if (!node) node = next.cloneNode(true);
+        else {
+          unused.delete(node);
+          if (node.nodeType === 1) {
+            for (const attribute of Array.from(node.attributes)) if (!next.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+            for (const attribute of Array.from(next.attributes)) if (node.getAttribute(attribute.name) !== attribute.value) node.setAttribute(attribute.name, attribute.value);
+            patchInlineNavigationChildren(node, next);
+          } else if (node.nodeValue !== next.nodeValue) node.nodeValue = next.nodeValue;
+        }
+        if (parent.childNodes[index] !== node) parent.insertBefore(node, parent.childNodes[index] || null);
+      });
+      for (const node of unused) node.remove();
+    }
+    function updateInlineConversationNavigation(container, markup, target) {
+      const previous = container.__betterCodexNavigationMarkup;
+      const content = value => value.replace(/ is-active/g, "").replace(/ aria-current="(?:true|false)"/g, "");
+      if (typeof previous === "string" && content(previous) === content(markup)) {
+        for (const row of container.querySelectorAll?.(".bc-project-row, [data-planning-conversation], [data-inline-stage], [data-work-conversation]") || []) {
+          const data = row.dataset;
+          const selected = data.projectId ? data.projectId === target.project_id : data.planningConversation ? data.planningConversation === target.conversation_id : data.inlineStage ? data.inlineStage === target.kind : data.workConversation === target.issue_id && (data.workConversationId || "") === (target.conversation_id || "") && (data.workHistory || "") === (target.history_id || "");
+          row.classList.toggle("is-active", selected);
+          if (row.getAttribute("aria-current") !== String(selected)) row.setAttribute("aria-current", String(selected));
+        }
+      } else if (previous !== markup) {
+        const scrollSelector = container.classList?.contains("bc-planning-projects") ? ".bc-project-sidebar-list" : "nav";
+        const scroll = container.querySelector(scrollSelector)?.scrollTop || 0;
+        if (container.ownerDocument?.createElement && typeof previous === "string") {
+          const template = container.ownerDocument.createElement("template");
+          template.innerHTML = markup;
+          patchInlineNavigationChildren(container, template.content);
+        } else container.innerHTML = markup;
+        const list = container.querySelector(scrollSelector);
+        if (list) list.scrollTop = scroll;
+      }
+      container.__betterCodexNavigationMarkup = markup;
+    }
     function renderInlineConversation() {
       if (!inlineConversation || !inlineConversationRoot) return;
       const target = inlineConversationTarget();
@@ -6764,6 +6819,7 @@ var BetterCodexInjected = (() => {
       const task = context.task || context.issue || state.issues.find((candidate) => candidate.id === target.issue_id) || state.nativeWorkConversations?.[target.project_id]?.find(candidate => candidate.issue_id === target.issue_id && candidate.source === "current");
       const title = target.kind === "work" ? task?.title || t("工作任务") : projectLabel(project) || t("项目规划");
       const workWorkspace = target.kind === "work";
+      const switching = inlineConversationLoading && inlineConversationRoot.hasAttribute("data-better-codex-conversation-switching");
       const tabs = '<div class="better-codex-inline-tabs"><button type="button" data-planning-workspace-view="overview">' + te("概览") + '</button><button type="button" data-planning-workspace-view="' + (workWorkspace ? 'planning' : 'work') + '">' + te(workWorkspace ? "规划" : "工作") + '</button></div>';
       const stageTabs = workWorkspace ? "" : planningStageTabsMarkup(target.project_id, target.kind, target.kind === "planning" || inlineConversation.planning_available === true || context.charter?.status === "confirmed", true);
       const taskStart = workWorkspace && !task?.archived_at ? '<button type="button" data-work-create="' + escapeHtml2(target.issue_id) + '">' + icon("plus") + te("新建会话") + '</button>' : "";
@@ -6771,19 +6827,15 @@ var BetterCodexInjected = (() => {
       const detailsOpen = compact ? inlineConversationCompactDetailsOpen : inlineConversationDetailsOpen;
       const header = '<div class="better-codex-inline-heading-leading"><button type="button" data-inline-back aria-label="' + te(workWorkspace ? "返回任务看板" : "返回项目") + '">' + icon("back") + te("返回") + '</button><span class="better-codex-inline-title" title="' + escapeHtml2(title) + '">' + escapeHtml2(title) + '</span>' + tabs + '</div>' + stageTabs + '<div class="better-codex-inline-heading-actions">' + (workWorkspace ? '<nav class="bc-project-work-views" aria-label="' + te("工作视图") + '"><button type="button" data-inline-work-view="board">' + te("状态看板") + '</button><button type="button" aria-current="page" data-inline-work-view="conversations">' + te("工作会话") + '</button></nav>' : '') + taskStart + inlineConversationUnbindMarkup() + '<button type="button" data-inline-details aria-expanded="' + String(detailsOpen) + '">' + icon("docs") + te(workWorkspace ? "资料" : "总纲与任务") + '</button>' + (workWorkspace && !inlineConversation.read_only && !target.history_id && inlineConversation.mode !== "legacy_busy" && !issueExecutionRunning(task) ? '<button type="button" data-inline-restart>' + te("重新开始") + '</button>' : '') + '<button type="button" data-inline-retry aria-label="' + te("重新连接会话") + '" title="' + te("重新连接会话") + '">' + icon("refresh") + '</button></div>';
       const heading = inlineConversationRoot.querySelector(".better-codex-inline-heading");
-      if (header !== inlineConversationHeaderMarkup) { heading.innerHTML = header; inlineConversationHeaderMarkup = header; }
+      if (!switching && header !== inlineConversationHeaderMarkup) { heading.innerHTML = header; inlineConversationHeaderMarkup = header; }
       const projects = inlineConversationRoot.querySelector(".bc-planning-projects");
       const conversations = inlineConversationRoot.querySelector(".bc-planning-conversations");
       {
         const projectMarkup = projectSidebarMarkup();
         const conversationMarkup = workWorkspace ? workConversationListMarkup() : planningConversationListMarkup();
-        if (projectMarkup + conversationMarkup !== inlineConversationNavigationMarkup) {
-          const projectScroll = projects.querySelector(".bc-project-sidebar-list")?.scrollTop || 0;
-          const conversationScroll = conversations.querySelector("nav")?.scrollTop || 0;
-          projects.innerHTML = projectMarkup;
-          conversations.innerHTML = conversationMarkup;
-          if (projects.querySelector(".bc-project-sidebar-list")) projects.querySelector(".bc-project-sidebar-list").scrollTop = projectScroll;
-          if (conversations.querySelector("nav")) conversations.querySelector("nav").scrollTop = conversationScroll;
+        if (!switching && projectMarkup + conversationMarkup !== inlineConversationNavigationMarkup) {
+          updateInlineConversationNavigation(projects, projectMarkup, target);
+          updateInlineConversationNavigation(conversations, conversationMarkup, target);
           inlineConversationNavigationMarkup = projectMarkup + conversationMarkup;
         }
       }
@@ -6798,7 +6850,7 @@ var BetterCodexInjected = (() => {
         state.planningContexts[target.project_id] = context;
       }
       const markup = '<header class="better-codex-inline-details-toolbar"><strong>' + te(workWorkspace ? "任务资料" : "总纲与任务") + '</strong><button type="button" data-inline-details-close aria-label="' + te("收起资料") + '">' + icon("close") + te("收起") + '</button></header>' + (target.kind === "work" ? inlineWorkDetailsMarkup() : projectPlanningMarkup(project, { inline: true }));
-      if (markup !== inlineConversationDetailsMarkup) {
+      if (!switching && markup !== inlineConversationDetailsMarkup) {
         const scrollTop = details.scrollTop;
         details.innerHTML = markup;
         details.scrollTop = scrollTop;
@@ -6813,7 +6865,7 @@ var BetterCodexInjected = (() => {
       }
       const status = inlineConversationRoot.querySelector(".better-codex-inline-status");
       const waiting = mode === "legacy_busy" || mode === "handoff_required";
-      const statusMarkup = inlineConversationError ? '<p>' + escapeHtml2(inlineConversationError) + '</p><button type="button" data-inline-retry>' + te("重试") + '</button>' : waiting ? '<strong>' + te(mode === "legacy_busy" ? "任务正在运行" : "任务会话已准备好") + '</strong><p>' + te(mode === "legacy_busy" ? "完成后可在这里继续会话。" : "打开会话，继续当前任务。") + '</p>' + (mode === "handoff_required" ? '<button type="button" data-inline-handoff>' + te("打开会话") + '</button>' : "") + ((inlineConversation.history || []).length ? '<div class="better-codex-inline-history">' + inlineConversation.history.map((message) => '<article><strong>' + te(message.role === "user" ? "你" : "Codex") + '</strong>' + documentTextMarkup(message.markdown || message.text || message.content) + '</article>').join("") + '</div>' : "") : inlineConversationLoading && !inlineConversationCacheRestoring ? '<p>' + te("正在打开会话…") + '</p>' : "";
+      const statusMarkup = inlineConversationError ? '<p>' + escapeHtml2(inlineConversationError) + '</p><button type="button" data-inline-retry>' + te("重试") + '</button>' : waiting ? '<strong>' + te(mode === "legacy_busy" ? "任务正在运行" : "任务会话已准备好") + '</strong><p>' + te(mode === "legacy_busy" ? "完成后可在这里继续会话。" : "打开会话，继续当前任务。") + '</p>' + (mode === "handoff_required" ? '<button type="button" data-inline-handoff>' + te("打开会话") + '</button>' : "") + ((inlineConversation.history || []).length ? '<div class="better-codex-inline-history">' + inlineConversation.history.map((message) => '<article><strong>' + te(message.role === "user" ? "你" : "Codex") + '</strong>' + documentTextMarkup(message.markdown || message.text || message.content) + '</article>').join("") + '</div>' : "") : inlineConversationLoading && !inlineConversationCacheRestoring && !switching ? '<p>' + te("正在打开会话…") + '</p>' : "";
       if (status.innerHTML !== statusMarkup) status.innerHTML = statusMarkup;
       status.hidden = !statusMarkup && (!inlineConversationCacheRestoring || projectSurfaceCache?.nativeRetained === true);
       const nativeSurface = inlineConversationRoot.closest("[data-better-codex-inline-host]");
@@ -13456,8 +13508,14 @@ var BetterCodexInjected = (() => {
       if (!target || target === entry || target === agentsEntry || target === projectsEntry || target === moreEntry || target === profileEntry || target === usageEntry || target === themeEntry || target.closest("#" + PANEL_ID) || target.closest("#better-codex-native-conversation") || target.closest("#better-codex-dialog") || target.closest("#better-codex-agent-dialog") || target.closest("#better-codex-project-dialog") || target.closest("#better-codex-profile-dialog") || target.closest("#better-codex-avatar-picker")) return;
       const threadRow = target.closest(SELECTORS.threadRow);
       const threadId = threadRow ? nativeThreadId(threadRow) : "";
+      if (active && !suppressAgentOutside && Date.now() < suppressSessionClickUntil && threadRow) {
+        suppressSessionClickUntil = 0;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (threadId && nativeThreadOpenBypass === threadId) nativeThreadOpenBypass = "";
-      else if (!suppressAgentOutside && isManagedNativeThread(threadId) && isSidebarNavigationTarget(target)) {
+      else if (active && !suppressAgentOutside && isManagedNativeThread(threadId) && isSidebarNavigationTarget(target)) {
         event.preventDefault();
         event.stopImmediatePropagation();
         void perform(() => openThread(threadId));
@@ -13465,12 +13523,6 @@ var BetterCodexInjected = (() => {
       }
       if (!active || suppressAgentOutside) return;
       if (inlineConversation && !target.closest(SELECTORS.sidebarNavigation) && !isNativeRailDestination(target)) return;
-      if (Date.now() < suppressSessionClickUntil && target.closest(SELECTORS.threadRow)) {
-        suppressSessionClickUntil = 0;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
       if (isNativeRailDestination(target)) {
         close({ resume: true });
         return;
@@ -13610,6 +13662,13 @@ var BetterCodexInjected = (() => {
       delete window.__betterCodexInjection__;
       errorDialog = null;
     }
+    function syncInlineConversationRouteMount(records) {
+      if (!active || !inlineConversation) return;
+      const changed = records.some(record => record.type === "attributes" && record.attributeName === "data-app-shell-active-page" || record.type === "childList" && Array.from(record.addedNodes).some(node => node.matches?.('[data-app-shell-active-page="true"]') || node.querySelector?.('[data-app-shell-active-page="true"]')));
+      // MutationObserver runs before paint: carry the same shell to the new
+      // native page before its unstyled full-width content can be displayed.
+      if (changed) mountPanel();
+    }
     function mount() {
       document.removeEventListener("DOMContentLoaded", mount);
       if (destroyed || observer || !document.documentElement) return;
@@ -13617,9 +13676,10 @@ var BetterCodexInjected = (() => {
       observer = new MutationObserver((records) => {
         destroyRemovedComponents(records, [panel, inlineConversationRoot, projectSurfaceCache?.root].filter(Boolean));
         hydrateAddedIconButtons(records);
+        syncInlineConversationRouteMount(records);
         scheduleRefresh();
       });
-      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current", ATTRIBUTES.threadActive, "data-app-shell-right-panel-full-width"] });
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current", ATTRIBUTES.threadActive, "data-app-shell-active-page", "data-app-shell-right-panel-full-width"] });
       startLiveUpdates();
       if (HOST_KIND !== "web" && HOST_CAPABILITIES.nativeThreads !== false) startSessionRelay();
       refresh();

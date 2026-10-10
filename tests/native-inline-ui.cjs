@@ -161,17 +161,33 @@ class NodeFixture {
   ctx.active = false;
   const openedSidebarThreads = []; ctx.openThread = async id => openedSidebarThreads.push(id);
   const sidebarClick = target => { let prevented = 0, stopped = 0; ctx.onClick({ target: { closest: () => target }, preventDefault: () => prevented++, stopImmediatePropagation: () => stopped++ }); return { prevented, stopped }; };
-  assert.deepEqual(sidebarClick(knownRow), { prevented: 1, stopped: 1 });
-  assert.deepEqual(openedSidebarThreads, ['known-work-thread'], 'trusted Better Codex binding is mounted before native navigation even after reload');
+  const homeBinding = plain(ctx.state.nativeThreadLinks['known-work-thread']);
+  const beforeHomeClick = http.length;
+  assert.deepEqual(sidebarClick(knownRow), { prevented: 0, stopped: 0 }, 'native home opens a bound thread through the original native navigation');
+  assert.deepEqual(openedSidebarThreads, [], 'native home never opens the Better Codex workspace for a bound thread');
+  assert.equal(http.length, beforeHomeClick, 'native home does not look up or replay its trusted binding');
+  assert.deepEqual(plain(ctx.state.nativeThreadLinks['known-work-thread']), homeBinding, 'native navigation preserves the Better Codex binding');
   assert.deepEqual(sidebarClick(utility), { prevented: 0, stopped: 0 }, 'thread row menu keeps the original native event');
-  assert.equal(openedSidebarThreads.length, 1);
+  assert.equal(openedSidebarThreads.length, 0);
   const beforeUnknown = http.length;
   assert.deepEqual(sidebarClick(unknownRow), { prevented: 0, stopped: 0 });
   assert.equal(http.length, beforeUnknown, 'ordinary native chats are never paused for async lookup/replay');
   ctx.active = true;
   let sidebarCloses = 0; ctx.close = () => sidebarCloses++;
+  assert.deepEqual(sidebarClick(knownRow), { prevented: 1, stopped: 1 });
+  assert.deepEqual(openedSidebarThreads, ['known-work-thread'], 'the open management workspace still opens bound threads in place');
+  assert.equal(sidebarCloses, 0);
+  ctx.suppressSessionClickUntil = Date.now() + 500;
+  assert.deepEqual(sidebarClick(knownRow), { prevented: 1, stopped: 1 });
+  assert.equal(openedSidebarThreads.length, 1, 'a drag completion cannot open a bound conversation');
+  assert.equal(ctx.suppressSessionClickUntil, 0);
+  ctx.nativeThreadOpenBypass = 'known-work-thread';
+  assert.deepEqual(sidebarClick(knownRow), { prevented: 0, stopped: 0 }, 'explicit native navigation bypass keeps the original event');
+  assert.equal(ctx.nativeThreadOpenBypass, '');
+  assert.equal(openedSidebarThreads.length, 1);
+  assert.equal(sidebarCloses, 1);
   assert.deepEqual(sidebarClick(unknownRow), { prevented: 0, stopped: 0 });
-  assert.equal(sidebarCloses, 1, 'native sidebar exits the project shell without relying on location.pathname');
+  assert.equal(sidebarCloses, 2, 'native sidebar exits the project shell without relying on location.pathname');
   ctx.state.nativeThreadLinks = {
     current: { project_id: 'p1', kind: 'work', host_id: 'local', thread_id: 'current', issue_id: 'work', document: 'Must not register full project material' },
     foreign: { project_id: 'p1', kind: 'charter', host_id: 'remote', thread_id: 'foreign' },
@@ -384,7 +400,7 @@ class NodeFixture {
     normalizeSessionId: value => String(value || ''), READ_ONLY: false,
     statusLabels: { todo: '待办', backlog: '待规划', in_progress: '进行中', done: '已完成' },
     projectsByRecentActivity: projects => projects, projectRootPaths: () => ['D:\\workspace'], projectPlanningMarkup: () => 'Project charter and tasks', syncInlineConversationInteraction() {}, syncInlineNativeFilePanel() {} });
-  for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineTaskAcceptanceMarkup', 'inlineWorkDetailsMarkup', 'inlineConversationUnbindState', 'inlineConversationUnbindMarkup', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
+  for (const name of ['releaseProjectSurfaceCache', 'readProjectView', 'rememberProjectView', 'planningStageTabsMarkup', 'inlineConversationTarget', 'projectSidebarMarkup', 'planningConversationListMarkup', 'issueExecutionRunning', 'inlineWorkStateLabel', 'workConversationListMarkup', 'projectDocumentValue', 'documentTextMarkup', 'issuePlanDetailMarkup', 'planItemDetailsMarkup', 'inlineTaskAcceptanceMarkup', 'inlineWorkDetailsMarkup', 'inlineConversationUnbindState', 'inlineConversationUnbindMarkup', 'updateInlineConversationNavigation', 'renderInlineConversation']) vm.runInContext(readFunction(name), renderCtx);
   vm.runInContext(readFunction('inlineConversationColumnSizing'), renderCtx);
   vm.runInContext(readFunction('bindInlineConversationColumnResize'), renderCtx);
   renderCtx.renderInlineConversation();
