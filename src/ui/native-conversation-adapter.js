@@ -9,6 +9,77 @@
   const PREFIX = "better_codex_";
   const API_ROOT = "/api/native-conversations/";
   const LOCAL = "local";
+
+  // The account-list endpoint supports an authenticated request without the
+  // optional selected-workspace header. Some authenticated, scoped requests
+  // receive a Cloudflare challenge even though the unscoped account list works.
+  // Recover only that GET, once, and return the real selected membership to the
+  // unchanged native account/settings/policy checks. Never use guest responses.
+  root.__betterCodexAccountTransportRecovery__?.dispose?.();
+  const accountTransport = {
+    request: null, original: null, wrapper: null, disposed: false,
+    stats: { installed: false, attempted: 0, recovered: 0, rejected: 0 },
+    installRequest(request) {
+      if (this.disposed || this.request || typeof request?.safeGet !== "function" || typeof request.getRequestTarget !== "function") return false;
+      const original = request.safeGet, state = this;
+      const wrapper = async function (route, ...args) {
+        try { return await Reflect.apply(original, this, [route, ...args]); }
+        catch (primaryError) {
+          const options = args[0];
+          const version = options?.parameters?.path?.version;
+          if (state.disposed || primaryError?.status !== 403 || primaryError?.errorCode !== "cloudflare_challenge" ||
+              !(route === "/accounts/check/v4-2023-04-27" || route === "/accounts/check/{version}" && version === "v4-2023-04-27")) throw primaryError;
+          options?.signal?.throwIfAborted();
+          const headerKey = Object.keys(options?.additionalHeaders || {}).find(key => key.toLowerCase() === "chatgpt-account-id");
+          const accountId = headerKey && options.additionalHeaders[headerKey];
+          if (typeof accountId !== "string" || !accountId) throw primaryError;
+          const headers = { ...options.additionalHeaders };
+          // Remove all case variants, leaving authentication, cancellation and
+          // native identity assertions exactly as supplied by the native query.
+          for (const key of Object.keys(headers)) if (key.toLowerCase() === "chatgpt-account-id") delete headers[key];
+          const fallbackOptions = { ...options, additionalHeaders: headers };
+          const target = this.getRequestTarget(route, fallbackOptions);
+          const targetHeaders = Object.entries(target.headers || {});
+          if (targetHeaders.some(([key]) => key.toLowerCase() === "chatgpt-account-id") ||
+              !targetHeaders.some(([key, value]) => key.toLowerCase() === "x-openai-attach-auth" && String(value) === "1")) throw primaryError;
+          state.stats.attempted++;
+          try {
+            const data = await Reflect.apply(original, this, [route, fallbackOptions, ...args.slice(1)]);
+            options.signal?.throwIfAborted();
+            const record = data?.accounts && Object.values(data.accounts).find(item => item?.account?.account_id === accountId);
+            const account = record?.account;
+            const required = ["account_id", "account_user_id", "account_user_role", "structure", "plan_type", "is_deactivated", "is_zdr"];
+            if (!Array.isArray(data?.account_ordering) || !account || !required.every(key => Object.hasOwn(account, key)) ||
+                typeof account.account_user_id !== "string" || !account.account_user_id ||
+                typeof record.can_access_with_session !== "boolean" || !Object.hasOwn(record, "features") || !Object.hasOwn(record, "entitlement")) throw primaryError;
+            state.stats.recovered++;
+            return data;
+          } catch (error) { state.stats.rejected++; throw error; }
+        }
+      };
+      this.request = request; this.original = original; this.wrapper = wrapper;
+      request.safeGet = wrapper; this.stats.installed = true;
+      return true;
+    },
+    async installFromSource(source, sharedUrl) {
+      if (this.disposed || this.request) return;
+      const name = /["'`]([^"'`]*chatgpt-request-[^"'`]+\.js)["'`]/.exec(source)?.[1];
+      if (!name) return;
+      const url = new URL(name, sharedUrl);
+      if (url.protocol !== root.location?.protocol || url.host !== root.location?.host || !url.pathname.startsWith("/assets/")) return;
+      const namespace = await import(url.href);
+      if (!this.disposed) this.installRequest(namespace.Request);
+    },
+    dispose() {
+      this.disposed = true;
+      if (this.request?.safeGet === this.wrapper) this.request.safeGet = this.original;
+      this.stats.installed = false;
+    }
+  };
+  root.__betterCodexAccountTransportRecovery__ = accountTransport;
+  const retainedSharedUrl = root[HUB_KEY]?.host?.moduleUrl;
+  if (retainedSharedUrl && root.fetch) root.fetch(retainedSharedUrl).then(response => response.text())
+    .then(source => accountTransport.installFromSource(source, retainedSharedUrl)).catch(() => {});
   const toolNames = new Set([
     "better_codex_project_context_read", "better_codex_project_charter_save",
     "better_codex_project_charter_confirm", "better_codex_project_plan_save",
@@ -424,6 +495,7 @@
       const moduleUrl = new URL(sharedName, entry);
       if (moduleUrl.origin !== entry.origin) continue;
       const sharedSource = await (await root.fetch(moduleUrl.href)).text();
+      await accountTransport.installFromSource(sharedSource, moduleUrl.href).catch(() => {});
       const namespace = await import(moduleUrl.href);
       const initialName = /["'`]([^"'`]*app-initial-[^"'`]+\.js)["'`]/.exec(source)?.[1];
       const composer = initialName ? await import(new URL(initialName, entry).href) : null;
