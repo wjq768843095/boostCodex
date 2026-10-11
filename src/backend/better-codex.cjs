@@ -73223,9 +73223,14 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
     traceId = typeof request2.traceId === "string" && /^[A-Za-z0-9_-]{8,200}$/.test(request2.traceId) ? request2.traceId : (0, import_node_crypto3.randomUUID)();
     const accountMetadataPath = /^\/api\/dev\/account-metadata(?:\/cancel)?(?:[?]|$)/.test(path);
     if (!requestId || request2.token !== accessToken3 || !(accountMetadataPath || /^\/api\/(?:bootstrap(?:[?]|$)|account\/usage(?:[?]|$)|commands(?:[/?]|$)|profile(?:[?]|$)|scheduled-tasks(?:[/?]|$)|sessions(?:[/?]|$)|system\/(?:directories(?:\/create)?|directory)(?:[?]|$)|update(?:\/(?:install|check))?(?:[?]|$)|projects(?:[/?]|$)|issues(?:[/?]|$)|session-relay(?:[/?]|$)|agents(?:[/?]|$)|skills(?:[/?]|$)|project-tools(?:[/?]|$)|native-conversations(?:[/?]|$)|mockup\/(?:state|reset)(?:[?]|$)|settings\/auto-dispatch(?:[?]|$)|settings\/scheduler-model(?:[?]|$)|settings\/scheduler-reasoning-effort(?:[?]|$))/.test(path)) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) || /^\/api\/account\/usage(?:[?]|$)/.test(path) && method !== "GET" || accountMetadataPath && method !== "POST") throw new Error("invalid_bridge_request");
+    // Account metadata has a 12s upstream deadline. Allow it to complete and
+    // return a bounded result before the renderer's 18s deadline. Other bridge
+    // requests retain their normal timeout; cancellation remains short.
+    const requestTimeoutMs = /^\/api\/dev\/account-metadata(?:[?]|$)/.test(path) ? 15000 :
+      /^\/api\/dev\/account-metadata\/cancel(?:[?]|$)/.test(path) ? 5000 : cdpCommandTimeoutMs;
     const response = await fetch(`http://127.0.0.1:${runtimePort2}${path}`, {
       method,
-      signal: AbortSignal.timeout(cdpCommandTimeoutMs),
+      signal: AbortSignal.timeout(requestTimeoutMs),
       headers: {
         authorization: `Bearer ${accessToken3}`,
         "content-type": "application/json",

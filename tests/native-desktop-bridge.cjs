@@ -67,6 +67,13 @@ async function bridgeFixtures() {
     assert.equal(requests.at(-1).options.body, body);
     assert.equal(requests.at(-1).options.headers.authorization, `Bearer ${token}`);
     assert.equal(requests.at(-1).options.headers['x-better-codex-trace-id'], 'fixture-trace-id');
+    assert.equal(requests.at(-1).options.signal.timeout, route.startsWith('/api/dev/account-metadata/cancel') ? 5000 : route.startsWith('/api/dev/account-metadata') ? 15000 : 3000);
+  }
+  for (const timeoutMs of [1, 1000000]) {
+    await request('/api/dev/account-metadata?locale=zh-CN', 'POST', { timeoutMs });
+    assert.equal(requests.at(-1).options.signal.timeout, 15000, 'metadata deadline is bounded by the bridge, not arbitrary caller input');
+    await request('/api/skills', 'GET', { timeoutMs });
+    assert.equal(requests.at(-1).options.signal.timeout, 3000, 'metadata recovery cannot extend unrelated routes');
   }
   for (const [route, extra] of [
     ['/api/skills', { token: 'wrong-token' }],

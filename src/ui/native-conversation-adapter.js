@@ -959,7 +959,7 @@
         signal?.addEventListener("abort", abort, { once: true });
         if (signal?.aborted) { abort(); return; }
         Promise.resolve().then(() => settled ? null : options.api("/api/dev/account-metadata", {
-          method: "POST", body: JSON.stringify({ requestId, ...identity }), timeoutMs: 15000
+          method: "POST", body: JSON.stringify({ requestId, ...identity }), timeoutMs: 18000
         })).then(data => settle(null, data), error => settle(error));
       });
     };
