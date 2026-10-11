@@ -89,7 +89,7 @@ function fixture(first = challenge(), fallback = data()) {
   assert.equal(f.bridgeCalls[0].signal, f.options.signal);
   assert.deepEqual(JSON.parse(JSON.stringify(f.bridgeCalls[0].identity)), { accountId: 'workspace', userId: 'native-user' });
   assert.equal(f.calls[0].options, f.options);
-  assert.equal(f.asserted, 1);
+  assert.equal(f.asserted, 2, 'identity assertions run before and after the local transport');
   assert.equal(f.recovery.stats.recovered, 1);
 
   for (const error of [Object.assign(new Error('auth'), { status: 401 }), Object.assign(new Error('policy'), { status: 403, errorCode: 'invalid_workspace_selected' }), new Error('timeout')]) {

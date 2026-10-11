@@ -70,11 +70,40 @@
       if (this.disposed || this.request || typeof request?.safeGet !== "function" || typeof request.getRequestTarget !== "function") return false;
       const original = request.safeGet, state = this;
       const wrapper = async function (route, ...args) {
-        try { return await Reflect.apply(original, this, [route, ...args]); }
+        const originalOptions = args[0];
+        const metadataRoute = route === "/accounts/check/v4-2023-04-27" || route === "/accounts/check/{version}" && originalOptions?.parameters?.path?.version === "v4-2023-04-27";
+        let primaryArgs = args, deadlineController, deadlineTimer, forwardAbort, deadlineFired = false, boundedIdentity;
+        const clearDeadline = () => {
+          if (deadlineTimer != null) { root.clearTimeout(deadlineTimer); deadlineTimer = null; }
+          if (forwardAbort) { originalOptions?.signal?.removeEventListener("abort", forwardAbort); forwardAbort = null; }
+        };
+        // Use the native cancellation hook for this personal metadata GET.
+        // Native auth/routing still run; a timeout is not policy approval.
+        if (metadataRoute && !state.disposed && typeof state.bridge === "function" && typeof root.AbortController === "function" && typeof root.setTimeout === "function") {
+          const key = Object.keys(originalOptions?.additionalHeaders || {}).find(key => key.toLowerCase() === "chatgpt-account-id");
+          const accountId = key && originalOptions.additionalHeaders[key];
+          const headers = this.getRequestTarget(route, originalOptions).headers || {};
+          boundedIdentity = typeof accountId === "string" && state.identityFor(accountId);
+          if (boundedIdentity && Object.entries(headers).some(([key, value]) => key.toLowerCase() === "x-openai-attach-auth" && String(value) === "1")) {
+            deadlineController = new root.AbortController();
+            forwardAbort = () => deadlineController.abort(originalOptions.signal.reason);
+            originalOptions.signal?.addEventListener("abort", forwardAbort, { once: true });
+            if (originalOptions.signal?.aborted) forwardAbort();
+            deadlineTimer = root.setTimeout(() => {
+              deadlineFired = true;
+              deadlineController.abort(new DOMException("Account metadata request timed out", "TimeoutError"));
+            }, 10000);
+            primaryArgs = [{ ...originalOptions, signal: deadlineController.signal }, ...args.slice(1)];
+          }
+        }
+        try { return await Reflect.apply(original, this, [route, ...primaryArgs]); }
         catch (primaryError) {
+          clearDeadline();
           const options = args[0];
           const version = options?.parameters?.path?.version;
-          if (state.disposed || primaryError?.status !== 403 || primaryError?.errorCode !== "cloudflare_challenge" ||
+          const ownTimeout = deadlineFired && deadlineController?.signal.aborted &&
+            (primaryError === deadlineController.signal.reason || primaryError?.name === "AbortError" || primaryError?.status === 499);
+          if (state.disposed || !(primaryError?.status === 403 && primaryError?.errorCode === "cloudflare_challenge" || ownTimeout) ||
               !(route === "/accounts/check/v4-2023-04-27" || route === "/accounts/check/{version}" && version === "v4-2023-04-27")) throw primaryError;
           options?.signal?.throwIfAborted();
           const headerKey = Object.keys(options?.additionalHeaders || {}).find(key => key.toLowerCase() === "chatgpt-account-id");
@@ -85,6 +114,8 @@
           if (!targetHeaders.some(([key, value]) => key.toLowerCase() === "x-openai-attach-auth" && String(value) === "1") || typeof state.bridge !== "function") throw primaryError;
           const identity = state.identityFor(accountId);
           if (!identity) throw primaryError;
+          options.assertRequestCurrent?.();
+          if (ownTimeout && identity.userId !== boundedIdentity?.userId) throw new DOMException("Account identity changed", "AbortError");
           state.stats.attempted++;
           state.stats.lastFailureStage = "transport";
           try {
@@ -102,7 +133,7 @@
             state.stats.lastFailureStage = null;
             return data;
           } catch (error) { state.stats.rejected++; if (error?.name === "AbortError") state.stats.lastFailureStage = "aborted"; throw error; }
-        }
+        } finally { clearDeadline(); }
       };
       this.request = request; this.original = original; this.wrapper = wrapper;
       request.safeGet = wrapper; this.stats.installed = true;
