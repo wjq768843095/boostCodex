@@ -41,39 +41,52 @@ var BetterCodexWorkflowPanel = (() => {
     return url.href;
   }
 
+  function nativeDriver(initial, getScope) {
+    const host = () => initial.UPt.pages.getHost(OWNER, TAB);
+    return {
+      getScope, host,
+      snapshot: () => initial.UPt.getSnapshot(OWNER, TAB),
+      async authRequired() {
+        const webview = host()?.webview;
+        if (typeof webview?.executeJavaScript !== "function") return false;
+        try { return await webview.executeJavaScript("document.documentElement.dataset.panelAuth === 'required'") === true; }
+        catch { return false; }
+      },
+      open(scope, initialUrl) {
+        const opened = initial.Bpt(scope, {
+          browserConversationId: OWNER, browserTabId: TAB, browserHostDisplayName: "面板",
+          cwd: null, target: "right", source: "manual", initiator: "side_panel_menu",
+          ...(initialUrl ? { initialUrl } : {})
+        });
+        const tab = opened && scope.get(initial.sgn.tabById$, TAB);
+        // Native BrowserOpenHandler uses this helper for full-width intent;
+        // Bpt itself does not consume a presentationIntent option.
+        if (tab) initial.xPt(scope, { kind: "content", tab }, { mode: "full" });
+        return opened;
+      },
+      active() {
+        const page = host();
+        // Native host presentation is authoritative across full/split layouts.
+        // Legacy panel signals can be false while this global tab is painted.
+        return !!page && !page.disposed && page.getBrowserTabId() === TAB && page.isPainted();
+      },
+      hide: scope => initial.rpn(scope, "right"),
+      retainOnClose(scope) {
+        initial.sgn.updateTab(scope, TAB, { onClose: () => {
+          if (scope.get(initial.sgn.activeTab$)?.tabId === TAB) initial.rpn(scope, "right");
+        } });
+      }
+    };
+  }
+
   async function loadNative() {
     if (!nativePromise) nativePromise = (async () => {
       const [shared, initial] = await Promise.all([import(assetUrl("app-shared")), import(assetUrl("app-initial"))]);
       if (typeof shared.son !== "function" || !shared.Q4 || !shared.z1t ||
-          typeof initial.Bpt !== "function" || typeof initial.rpn !== "function" ||
+          typeof initial.Bpt !== "function" || typeof initial.rpn !== "function" || typeof initial.xPt !== "function" ||
           !initial.sgn?.updateTab || !initial.UPt?.pages?.getHost) throw new Error("panel_native_contract_changed");
       const getScope = () => findScope(shared, document);
-      return {
-        getScope,
-        host: () => initial.UPt.pages.getHost(OWNER, TAB),
-        snapshot: () => initial.UPt.getSnapshot(OWNER, TAB),
-        async authRequired() {
-          const webview = initial.UPt.pages.getHost(OWNER, TAB)?.webview;
-          if (typeof webview?.executeJavaScript !== "function") return false;
-          try { return await webview.executeJavaScript("document.documentElement.dataset.panelAuth === 'required'") === true; }
-          catch { return false; }
-        },
-        open: (scope, initialUrl) => initial.Bpt(scope, {
-          browserConversationId: OWNER, browserTabId: TAB, browserHostDisplayName: "面板",
-          cwd: null, target: "right", source: "manual", initiator: "side_panel_menu",
-          ...(initialUrl ? { initialUrl } : {})
-        }),
-        active: scope => scope.get(initial.sgn.activeTab$)?.tabId === TAB &&
-          !!scope.get(initial.nGn) && !!scope.get(initial.rGn),
-        hide: scope => initial.rpn(scope, "right"),
-        retainOnClose(scope) {
-          // Only this tab changes close behavior. Native tab removal hides its
-          // presentation; the global webContents remains available for reopen.
-          initial.sgn.updateTab(scope, TAB, { onClose: () => {
-            if (scope.get(initial.sgn.activeTab$)?.tabId === TAB) initial.rpn(scope, "right");
-          } });
-        }
-      };
+      return nativeDriver(initial, getScope);
     })().catch(error => { nativePromise = null; throw error; });
     return nativePromise;
   }
@@ -165,7 +178,7 @@ var BetterCodexWorkflowPanel = (() => {
       destroy() { destroyed = true; }
     };
   }
-  return { create };
+  return { create, nativeDriver };
 })();
 if (typeof window !== "undefined") window.BetterCodexWorkflowPanel = BetterCodexWorkflowPanel;
 if (typeof module !== "undefined" && module.exports) module.exports = BetterCodexWorkflowPanel;

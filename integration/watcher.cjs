@@ -18,7 +18,7 @@ async function reconcile(){
   const live=await lib.api('/api/dev/status','GET',{},true);if(!live?.ready){pending=true;lib.status({phase:'waiting_for_idle',pendingRevision:hash.sourceHash,blocking:live?.blocking||null});return;}
   if(hash.backendHash===old.backendHash){
    const previous=fs.readFileSync(lib.LIVE);lib.atomic(lib.LIVE,lib.uiBundle());
-   try{await refresh();lib.save(path.join(lib.DEV,'state.json'),{...old,...hash});lib.status({phase:'ready',error:null,revision:hash.sourceHash});lib.log('ui_applied',{revision:hash.sourceHash});pending=false;rejected=null;}
+   try{await refresh();await lib.refreshWorkflowService?.();lib.save(path.join(lib.DEV,'state.json'),{...old,...hash});lib.status({phase:'ready',error:null,revision:hash.sourceHash});lib.log('ui_applied',{revision:hash.sourceHash});pending=false;rejected=null;}
    catch(e){lib.atomic(lib.LIVE,previous);try{await refresh();}catch{}rejected=hash.sourceHash;lib.status({phase:'rolled_back',error:e.message});lib.log('ui_rollback',{error:e.message});}return;
   }
   const build=lib.snapshot(hash);let view;try{view=await cdp(preserveExpression());}catch{}
@@ -28,7 +28,7 @@ async function reconcile(){
   const priorUi=fs.readFileSync(lib.LIVE);let stopped=false;
   try{
    await lib.shutdown();stopped=true;lib.save(path.join(lib.DEV,'state.json'),{current:build,previous:old.current,...hash});lib.atomic(lib.LIVE,lib.uiBundle(build));
-   await lib.waitReady(lib.spawnCore(['runtime'],build));await refresh(view);lib.atomic(lib.ENTRY,fs.readFileSync(path.join(build,'integration/entry.cjs')));
+   await lib.waitReady(lib.spawnCore(['runtime'],build));await refresh(view);await lib.refreshWorkflowService?.();lib.atomic(lib.ENTRY,fs.readFileSync(path.join(build,'integration/entry.cjs')));
    lib.status({phase:'ready',error:null,revision:hash.sourceHash});lib.log('backend_applied',{revision:hash.sourceHash});pending=false;rejected=null;
    // Restart the accepted supervisor so changes to its own source also become active.
    setTimeout(()=>finish(true),50);

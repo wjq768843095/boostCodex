@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { create } = require('../src/ui/workflow-panel.js');
+const { create, nativeDriver } = require('../src/ui/workflow-panel.js');
 
 function fixture() {
   let scope = { route: '/' }, host = null, snapshot = null, visible = false, authRequired = false;
@@ -31,6 +31,31 @@ function fixture() {
 }
 
 async function main() {
+  const tabId = 'manual:better-codex-global-workflow-panel', tab = { tabId };
+  const tabSignal = Symbol('tab'), activeSignal = Symbol('active');
+  let painted = true, nativeTabId = tabId;
+  const presentationCalls = [], nativeScope = { get: signal => signal === tabSignal || signal === activeSignal ? tab : false };
+  const nativeHost = { disposed: false, getBrowserTabId: () => nativeTabId, isPainted: () => painted };
+  const initial = {
+    nGn: Symbol('legacy-mounted'), rGn: Symbol('legacy-expanded'),
+    UPt: { pages: { getHost: () => nativeHost }, getSnapshot: () => ({ committedUrl: 'http://127.0.0.1:40123/' }) },
+    sgn: { tabById$: tabSignal, activeTab$: activeSignal, updateTab() {} },
+    Bpt: () => { painted = true; return tabId; },
+    xPt: (scope, target, intent) => { presentationCalls.push({ scope, target, intent }); return true; },
+    rpn: () => { painted = false; }
+  };
+  const nativePanel = create({ native: nativeDriver(initial, () => nativeScope), getPanelUrl: async () => 'http://127.0.0.1:40123/' });
+  assert.deepEqual(nativePanel.capture(), { open: true }, 'a painted global tab is visible even with both legacy panel flags false');
+  assert.equal(nativePanel.hide(), true, 'visible non-expanded presentation can be hidden');
+  assert.deepEqual(nativePanel.capture(), { open: false });
+  assert.equal(await nativePanel.open(), true);
+  assert.deepEqual(presentationCalls[0].target, { kind: 'content', tab });
+  assert.deepEqual(presentationCalls[0].intent, { mode: 'full' }, 'native full-width helper receives the existing global tab');
+  nativeTabId = 'manual:another-page';
+  assert.deepEqual(nativePanel.capture(), { open: false }, 'a foreign painted host cannot be mistaken for the workflow panel');
+  nativeTabId = tabId; nativeHost.disposed = true;
+  assert.deepEqual(nativePanel.capture(), { open: false });
+
   const f = fixture(), panel = create(f.options);
   assert.equal(await panel.open(), true);
   const host = f.host();
