@@ -31,6 +31,14 @@
     return null;
   }
   function activeEditor(editor) { return editor.isConnected && !!editor.getClientRects().length && !editor.closest('[inert]'); }
+  function closeUndoGroup(controller) {
+    // The native ProseMirror history owns undo/redo. Close its current group
+    // using the key requested by that plugin, without depending on key suffixes.
+    const transaction = controller.view.state.tr;
+    const getMeta = transaction.getMeta.bind(transaction);
+    transaction.getMeta = key => /^closeHistory\$(?:\d+)?$/.test(typeof key === 'string' ? key : key?.key || '') ? true : getMeta(key);
+    controller.view.dispatch(transaction.setMeta('addToHistory', false));
+  }
   function conversationContext(editor) {
     let ownerId = null;
     const inspected = new Set();
@@ -157,7 +165,7 @@
       contextMode.value = settings.contextMode || 'recent'; field("关联上下文", contextMode);
       const prompt = document.createElement("textarea"); prompt.value = settings.systemPrompt; prompt.maxLength = 12000; prompt.required = true;
       field("优化指令", prompt);
-      const hint = document.createElement("p"); hint.textContent = "选择最近对话时，当前聊天最近 6 轮的文字会随本次输入发送给 DeepSeek。优化结果先预览，确认后替换输入框。快捷键：Ctrl + Alt + P。";
+      const hint = document.createElement("p"); hint.textContent = "选择最近对话时，当前聊天最近 6 轮的文字会随本次输入发送给 DeepSeek。优化成功后直接替换输入框，可按 Ctrl + Z 还原。优化快捷键：Ctrl + Alt + P。";
       const error = document.createElement("p"); error.className = "bc-prompt-error"; error.setAttribute("role", "alert");
       const actions = document.createElement("div"); actions.className = "bc-prompt-actions";
       const save = button("保存", () => {}); save.type = "submit"; save.className = "bc-prompt-save";
@@ -179,37 +187,14 @@
     }
     function apply(job, text) {
       if (!unchanged(job)) return false;
+      closeUndoGroup(job.controller);
       job.controller.setPromptText(text, { preserveLibraryFileMentions: true });
+      closeUndoGroup(job.controller);
       job.controller.focus(); return true;
     }
     function remember(job, bar) {
       bar.previous = { ...job, result: job.controller.view.state.doc, plainTextMode: job.controller.plainTextMode };
       bar.restore.hidden = false;
-    }
-    function preview(job, text, bar) {
-      const current = modal("优化结果", bar.optimize);
-      const hint = document.createElement("p"); hint.textContent = job.contextMode === 'recent' ? `已关联当前聊天 ${job.contextCount} 条近期消息${job.truncated ? '（较长内容已截取）' : ''}。确认内容后再替换输入框。` : "仅根据当前输入优化。确认内容后再替换输入框。";
-      const originalLabel = document.createElement("label"); const original = document.createElement("textarea");
-      original.value = job.text; original.readOnly = true; original.setAttribute("aria-label", "原始输入"); originalLabel.append(document.createTextNode("原始输入"), original);
-      const resultLabel = document.createElement("label");
-      const result = document.createElement("textarea"); result.value = text; result.setAttribute("aria-label", "优化后的提示词"); resultLabel.append(document.createTextNode("优化结果（可修改）"), result);
-      const error = document.createElement("p"); error.className = "bc-prompt-error"; error.setAttribute("role", "alert");
-      const actions = document.createElement("div"); actions.className = "bc-prompt-actions";
-      actions.append(button("关闭", close), button("复制", async () => {
-        try { await navigator.clipboard.writeText(result.value); if (dialog === current) error.textContent = "已复制"; }
-        catch { result.focus(); result.select(); error.textContent = "请按 Ctrl + C 复制。"; }
-      }), button("替换输入框", () => {
-        if (!activeEditor(job.editor) || root.location.href !== job.route || conversationId(job.editor) !== job.conversationId || nativeController(job.editor) !== job.controller) { error.textContent = "请返回原聊天后重新优化。"; return; }
-        if (!unchanged(job) && !job.overwriteConfirmed) {
-          job.overwriteConfirmed = job.controller.view.state.doc;
-          error.textContent = "输入框内容已变化。再次点击替换，将覆盖当前文字。"; return;
-        }
-        if (!unchanged(job) && !job.controller.view.state.doc.eq(job.overwriteConfirmed)) { job.overwriteConfirmed = null; error.textContent = "输入框再次变化，请重新确认替换。"; return; }
-        if (!result.value.trim()) { error.textContent = "优化结果不能为空。"; return; }
-        job.doc = job.controller.view.state.doc;
-        if (apply(job, result.value)) { remember(job, bar); close(); bar.status.textContent = "已替换。"; }
-      }));
-      current.append(hint, originalLabel, resultLabel, error, actions);
     }
     async function optimize(editor, bar) {
       if (busy || disposed || !activeEditor(editor)) return;
@@ -232,7 +217,10 @@
         if (disposed) return;
         if (typeof response.text !== "string" || !response.text.trim()) throw new Error("empty_result");
         if (Number.isInteger(response.contextCount)) job.contextCount = response.contextCount;
-        bar.status.textContent = "优化完成，请查看结果。"; preview(job, response.text, bar);
+        if (apply(job, response.text)) {
+          remember(job, bar);
+          bar.status.textContent = job.truncated ? "已优化（较长上下文已截取），Ctrl + Z 还原。" : "已优化，Ctrl + Z 还原。";
+        } else bar.status.textContent = "输入内容或聊天已变化，未替换，请重新优化。";
       } catch (error) { if (!disposed) bar.status.textContent = errorText(error); }
       finally { busy = false; for (const item of bars.values()) item.optimize.disabled = false; }
     }

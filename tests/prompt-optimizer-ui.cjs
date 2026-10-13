@@ -30,7 +30,8 @@ function fixture({ mode = 'recent' } = {}) {
   const editor = document.createElement('div'); editor.setAttribute('data-codex-composer', 'true'); editor.setAttribute('contenteditable', 'true'); surface.append(editor);
   const doc = text => ({ text, eq(other) { return this === other; }, descendants(callback) { callback({ type: { name: 'paragraph' } }); } });
   const writes = [], calls = [];
-  const controller = { view: { dom: editor, state: { doc: doc('原始提示词') } }, getPersistedText() { return this.view.state.doc.text; }, setPromptText(text) { writes.push(text); this.view.state.doc = doc(text); }, restoreDocument(previous) { this.view.state.doc = previous; }, focus() { editor.focus(); } };
+  const state = { doc: doc('原始提示词'), get tr() { const meta = { sentinel: 42 }; return { getMeta(key) { return meta[typeof key === 'string' ? key : key.key]; }, setMeta(key, value) { meta[key] = value; return this; } }; } };
+  const controller = { historyBoundaries: 0, view: { dom: editor, state, dispatch(transaction) { assert.equal(transaction.getMeta('sentinel'), 42); assert.equal(transaction.getMeta('addToHistory'), false); if (transaction.getMeta({key:'closeHistory$23'})) controller.historyBoundaries++; } }, getPersistedText() { return this.view.state.doc.text; }, setPromptText(text) { writes.push(text); this.view.state.doc = doc(text); }, restoreDocument(previous) { this.view.state.doc = previous; }, focus() { editor.focus(); } };
   const thread = { memoizedProps: { conversationId: 'fixture-chat' }, child: { memoizedProps: { turn: { turnId: 'one', turnStartedAtMs: 1, params: { threadId: 'fixture-chat' }, items: [
     { type: 'userMessage', content: [{ type: 'text', text: '只调整顶部按钮，保留布局' }, { type: 'image', url: 'private-attachment' }] },
     { type: 'agentMessage', phase: 'commentary', text: '内部进度不发送' },
@@ -53,30 +54,29 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
   assert.equal(f.calls.length, 1, 'double click sends one request'); assert.equal(f.optimize.disabled, true);
   assert.equal(JSON.parse(f.calls[0].options.body).text, '原始提示词');
   assert.deepEqual(JSON.parse(f.calls[0].options.body).context, [{ role: 'user', content: '只调整顶部按钮，保留布局' }, { role: 'assistant', content: '建议将顶部按钮缩小' }]);
-  f.complete({ text: '优化后的提示词' }); await flush(); assert.deepEqual(f.writes, [], 'preview must precede all writes');
-  function clickLabel(test, text) { const search = test.document.querySelector('.bc-prompt-dialog'); const pending = [search]; while (pending.length) { const node = pending.pop(); if (node.tagName === 'button' && node.textContent === text) { node.dispatch('click'); return; } pending.push(...node.children); } assert.fail('button missing: ' + text); }
-  clickLabel(f, '替换输入框'); assert.deepEqual(f.writes, ['优化后的提示词']);
+  f.complete({ text: '优化后的提示词' }); await flush(); assert.deepEqual(f.writes, ['优化后的提示词'], 'successful optimization automatically replaces the draft');
+  assert.equal(f.document.querySelector('.bc-prompt-dialog'), undefined, 'optimization never opens a dialog');
+  assert.equal(f.controller.historyBoundaries, 2, 'replacement is separated from prior typing and following edits in native history');
   f.document.querySelector('.bc-prompt-tools').children[1].dispatch('click'); assert.equal(f.controller.getPersistedText(), '原始提示词', 'restore returns the exact original document');
   f.document.dispatch('keydown', { target: f.editor, code: 'KeyP', ctrlKey: true, altKey: true, isComposing: true }); assert.equal(f.calls.length, 1);
   f.document.dispatch('keydown', { target: f.editor, code: 'KeyP', ctrlKey: true, altKey: true }); await flush(); assert.equal(f.calls.length, 2);
   f.controller.view.state.doc = f.doc('用户新输入'); f.complete({ text: '迟到的优化结果' }); await flush();
   assert.equal(f.writes.length, 1, 'editing during request must preserve the new draft');
-  assert.equal(f.document.querySelector('.bc-prompt-dialog').open, true);
-  clickLabel(f, '替换输入框'); assert.equal(f.writes.length, 1, 'changed draft requires explicit overwrite confirmation');
-  clickLabel(f, '替换输入框'); assert.equal(f.writes.at(-1), '迟到的优化结果');
+  assert.equal(f.document.querySelector('.bc-prompt-dialog'), undefined);
+  assert.equal(f.controller.getPersistedText(), '用户新输入');
   f.instance.destroy(); assert.equal(f.document.querySelector('.bc-prompt-tools'), undefined);
   const route = fixture(); route.optimize.dispatch('click'); await flush(); route.window.location.href += '-other'; route.complete({ text: '另一会话结果' }); await flush(); assert.equal(route.writes.length, 0);
-  clickLabel(route, '替换输入框'); assert.equal(route.writes.length, 0);
+  assert.equal(route.document.querySelector('.bc-prompt-dialog'), undefined);
   route.instance.destroy();
   const gone = fixture(); gone.optimize.dispatch('click'); await flush(); gone.instance.destroy(); gone.complete({ text: '卸载后的结果' }); await flush(); assert.equal(gone.writes.length, 0);
   const failed = fixture(); failed.optimize.dispatch('click'); await flush(); failed.fail(new Error('敏感原始报错')); await flush(); assert.equal(failed.writes.length, 0); assert.equal(failed.optimize.disabled, false); failed.instance.destroy();
   const stale = fixture(); const liveRoot = {}; const oldRoot = { stateNode: { current: liveRoot } };
   const old = stale.editor.__reactFiber$fixture; old.return = oldRoot; old.alternate = { memoizedProps: { composerController: stale.controller }, return: liveRoot };
-  stale.optimize.dispatch('click'); await flush(); stale.complete({ text: '当前分支结果' }); await flush(); clickLabel(stale, '替换输入框'); assert.equal(stale.writes[0], '当前分支结果'); stale.instance.destroy();
+  stale.optimize.dispatch('click'); await flush(); stale.complete({ text: '当前分支结果' }); await flush(); assert.equal(stale.writes[0], '当前分支结果'); stale.instance.destroy();
   const input = fixture({ mode: 'input' }); input.optimize.dispatch('click'); await flush(); assert.deepEqual(JSON.parse(input.calls[0].options.body).context, []); input.instance.destroy();
-  const hidden = fixture(); hidden.optimize.dispatch('click'); await flush(); hidden.editor.hidden = true; hidden.complete({ text: '隐藏聊天结果' }); await flush(); clickLabel(hidden, '替换输入框'); assert.equal(hidden.writes.length, 0); hidden.instance.destroy();
+  const hidden = fixture(); hidden.optimize.dispatch('click'); await flush(); hidden.editor.hidden = true; hidden.complete({ text: '隐藏聊天结果' }); await flush(); assert.equal(hidden.writes.length, 0); hidden.instance.destroy();
   const unavailable = fixture(); unavailable.thread.child = null; unavailable.optimize.dispatch('click'); await flush(); assert.equal(unavailable.calls.length, 0, 'missing history must not silently optimize without context'); unavailable.instance.destroy();
   const bounded = f.window.BetterCodexPromptOptimizer.limitContext(Array.from({length:14}, (_,i)=>({role:'user',content:String(i).repeat(10000)})));
   assert.ok(bounded.messages.length<=12); assert.ok(bounded.messages.reduce((sum,m)=>sum+m.content.length,0)<=32000); assert.equal(bounded.truncated,true);
-  console.log('PASS: scoped recent context excludes other chats/tools/commentary/attachments, input-only mode, bounds, preview confirmation, draft/visibility guards, native restore and hotkey (mock responses only)');
+  console.log('PASS: scoped recent context, automatic replacement without dialogs, native history boundaries, draft/visibility guards, restore and hotkey (mock responses only)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

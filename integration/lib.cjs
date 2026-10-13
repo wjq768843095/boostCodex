@@ -13,7 +13,8 @@ function sources(){return [...list(path.join(ROOT,'src')),...list(path.join(ROOT
 function uiBundle(base=ROOT){
  const adapter=path.join(base,'src/ui/native-conversation-adapter.js');
  const optimizer=path.join(base,'src/ui/prompt-optimizer.js');
- return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
+ const shortcut=path.join(base,'src/modules/prompt-optimizer-shortcut.js');
+ return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
 }
 function hashes(files=sources()){
  const full=crypto.createHash('sha256'),backend=crypto.createHash('sha256');for(const file of files){const rel=path.relative(ROOT,file),data=fs.readFileSync(file);full.update(rel).update(data);if(!rel.startsWith('src'+path.sep+'ui'+path.sep))backend.update(rel).update(data);}
