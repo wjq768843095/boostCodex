@@ -128,5 +128,21 @@ function fixture(delay = Infinity, status = 200, body = { metadata: true }) {
   assert.deepEqual(ordinary.deadlines, [8000], 'other endpoints retain the ordinary bridge deadline');
   await ordinary.advance(8000); await unchanged;
   assert.equal(ordinary.requests[0].signal.aborted, true);
+  const optimizer = fixture(60000, 200, { text: 'mock optimized prompt' });
+  const optimization = optimizer.begin('/api/dev/prompt-optimizer/optimize?locale=zh-CN', 'POST');
+  assert.deepEqual(optimizer.deadlines, [95000]);
+  await optimizer.advance(60000); await optimization;
+  assert.equal(optimizer.resolved[0].result.value.text, 'mock optimized prompt');
+  for (const method of ['GET', 'POST']) {
+    const settings = fixture(1, 200, { hasApiKey: false });
+    const pendingSettings = settings.begin('/api/dev/prompt-optimizer/settings', method);
+    await settings.advance(1); await pendingSettings;
+    assert.equal(settings.resolved[0].result.ok, true);
+  }
+  for (const [route, method] of [['/api/dev/prompt-optimizer/optimize', 'GET'], ['/api/dev/prompt-optimizer/settings/extra', 'POST'], ['/api/dev/prompt-optimizer/optimize', 'DELETE']]) {
+    const rejected = fixture(); await rejected.begin(route, method);
+    assert.equal(rejected.requests.length, 0, 'invalid optimizer routes or methods cannot reach the runtime');
+    assert.equal(rejected.resolved[0].result.ok, false);
+  }
   console.log('account bridge deadlines: virtual 9s success, 12s safe error, 15s abort cleanup, 5s cancellation and unchanged ordinary timeout passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

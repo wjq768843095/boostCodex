@@ -1,14 +1,41 @@
 const fs=require('node:fs'),path=require('node:path');
 const metadataRequests=new Map(),metadataCancelled=new Map();
+const optimizerRequests=new Set();
 const metadataRequestId=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function idle(worker){
  const result=worker.updateDrainStatus();
  let host={};try{host=JSON.parse(fs.readFileSync(path.join(process.env.BETTER_CODEX_HOME,'run/session-host-status.json'),'utf8'));}catch{}
  const hostBusy=!!host.command_in_flight||(host.active_turns||[]).length>0||(host.pending_requests||0)>0||(host.queued_deliveries||0)>0;
- return {...result,ready:result.ready&&!hostBusy,sessionHostBusy:hostBusy};
+ return {...result,ready:result.ready&&!hostBusy&&!optimizerRequests.size,sessionHostBusy:hostBusy,promptOptimizerBusy:optimizerRequests.size>0};
 }
 async function handle({url,method,request,response,worker,readBody,sendJson,stopHost}){
  const dev=path.join(process.env.BETTER_CODEX_LOCAL_PROJECT,'.dev');
+ // /api/dev/ is authenticated by the core before entering this extension.
+ if(url.pathname==='/api/dev/prompt-optimizer/settings'||url.pathname==='/api/dev/prompt-optimizer/optimize'){
+  const optimizer=require('../src/modules/prompt-optimizer.cjs');
+  const controller=new AbortController();
+  const disconnected=()=>{if(!response.writableEnded)controller.abort();};
+  response.once('close',disconnected);request.once('aborted',disconnected);
+  try{
+   if(response.destroyed||request.aborted)return true;
+   let data;
+   if(url.pathname.endsWith('/settings')&&method==='GET')data=optimizer.getSettings();
+   else if(method==='POST'){
+    const body=await readBody(request,optimizer.LIMITS.bodyBytes);
+    if(response.destroyed||request.aborted||controller.signal.aborted)return true;
+    if(url.pathname.endsWith('/settings'))data=optimizer.saveSettings(body);
+    else{
+     if(worker?.__devDraining)throw Object.assign(new Error(),{code:'PROMPT_OPTIMIZER_BUSY'});
+     optimizerRequests.add(controller);data=await optimizer.optimize(body,{signal:controller.signal});
+    }
+   }else throw Object.assign(new Error(),{code:'PROMPT_OPTIMIZER_METHOD_NOT_ALLOWED'});
+   if(!response.destroyed&&!controller.signal.aborted)sendJson(response,200,data);
+  }catch(error){
+   const result=optimizer.errorResponse(error);
+   if(!response.destroyed&&!controller.signal.aborted)sendJson(response,result.status,result.body);
+  }finally{optimizerRequests.delete(controller);response.removeListener('close',disconnected);request.removeListener('aborted',disconnected);}
+  return true;
+ }
  // The core has already required the local runtime token and rejected relay
  // callers for /api/dev/. This route reads only native account metadata.
  if(url.pathname==='/api/dev/account-metadata/cancel'&&method==='POST'){

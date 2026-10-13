@@ -251,7 +251,7 @@ var BetterCodexInjected = (() => {
         if (!editor || !trigger.getBoundingClientRect().width || surface.closest('[aria-hidden="true"], [inert]')) continue;
         const props = picker(trigger);
         if (!props) continue;
-        const left = surface.querySelector('[data-composer-navigation-target="add-context"]')?.parentElement?.parentElement;
+        const left = surface.querySelector('.bc-composer-lower-actions') || surface.querySelector('[data-composer-navigation-target="add-context"]')?.parentElement?.parentElement;
         if (!left) continue;
         let bar = bars.get(trigger);
         if (!bar || bar.node.parentElement !== left) {
@@ -263,7 +263,8 @@ var BetterCodexInjected = (() => {
           bar = { node, signature: "" };
           bars.set(trigger, bar);
           const addWrapper = surface.querySelector('[data-composer-navigation-target="add-context"]').parentElement;
-          left.insertBefore(node, addWrapper.nextSibling);
+          if (left.classList?.contains("bc-composer-lower-actions")) left.prepend(node);
+          else left.insertBefore(node, addWrapper.nextSibling);
         }
         bar.node.hidden = false;
         if (dragging?.list === bar.node.querySelector('.bc-composer-shortcut-list')) continue;
@@ -392,6 +393,49 @@ var BetterCodexInjected = (() => {
       destroy() { clearInterval(timer); window.removeEventListener("storage", storageChanged); clearDrag(); closeDialog(); for (const bar of bars.values()) bar.node.remove(); bars.clear(); style.remove(); }
     };
   }
+  function createComposerFooterLayout() {
+    const footers = new Set();
+    const style = document.createElement("style");
+    style.textContent = `
+      [data-bc-composer-rows]{container:bc-composer-actions / inline-size;grid-template-columns:minmax(0,1fr) 0 auto!important;grid-template-rows:auto auto auto!important;row-gap:6px!important}
+      [data-bc-composer-input]{grid-column:1 / -1!important;grid-row:1!important;min-width:0}
+      [data-bc-composer-leading]{grid-column:1 / -1!important;grid-row:2!important;min-width:0}
+      [data-bc-composer-trailing]{grid-column:3!important;grid-row:3!important;align-self:end;min-width:0}
+      .bc-composer-lower-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;grid-column:1 / 3;grid-row:3}
+      .bc-composer-lower-actions .bc-composer-shortcuts{max-width:min(480px,100%);margin-left:0;box-sizing:border-box}
+      .bc-composer-lower-actions .bc-prompt-tools{flex-wrap:wrap;max-width:100%}
+      .bc-composer-lower-actions .bc-prompt-status{overflow-wrap:anywhere}
+      @container bc-composer-actions (max-width:440px){
+        .bc-composer-lower-actions{grid-column:1 / -1}
+        [data-bc-composer-trailing]{grid-column:1 / -1!important;grid-row:4!important;justify-self:end}
+      }
+    `;
+    document.head.append(style);
+    function cleanup(footer) {
+      footer.removeAttribute("data-bc-composer-rows");
+      for (const child of footer.children) for (const name of ["input", "leading", "trailing"]) child.removeAttribute("data-bc-composer-" + name);
+      footer.querySelector('.bc-composer-lower-actions')?.remove();
+    }
+    function sync() {
+      for (const footer of footers) if (!footer.isConnected) { cleanup(footer); footers.delete(footer); }
+      for (const surface of document.querySelectorAll('[data-composer-surface-variant]')) {
+        const footer = surface.querySelector('[data-composer-footer-responsive]');
+        if (!footer) continue;
+        const children = [...footer.children];
+        const input = children.find(child => child.querySelector('[data-codex-composer]'));
+        const leading = children.find(child => child.querySelector('[data-composer-navigation-target="add-context"]'));
+        const trailing = children.find(child => child.querySelector('[data-codex-intelligence-trigger="true"]'));
+        if (!input || !leading || !trailing || leading === trailing) continue;
+        if (!footer.hasAttribute("data-bc-composer-rows")) footer.setAttribute("data-bc-composer-rows", "true");
+        for (const [child, name] of [[input, "input"], [leading, "leading"], [trailing, "trailing"]]) if (!child.hasAttribute("data-bc-composer-" + name)) child.setAttribute("data-bc-composer-" + name, "true");
+        if (!footer.querySelector('.bc-composer-lower-actions')) {
+          const row = document.createElement("div"); row.className = "bc-composer-lower-actions"; row.setAttribute("data-better-codex-owned", "true"); footer.append(row);
+        }
+        footers.add(footer);
+      }
+    }
+    return { sync, destroy() { for (const footer of footers) cleanup(footer); footers.clear(); style.remove(); } };
+  }
   function install(config) {
     if (isAuxiliaryDesktopUrl(window.location.href)) {
       window.__betterCodexInjection__?.destroy?.();
@@ -405,7 +449,7 @@ var BetterCodexInjected = (() => {
     }
     previous?.destroy?.();
     const requests = new Map();
-    let destroyed = false, observer = null, shortcuts = null, accountAdapter = null;
+    let destroyed = false, observer = null, shortcuts = null, accountAdapter = null, optimizer = null, composerLayout = null;
     let sequence = 0, refreshTimer = null, usageTimer = null, usagePending = false, accountCheckedAt = 0;
     const locale = config.initialLocale || "zh-CN";
     const english = locale.startsWith("en");
@@ -436,7 +480,7 @@ var BetterCodexInjected = (() => {
       if (!pending) return;
       requests.delete(id); clearTimeout(pending.timer);
       if (result?.ok) pending.resolve(result.value);
-      else pending.reject(new Error(result?.value?.error || "request_failed"));
+      else pending.reject(Object.assign(new Error(result?.value?.message || result?.value?.error || "request_failed"), { code: result?.value?.error }));
     };
     window.__betterCodexBridgeResolve = resolveBridge;
     function navigate(path) {
@@ -460,7 +504,11 @@ var BetterCodexInjected = (() => {
         usage.type = "button"; usage.className = help.className;
         usage.dataset.titlebarUsage = "true"; usage.textContent = text("用量加载中…");
         usage.addEventListener("click", () => void refreshTitlebarUsage());
-        group.append(archive, usage);
+        const settings = document.createElement("button");
+        settings.type = "button"; settings.className = help.className;
+        settings.textContent = "提示词优化设置";
+        settings.addEventListener("click", () => void optimizer?.configure(settings));
+        group.append(settings, archive, usage);
         void refreshTitlebarUsage(group);
       }
       if (help.nextElementSibling !== group) help.after(group);
@@ -488,7 +536,9 @@ var BetterCodexInjected = (() => {
     function refresh() {
       if (destroyed) return;
       ensureTitlebarActions();
+      composerLayout?.sync();
       shortcuts?.sync();
+      optimizer?.sync();
       if (accountAdapter && !window.__betterCodexAccountTransportRecovery__?.request && Date.now() - accountCheckedAt > 10000) {
         accountCheckedAt = Date.now();
         void accountAdapter.connect().catch(() => {});
@@ -502,7 +552,7 @@ var BetterCodexInjected = (() => {
       if (destroyed) return;
       accountAdapter?.destroy();
       destroyed = true;
-      observer?.disconnect(); shortcuts?.destroy();
+      observer?.disconnect(); shortcuts?.destroy(); optimizer?.destroy(); composerLayout?.destroy();
       clearTimeout(refreshTimer); clearInterval(usageTimer);
       document.removeEventListener("DOMContentLoaded", mount);
       document.removeEventListener("visibilitychange", onVisible);
@@ -518,7 +568,9 @@ var BetterCodexInjected = (() => {
     function mount() {
       document.removeEventListener("DOMContentLoaded", mount);
       if (destroyed || observer || !document.documentElement) return;
+      composerLayout = createComposerFooterLayout(); composerLayout.sync();
       shortcuts = createComposerModelShortcuts(() => icon("fast", "2"), () => icon("settings", "1.8"), () => icon("grip", "1.8"));
+      optimizer = window.BetterCodexPromptOptimizer?.create({ api });
       if (typeof window.BetterCodexNativeConversation?.create === "function") accountAdapter = window.BetterCodexNativeConversation.create({ api });
       observer = new MutationObserver(scheduleRefresh);
       observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current"] });

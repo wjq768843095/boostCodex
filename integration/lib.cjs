@@ -12,7 +12,8 @@ function list(dir){if(!fs.existsSync(dir))return [];return fs.readdirSync(dir,{w
 function sources(){return [...list(path.join(ROOT,'src')),...list(path.join(ROOT,'integration'))].filter(f=>/\.(cjs|js|css|json)$/.test(f)||(f.startsWith(path.join(ROOT,'src','skills')+path.sep)&&f.endsWith('.md'))).sort();}
 function uiBundle(base=ROOT){
  const adapter=path.join(base,'src/ui/native-conversation-adapter.js');
- return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
+ const optimizer=path.join(base,'src/ui/prompt-optimizer.js');
+ return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
 }
 function hashes(files=sources()){
  const full=crypto.createHash('sha256'),backend=crypto.createHash('sha256');for(const file of files){const rel=path.relative(ROOT,file),data=fs.readFileSync(file);full.update(rel).update(data);if(!rel.startsWith('src'+path.sep+'ui'+path.sep))backend.update(rel).update(data);}
