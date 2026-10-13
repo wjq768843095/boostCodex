@@ -127,7 +127,7 @@ class WorkflowStore {
       else if (currentTasks.length !== finalBatch.taskSet.length || finalBatch.taskSet.some(entry => { const task = currentTasks.find(item => item.ref === entry.taskRef); return !task || task.revision !== entry.revision || task.status !== 'completed'; })) reason = 'batch_task_set_changed';
       else if (state.issues.some(item => item.projectRef === projectRef && item.status !== 'closed' && item.severity !== 'informational')) reason = 'blocking_issues_open';
       else {
-        try { const actual = fingerprint(project.root); if (actual.hash !== finalBatch.baseline.hash || actual.head !== finalBatch.baseline.head) reason = 'source_baseline_changed'; }
+        try { const actual = fingerprint(project.root); if (actual.hash !== finalBatch.baseline.hash) reason = 'source_baseline_changed'; }
         catch (error) { reason = error instanceof WorkflowError ? error.code : 'source_read_failed'; }
       }
       finalAcceptance = { current: reason === null, reason, batchRef: project.finalBatchRef };
@@ -170,7 +170,9 @@ class WorkflowStore {
     const active = projectRef => state.executions.find(item => overlaps(project(item.projectRef).root, project(projectRef).root) && item.status === 'active' && Date.parse(item.expiresAt) > now);
     const idle = projectRef => { if (active(projectRef)) fail('project_execution_busy', 409); };
     const source = task => fingerprint(project(task.projectRef).root, task.scopePaths || []);
-    const currentBaseline = (baseline, actual) => { if (!baseline || baseline.hash !== actual.hash || baseline.head !== actual.head) fail('source_baseline_changed', 409); };
+    // Git commits may record an unchanged working tree. Content is the acceptance
+    // baseline; HEAD and dirty state remain evidence metadata only.
+    const currentBaseline = (baseline, actual) => { if (!baseline || baseline.hash !== actual.hash) fail('source_baseline_changed', 409); };
     const next = (collection, prefix) => prefix + String(state[collection].filter(item => item.ref.startsWith(prefix)).reduce((max, item) => Math.max(max, Number(item.ref.slice(prefix.length)) || 0), 0) + 1).padStart(3, '0');
     const lease = (task, phase) => {
       const execution = get('executions', input.executionId);

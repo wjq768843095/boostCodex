@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const cp = require('node:child_process');
 const { WorkflowStore, WorkflowError, fingerprint } = require('../src/modules/workflow-store.cjs');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-workflow-store-'));
 const home = path.join(temp, 'home'), root = path.join(temp, 'project');
@@ -38,6 +39,56 @@ function complete(taskRef, worker = agent) {
   assert.equal(reviewed.review.evidence[1].required, false);
   assert.equal(reviewed.review.evidence[1].result, 'not_run', 'deferred device check stays explicitly unexecuted');
   call('task.humanReview', { taskRef, passed: true, note: 'Manual fixture accepted' });
+}
+function verifyGitCommitOnlyChangesAuditMetadata() {
+  const gitRoot = path.join(temp, 'git-fixture'), gitHome = path.join(temp, 'git-home'), hooks = path.join(temp, 'empty-hooks');
+  fs.mkdirSync(gitRoot); fs.mkdirSync(hooks);
+  const file = path.join(gitRoot, 'app.js'), content = 'const accepted = true;\n';
+  fs.writeFileSync(file, content);
+  const git = args => cp.execFileSync('git', ['-C', gitRoot, '-c', 'core.hooksPath=' + hooks, '-c', 'commit.gpgsign=false', '-c', 'user.name=Workflow Fixture', '-c', 'user.email=fixture@example.invalid', ...args], {
+    windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null', GIT_TERMINAL_PROMPT: '0' }
+  });
+  git(['init', '--quiet']);
+  const gitStore = new WorkflowStore({ home: gitHome });
+  let requests = 0;
+  const mutation = (op, data, actor = human) => {
+    const state = gitStore.state();
+    const entity = data.taskRef ? state.tasks.find(item => item.ref === data.taskRef) : data.batchRef ? state.batches.find(item => item.ref === data.batchRef) : state.projects.find(item => item.ref === data.projectRef);
+    return gitStore.execute(op, { requestId: 'git-fixture-' + ++requests, ...(entity ? { expectedRevision: entity.revision } : {}), ...data }, actor);
+  };
+  try {
+    const p = mutation('project.create', { name: 'Isolated Git fixture', root: gitRoot }).project;
+    const c = mutation('charter.create', { projectRef: p.ref }).task;
+    mutation('charter.save', { taskRef: c.ref, content: 'Git baseline fixture charter' });
+    mutation('charter.submit', { taskRef: c.ref });
+    mutation('charter.confirm', { taskRef: c.ref, version: 1 });
+    const task = mutation('task.create', { projectRef: p.ref, title: 'Git fixture task', requirements: 'Source content unchanged across commit', acceptance: 'Review actual file content' }).task;
+    const development = mutation('task.claim', { taskRef: task.ref, phase: 'develop' }, agent);
+    const submitted = mutation('task.submit', { taskRef: task.ref, executionId: development.executionId, leaseToken: development.leaseToken, summary: 'Uncommitted source accepted for review', evidence }, agent).task;
+    assert.equal(submitted.result.baseline.head, null);
+    fs.appendFileSync(file, 'const changed = true;\n');
+    rejects(() => mutation('task.claim', { taskRef: task.ref, phase: 'review' }, claude), 'source_baseline_changed');
+    fs.writeFileSync(file, content);
+    git(['add', '--', 'app.js']); git(['commit', '--quiet', '-m', 'Record unchanged fixture source']);
+    const committed = fingerprint(gitRoot);
+    assert.equal(committed.hash, submitted.result.baseline.hash);
+    assert.notEqual(committed.head, submitted.result.baseline.head);
+    assert.equal(committed.dirty, false);
+    const review = mutation('task.claim', { taskRef: task.ref, phase: 'review' }, claude);
+    mutation('task.review', { taskRef: task.ref, executionId: review.executionId, leaseToken: review.leaseToken, passed: true, summary: 'Actual source remains identical', evidence }, claude);
+    git(['commit', '--quiet', '--allow-empty', '-m', 'Change Git audit head only before manual acceptance']);
+    mutation('task.humanReview', { taskRef: task.ref, passed: true, note: 'Source unchanged despite new Git head' });
+    const batch = mutation('batch.start', { projectRef: p.ref }).batch;
+    mutation('batch.report', { batchRef: batch.ref, passed: true, summary: 'Whole content accepted', evidence, issues: [] }, agent);
+    git(['commit', '--quiet', '--allow-empty', '-m', 'Change audit head before project confirmation']);
+    mutation('batch.confirm', { batchRef: batch.ref });
+    git(['commit', '--quiet', '--allow-empty', '-m', 'Change audit head after project confirmation']);
+    assert.notEqual(fingerprint(gitRoot).head, batch.baseline.head);
+    assert.equal(gitStore.context({ projectRef: p.ref }).finalAcceptance.current, true);
+    fs.appendFileSync(file, 'const changedAfterFinal = true;\n');
+    assert.equal(gitStore.context({ projectRef: p.ref }).finalAcceptance.reason, 'source_baseline_changed');
+  } finally { gitStore.close(); }
 }
 try {
   store = new WorkflowStore({ home, now: () => clock });
@@ -157,5 +208,6 @@ try {
   store.close(); store = new WorkflowStore({ home, now: () => clock });
   assert.equal(current('projects', projectRef).status, 'completed');
   assert.deepEqual(store.execute('project.create', createInput, human), created, 'idempotency survives process restart');
+  verifyGitCommitOnlyChangesAuditMetadata();
   console.log('PASS: workflow SQLite isolation, atomic events/idempotency, charter confirmation, project leases, source baselines, AI/manual acceptance and issue repair/project final loop');
 } finally { if (store) store.close(); fs.rmSync(temp, { recursive: true, force: true }); }
