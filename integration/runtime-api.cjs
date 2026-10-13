@@ -1,19 +1,22 @@
 const fs=require('node:fs'),path=require('node:path');
 const metadataRequests=new Map(),metadataCancelled=new Map();
 const optimizerRequests=new Set();
+const workflowRequests=new Set();
 const metadataRequestId=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function idle(worker){
  const result=worker.updateDrainStatus();
  let host={};try{host=JSON.parse(fs.readFileSync(path.join(process.env.BETTER_CODEX_HOME,'run/session-host-status.json'),'utf8'));}catch{}
  const hostBusy=!!host.command_in_flight||(host.active_turns||[]).length>0||(host.pending_requests||0)>0||(host.queued_deliveries||0)>0;
- return {...result,ready:result.ready&&!hostBusy&&!optimizerRequests.size,sessionHostBusy:hostBusy,promptOptimizerBusy:optimizerRequests.size>0};
+ return {...result,ready:result.ready&&!hostBusy&&!optimizerRequests.size&&!workflowRequests.size,sessionHostBusy:hostBusy,promptOptimizerBusy:optimizerRequests.size>0,workflowPanelBusy:workflowRequests.size>0};
 }
 async function handle({url,method,request,response,worker,readBody,sendJson,stopHost}){
  const dev=path.join(process.env.BETTER_CODEX_LOCAL_PROJECT,'.dev');
  // /api/dev/ is authenticated by the core before entering this extension.
  if(url.pathname==='/api/dev/workflow/panel-url'&&method==='POST'){
-  try{const result=await require('./workflow-service.cjs').panelUrl();sendJson(response,200,result);}
+  const requestKey={};workflowRequests.add(requestKey);
+  try{const result=await require('./workflow-service.cjs').panelUrl();if(!response.destroyed)sendJson(response,200,result);}
   catch(error){console.error('workflow_panel_open_failed',error.code||error.message);sendJson(response,503,{error:'WORKFLOW_PANEL_UNAVAILABLE',message:'面板暂时无法打开，请稍后重试。'});}
+  finally{workflowRequests.delete(requestKey);}
   return true;
  }
  if(url.pathname==='/api/dev/prompt-optimizer/settings'||url.pathname==='/api/dev/prompt-optimizer/optimize'){

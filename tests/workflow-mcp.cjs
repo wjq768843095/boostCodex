@@ -52,6 +52,13 @@ async function main() {
     assert.equal(JSON.parse(failure.content[0].text).currentRevision, 8);
     child.stdin.write('not-json\n'); assert.equal((await response(null)).error.code, -32700);
     send('ping', {}, 10); assert.deepEqual((await response(10)).result, {});
+    const submit = { taskRef: 'P001-T001', executionId: 'execution-fixture', leaseToken: 'lease-fixture', expectedRevision: 3, requestId: 'submit-fixture' };
+    send('tools/call', { name: 'bc_charter_submit', arguments: submit }, 11);
+    assert.deepEqual((await response(11)).result.structuredContent.args, submit);
+    send('tools/call', { name: 'bc_charter_submit', arguments: { ...submit, content: 'must be saved separately' } }, 12);
+    assert.equal((await response(12)).error.code, -32602);
+    send('tools/call', { name: 'bc_task_review', arguments: { ...submit, passed: true, summary: 'required checks passed; device verification remains manual', evidence: [{ kind: 'static', result: 'passed', detail: 'scoped check', required: true }, { kind: 'device', result: 'not_run', detail: 'manual check per project rule', required: false }] } }, 13);
+    assert.equal((await response(13)).result.structuredContent.args.evidence[1].required, false);
     assert.equal(stderr, '');
   } finally {
     child.kill();

@@ -4,12 +4,16 @@
   const labels = { pending: '待开发', in_progress: '进行中', ai_review: '待 AI 验收', human_review: '待人工验收', completed: '已完成', draft: '草稿', awaiting_confirmation: '待确认', submitted: '待确认', confirmed: '已确认', active: '进行中', open: '待解决', repairing: '修复中', needs_retest: '需复验', closed: '已解决', passed: '通过', failed: '不通过', ready: '待确认', reviewing: '验收中' };
   const kindLabels = { source: '源码检查', static: '源码检查', build: '构建', api: '接口', database: '数据', browser: '界面', device: '设备', manual: '人工', test: '测试' };
   const resultLabels = { passed: '通过', failed: '不通过', not_run: '未执行', unknown: '未核验', pass: '通过', fail: '不通过' };
+  const clientLabels = { codex: 'Codex', claude: 'Claude Code', web: '面板' };
   let view; try { view = JSON.parse(localStorage.getItem(key)); } catch {} view = { projectRef: '', tab: 'charter', taskRef: '', filter: '', search: '', tool: 'codex', drafts: {}, ...view };
   let data = { projects: [], tasks: [], charters: [], reviews: [], batches: [], issues: [], executions: [], cursor: 0 }, csrf, serviceRevision, stream, busy = false, modal = null, toastTimer, refreshPromise = null, refreshWanted = false, finalAcceptance = null;
-  const requests = new Map();
+  let sessionPromise = null, recoveryPromise = null, hasState = false, reloading = false;
+  const requests = new Map(Object.entries(view.pendingRequests || {}));
   document.documentElement.dataset.panelInstance = crypto.randomUUID();
+  document.documentElement.dataset.panelAuth = 'unknown';
   $('tool').value = view.tool;
   function saveView() { try { localStorage.setItem(key, JSON.stringify(view)); } catch {} }
+  function saveRequests() { view.pendingRequests = Object.fromEntries(requests); saveView(); }
   function badge(status) { return '<span class="badge ' + esc(status) + '">' + esc(labels[status] || '待处理') + '</span>'; }
   function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
   function project() { return data.projects.find(item => item.ref === view.projectRef); }
@@ -17,7 +21,11 @@
   function task(ref = view.taskRef) { return data.tasks.find(item => item.ref === ref); }
   function charterFor(ref) { return data.charters.filter(item => item.taskRef === ref).sort((a, b) => b.version - a.version)[0]; }
   function evidence(items) { return (items || []).map(item => '<div class="evidence"><strong>' + esc(kindLabels[item.kind] || '其他检查') + '</strong><span>' + esc(resultLabels[item.result] || '待核验') + (item.detail ? ' · ' + esc(item.detail) : '') + '</span></div>').join(''); }
-  function reviewsFor(t) { return data.reviews.filter(item => item.taskRef === t.ref).map(item => '<div class="review"><small>' + esc(item.kind === 'human' || item.type === 'human' ? '人工验收' : 'AI 验收') + ' · ' + esc(item.client || '') + '</small> ' + badge(item.passed ? 'passed' : 'failed') + '<p>' + esc(item.summary || item.note) + '</p>' + evidence(item.evidence) + '</div>').join(''); }
+  function reviewsFor(t) {
+    const records = data.reviews.filter(item => item.taskRef === t.ref).map(item => '<div class="review"><small>' + esc(item.kind === 'human' || item.type === 'human' ? '人工验收' : 'AI 验收') + ' · ' + esc(clientLabels[item.client || (item.kind === 'human' ? 'web' : data.executions.find(execution => execution.ref === item.executionId)?.client)] || '其他工具') + '</small> ' + badge(item.passed ? 'passed' : 'failed') + '<p>' + esc(item.summary || item.note) + '</p>' + evidence(item.evidence) + '</div>').join('');
+    const draft = view.drafts['note:' + t.ref];
+    return records + (t.status === 'human_review' && draft && draft.revision !== t.revision ? '<p class="remote-notice">任务已有更新。请核对当前成果和验收记录后继续验收。</p>' + button('rebase-note', '已核对当前成果', t.ref) : '');
+  }
   function button(action, text, ref, cls = '', disabled = false) { return '<button type="button" class="' + cls + '" data-action="' + action + '"' + (ref ? ' data-ref="' + esc(ref) + '"' : '') + (disabled ? ' disabled' : '') + '>' + text + '</button>'; }
   function empty(title, message, action = '') { return '<div class="empty"><h2>' + esc(title) + '</h2><div>' + esc(message) + '</div>' + action + '</div>'; }
   function updateNavigation() {
@@ -33,7 +41,7 @@
     const t = tasks().filter(item => item.type === 'charter').sort((a, b) => b.charterVersion - a.charterVersion)[0];
     if (!t) return empty('还没有总纲', '创建总纲任务，确定项目目标和验收标准。', button('create-charter', '创建总纲任务', p.ref, 'primary'));
     const c = charterFor(t.ref), draftKey = 'charter:' + t.ref, draft = view.drafts[draftKey], current = draft || { content: c?.content || '', revision: t.revision };
-    return '<section class="panel"><div class="panel-head"><div><h2>项目总纲</h2><div class="ref">' + esc(t.ref) + ' · 版本 ' + (c?.version || 0) + '</div></div>' + badge(t.status) + '</div>' + (draft && draft.revision !== t.revision ? '<p class="remote-notice">总纲已有更新。你的未保存内容已保留，请核对后再保存。</p><details class="version-compare"><summary>查看最新已保存内容</summary><p class="prose">' + esc(c?.content) + '</p></details>' + button('rebase-charter', '以最新版本继续编辑', t.ref) : '') + '<textarea class="charter-editor" id="charter-editor" data-draft="' + esc(draftKey) + '" data-revision="' + current.revision + '" aria-label="总纲内容"' + (c?.status === 'confirmed' ? ' readonly' : '') + ' placeholder="填写项目目标、功能范围和验收标准">' + esc(current.content) + '</textarea><div class="actions">' + button('save-charter', '保存草稿', t.ref, '', c?.status === 'confirmed') + button('submit-charter', '提交确认', t.ref, '', !c?.content || !!draft || c?.status === 'confirmed') + button('confirm-charter', '确认此版本', t.ref, 'primary', t.status !== 'awaiting_confirmation' && t.status !== 'submitted') + button('copy-charter', '复制总纲指令', t.ref) + (c?.status === 'confirmed' ? button('create-charter', '创建新版本', p.ref) : '') + '</div></section><div class="panel small-text gap-top">' + (p.confirmedCharterVersion ? '已确认版本：' + p.confirmedCharterVersion : '总纲确认后，可以拆分开发任务。') + '</div>';
+    return '<section class="panel"><div class="panel-head"><div><h2>项目总纲</h2><div class="ref">' + esc(t.ref) + ' · 版本 ' + (c?.version || 0) + '</div></div>' + badge(t.status) + '</div>' + (draft && draft.revision !== t.revision ? '<p class="remote-notice">总纲已有更新。你的未保存内容已保留，请核对后再保存。</p><details class="version-compare"><summary>查看最新已保存内容</summary><p class="prose">' + esc(c?.content) + '</p></details>' + button('rebase-charter', '以最新版本继续编辑', t.ref) : '') + '<textarea class="charter-editor" id="charter-editor" data-draft="' + esc(draftKey) + '" data-revision="' + current.revision + '" aria-label="总纲内容"' + (c?.status === 'confirmed' ? ' readonly' : '') + ' placeholder="填写项目目标、功能范围和验收标准">' + esc(current.content) + '</textarea><div class="actions">' + button('save-charter', '保存草稿', t.ref, '', c?.status === 'confirmed') + button('submit-charter', '提交确认', t.ref, '', !c?.content || !!draft || c?.status === 'confirmed') + button('confirm-charter', '确认此版本', t.ref, 'primary', t.status !== 'awaiting_confirmation' && t.status !== 'submitted') + button('copy-charter', '复制总纲指令', t.ref) + (data.executions.some(execution => execution.taskRef === t.ref && execution.status === 'active') ? button('revoke', '结束当前执行', t.ref, 'danger') : '') + (c?.status === 'confirmed' ? button('create-charter', '创建新版本', p.ref) : '') + '</div></section><div class="panel small-text gap-top">' + (p.confirmedCharterVersion ? '已确认版本：' + p.confirmedCharterVersion : '总纲确认后，可以拆分开发任务。') + '</div>';
   }
   function taskDetail(t) {
     if (!t) return '<section class="panel detail">' + empty('选择一项任务', '查看要求、成果与验收记录。') + '</section>';
@@ -46,13 +54,15 @@
   }
   function batchView(p) {
     const list = data.batches.filter(item => item.projectRef === p.ref).slice().reverse(), necessary = tasks().filter(item => item.type !== 'charter'), canStart = necessary.length > 0 && necessary.every(item => item.status === 'completed');
-    return '<div class="toolbar"><p class="subtitle">检查完整业务流程，发现的问题继续进入修复任务。</p>' + button('start-batch', '创建全项目验收', p.ref, 'primary', !canStart) + '</div><div class="split-list">' + (list.length ? list.map(item => '<section class="batch-card"><div class="detail-heading"><h3>全项目验收 <span class="ref">' + esc(item.ref) + '</span></h3>' + badge(item.status) + '</div><p>' + esc(item.summary || item.report?.summary || '等待提交项目验收报告。') + '</p>' + evidence(item.evidence || item.report?.evidence) + '<div class="actions">' + button('copy-batch', '复制项目验收指令', item.ref) + button('confirm-batch', '确认项目验收通过', item.ref, 'primary', item.status === 'completed' || !(item.passed || item.report?.passed)) + '</div></section>').join('') : empty('尚未进行全项目验收', canStart ? '创建验收批次，检查各项功能配合后的实际表现。' : '全部开发任务通过人工验收后，即可开始。')) + '</div>';
+    return '<div class="toolbar"><p class="subtitle">检查完整业务流程，发现的问题继续进入修复任务。</p>' + button('start-batch', '创建全项目验收', p.ref, 'primary', !canStart) + '</div><div class="split-list">' + (list.length ? list.map(item => '<section class="batch-card"><div class="detail-heading"><h3>全项目验收 <span class="ref">' + esc(item.ref) + '</span></h3>' + badge(item.status) + '</div><p>' + esc(item.summary || item.report?.summary || '等待提交项目验收报告。') + '</p>' + evidence(item.evidence || item.report?.evidence) + '<div class="actions">' + button('copy-batch', '复制项目验收指令', item.ref) + button('confirm-batch', '确认项目验收通过', item.ref, 'primary', ['completed', 'confirmed'].includes(item.status) || !(item.passed || item.report?.passed)) + '</div></section>').join('') : empty('尚未进行全项目验收', canStart ? '创建验收批次，检查各项功能配合后的实际表现。' : '全部开发任务通过人工验收后，即可开始。')) + '</div>';
   }
   function issueView(p) {
     const list = data.issues.filter(item => item.projectRef === p.ref).slice().reverse();
-    return '<div class="toolbar"><p class="subtitle">跟踪验收发现的问题，修复完成后进行复验。</p>' + button('new-issue', '+ 记录问题', '', 'primary') + '</div><div class="split-list">' + (list.length ? list.map(item => '<article class="issue-card"><div class="detail-heading"><h3>' + esc(item.title) + '</h3>' + badge(item.status) + '</div><div class="ref">' + esc(item.ref) + (item.batchRef ? ' · ' + esc(item.batchRef) : '') + '</div><p>' + esc(item.description) + '</p>' + ((item.repairTaskRefs?.length || item.taskRef) ? '<p class="small-text">关联任务：' + esc(item.repairTaskRefs?.join('、') || item.taskRef) + '</p>' : '') + '<div class="actions">' + button('repair-issue', '创建修复任务', item.ref, '', item.status === 'closed' || (item.repairTaskRefs || []).some(ref => task(ref)?.status !== 'completed')) + button('retest-issue', '复验通过', item.ref, 'primary', item.status === 'closed' || !item.repairTaskRefs?.length) + button('retest-fail', '复验不通过', item.ref, '', item.status === 'closed' || !item.repairTaskRefs?.length) + '</div></article>').join('') : empty('暂无验收问题', '后续发现的问题会集中显示在这里。')) + '</div>';
+    const canRetest = item => item.status !== 'closed' && item.repairTaskRefs?.length > 0 && item.repairTaskRefs.every(ref => task(ref)?.status === 'completed');
+    return '<div class="toolbar"><p class="subtitle">跟踪验收发现的问题，修复完成后进行复验。</p>' + button('new-issue', '+ 记录问题', '', 'primary') + '</div><div class="split-list">' + (list.length ? list.map(item => '<article class="issue-card"><div class="detail-heading"><h3>' + esc(item.title) + '</h3>' + badge(item.status) + '</div><div class="ref">' + esc(item.ref) + (item.batchRef ? ' · ' + esc(item.batchRef) : '') + '</div><p>' + esc(item.description) + '</p>' + ((item.repairTaskRefs?.length || item.taskRef) ? '<p class="small-text">关联任务：' + esc(item.repairTaskRefs?.join('、') || item.taskRef) + '</p>' : '') + '<div class="actions">' + button('repair-issue', '创建修复任务', item.ref, '', item.status === 'closed' || (item.repairTaskRefs || []).some(ref => task(ref)?.status !== 'completed')) + button('retest-issue', '复验通过', item.ref, 'primary', !canRetest(item)) + button('retest-fail', '复验不通过', item.ref, '', !canRetest(item)) + '</div></article>').join('') : empty('暂无验收问题', '后续发现的问题会集中显示在这里。')) + '</div>';
   }
   function render() {
+    if (!hasState) return;
     const focused = document.activeElement, focusId = focused?.id, start = focused?.selectionStart, end = focused?.selectionEnd;
     updateNavigation(); const p = project(); if (!p) view.projectRef = '';
     if (!p) $('content').innerHTML = overview();
@@ -60,26 +70,105 @@
     if (focusId && $(focusId)) { $(focusId).focus({ preventScroll: true }); if (typeof start === 'number' && $(focusId).setSelectionRange) { try { $(focusId).setSelectionRange(start, end); } catch {} } }
     saveView();
   }
-  async function refresh() { if (!csrf) return; refreshWanted = true; if (refreshPromise) return refreshPromise; refreshPromise = (async () => { while (refreshWanted) { refreshWanted = false; const response = await fetch('/api/workflow/v1/state'); if (!response.ok) throw Error((await response.json()).message); data = await response.json(); finalAcceptance = null; if (project()?.finalBatchRef) { const current = await fetch('/api/workflow/v1/actions/context', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workflow-CSRF': csrf }, body: JSON.stringify({ projectRef: view.projectRef }) }); if (current.ok) finalAcceptance = (await current.json()).finalAcceptance; } render(); } })().finally(() => { refreshPromise = null; }); return refreshPromise; }
+  function requireAuthentication() {
+    csrf = null; document.documentElement.dataset.panelAuth = 'required';
+    stream?.close(); stream = null;
+    $('connection').textContent = '需要重新连接'; $('connection').classList.remove('online');
+  }
+  async function readResponse(response) {
+    if (response.status === 401) requireAuthentication();
+    const result = await response.json();
+    if (!response.ok) throw Object.assign(Error(result.message || '连接暂时不可用，请重试。'), { status: response.status, code: result.error });
+    return result;
+  }
+  function ensureSession(force = false) {
+    if (reloading) return Promise.resolve(null);
+    if (sessionPromise) return sessionPromise;
+    if (csrf && !force) return Promise.resolve({ csrf, revision: serviceRevision });
+    sessionPromise = (async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await readResponse(await fetch('/api/workflow/v1/session', { signal: AbortSignal.timeout(8000) }));
+          if (!result.csrf) throw Error('连接暂时不可用，请重试。');
+          if (serviceRevision && result.revision && serviceRevision !== result.revision) { saveView(); reloading = true; location.reload(); return null; }
+          csrf = result.csrf; serviceRevision = result.revision; document.documentElement.dataset.panelAuth = 'ready';
+          return result;
+        } catch (error) {
+          if (error.status === 401 || attempt === 2) throw error;
+          await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 400 : 1200));
+        }
+      }
+    })().finally(() => { sessionPromise = null; });
+    return sessionPromise;
+  }
+  async function refresh() {
+    if (!csrf && !await ensureSession()) return;
+    if (reloading) return;
+    refreshWanted = true; if (refreshPromise) return refreshPromise;
+    refreshPromise = (async () => {
+      while (refreshWanted) {
+        refreshWanted = false;
+        data = await readResponse(await fetch('/api/workflow/v1/state')); hasState = true; finalAcceptance = null;
+        if (project()?.finalBatchRef) {
+          const projectRef = view.projectRef;
+          const context = await readResponse(await fetch('/api/workflow/v1/actions/context', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workflow-CSRF': csrf }, body: JSON.stringify({ projectRef }) }));
+          if (view.projectRef === projectRef) finalAcceptance = context.finalAcceptance;
+          else { finalAcceptance = null; refreshWanted = true; }
+        }
+        render();
+        if (view.dialogDraft && !$('form-dialog').open) openForm(view.dialogDraft);
+      }
+    })().finally(() => { refreshPromise = null; }); return refreshPromise;
+  }
   async function act(operation, input = {}) {
     if (busy) throw Error('上一项操作尚未完成'); busy = true;
-    const signature = JSON.stringify([operation, input]); const requestId = requests.get(signature) || crypto.randomUUID(); requests.set(signature, requestId);
-    try { const response = await fetch('/api/workflow/v1/actions/' + operation, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workflow-CSRF': csrf }, body: JSON.stringify({ ...input, requestId }) }); const result = await response.json(); if (!response.ok) { requests.delete(signature); throw Error(result.message); } requests.delete(signature); await refresh().catch(() => toast('操作已保存，正在同步最新内容。')); return result; } finally { busy = false; }
+    const signature = JSON.stringify([operation, input]); const requestId = requests.get(signature) || crypto.randomUUID(); requests.set(signature, requestId); saveRequests();
+    try { if (!await ensureSession()) throw Error('正在更新面板，请稍候。'); const response = await fetch('/api/workflow/v1/actions/' + operation, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Workflow-CSRF': csrf }, body: JSON.stringify({ ...input, requestId }) }); if (!response.ok) { requests.delete(signature); saveRequests(); } const result = await readResponse(response); requests.delete(signature); saveRequests(); await refresh().catch(() => toast('操作已保存，正在同步最新内容。')); return result; } finally { busy = false; }
   }
   async function copy(name, ref, suffix = '') { const text = (view.tool === 'claude' ? '/' : '$') + name + (ref ? ' ' + ref : '') + suffix; await navigator.clipboard.writeText(text); toast('指令已复制'); }
   function field(name, title, value = '', multi = false, hint = '') { return '<label class="field"><span>' + title + '</span>' + (multi ? '<textarea name="' + name + '"' + (name === 'scopePaths' ? '' : ' required') + '>' + esc(value) + '</textarea>' : '<input name="' + name + '" value="' + esc(value) + '" required>') + (hint ? '<small>' + hint + '</small>' : '') + '</label>'; }
-  function openForm(title, content, callback) { modal = callback; $('dialog-title').textContent = title; $('dialog-fields').innerHTML = content; $('dialog-error').textContent = ''; $('form-dialog').showModal(); $('dialog-fields').querySelector('input,textarea')?.focus(); }
-  function closeForm() { $('form-dialog').close(); modal = null; }
-  function taskForm(existing) { const p = project(); openForm(existing ? '编辑任务' : '添加任务', field('title', '任务名称', existing?.title) + field('requirements', '任务要求', existing?.requirements, true) + field('acceptance', '验收标准', existing?.acceptance, true) + field('scopePaths', '修改范围（可选）', existing?.scopePaths?.join('\n'), true, '填写相对项目目录的文件或文件夹，每行一项。'), async values => { const input = { ...values, scopePaths: values.scopePaths.split('\n').map(s => s.trim()).filter(Boolean), expectedRevision: existing ? existing.revision : p.revision }; return act(existing ? 'task.update' : 'task.create', { ...input, ...(existing ? { taskRef: existing.ref } : { projectRef: p.ref }) }); }); }
+  function dialogEntity(draft) {
+    if (draft.kind === 'task.update') return task(draft.ref);
+    if (draft.kind === 'issue.retest') return data.issues.find(item => item.ref === draft.ref);
+    return data.projects.find(item => item.ref === draft.projectRef);
+  }
+  function openForm(draft) {
+    const allowed = ['project.create', 'task.create', 'task.update', 'issue.create', 'issue.retest'];
+    if (!draft || !allowed.includes(draft.kind) || !draft.values || typeof draft.values !== 'object') { delete view.dialogDraft; saveView(); return; }
+    modal = draft; view.dialogDraft = draft; saveView(); const v = draft.values;
+    let title, content;
+    if (draft.kind === 'project.create') { title = '添加项目'; content = field('name', '项目名称', v.name) + field('root', '项目目录', v.root, false, '填写本机现有项目目录的完整路径。'); }
+    else if (draft.kind.startsWith('task.')) { title = draft.kind === 'task.update' ? '编辑任务' : '添加任务'; content = field('title', '任务名称', v.title) + field('requirements', '任务要求', v.requirements, true) + field('acceptance', '验收标准', v.acceptance, true) + field('scopePaths', '修改范围（可选）', v.scopePaths, true, '填写相对项目目录的文件或文件夹，每行一项。'); }
+    else if (draft.kind === 'issue.create') { title = '记录验收问题'; content = field('title', '问题名称', v.title) + field('description', '问题表现及复现步骤', v.description, true); }
+    else { title = '问题复验'; content = field('note', draft.passed ? '复验说明' : '未通过原因', v.note, true); }
+    const current = dialogEntity(draft);
+    if (current && current.revision !== draft.expectedRevision) content += '<p class="remote-notice">内容已有更新。你的输入已保留，请核对后再保存。</p><details class="version-compare"><summary>查看当前已保存内容</summary><p class="prose">' + esc([current.title || current.name, current.requirements || current.description, current.acceptance].filter(Boolean).join('\n')) + '</p></details>' + button('rebase-dialog', '以当前版本继续编辑');
+    $('dialog-title').textContent = title; $('dialog-fields').innerHTML = content; $('dialog-error').textContent = '';
+    if (!$('form-dialog').open) $('form-dialog').showModal(); $('dialog-fields').querySelector('input,textarea')?.focus();
+  }
+  function closeForm() { $('form-dialog').close(); modal = null; delete view.dialogDraft; saveView(); }
+  function taskForm(existing) {
+    const p = project(); openForm({ kind: existing ? 'task.update' : 'task.create', ref: existing?.ref, projectRef: p.ref, expectedRevision: existing ? existing.revision : p.revision, values: { title: existing?.title || '', requirements: existing?.requirements || '', acceptance: existing?.acceptance || '', scopePaths: existing?.scopePaths?.join('\n') || '' } });
+  }
+  function submitDialog(draft, values) {
+    const current = dialogEntity(draft);
+    const input = { ...values, ...(draft.expectedRevision === undefined ? {} : { expectedRevision: draft.expectedRevision }) };
+    if (draft.kind === 'task.create' || draft.kind === 'task.update') input.scopePaths = String(values.scopePaths || '').split('\n').map(value => value.trim()).filter(Boolean);
+    if (draft.kind === 'task.update') input.taskRef = draft.ref;
+    else if (draft.kind === 'issue.retest') { input.issueRef = draft.ref; input.passed = draft.passed; }
+    else if (draft.kind !== 'project.create') input.projectRef = draft.projectRef;
+    if (current && current.revision !== draft.expectedRevision && !requests.has(JSON.stringify([draft.kind, input]))) throw Object.assign(Error('内容已有更新，请核对当前内容后再保存。'), { code: 'revision_conflict' });
+    return act(draft.kind, input);
+  }
   async function action(name, ref) {
     const p = project(), t = task(ref);
     if (name === 'overview') { view.projectRef = ''; render(); }
     else if (name === 'project') { view.projectRef = ref; view.taskRef = ''; view.tab = 'charter'; view.search = ''; view.filter = ''; finalAcceptance = null; render(); void refresh().catch(() => {}); }
     else if (name === 'tab') { view.tab = ref; render(); }
     else if (name === 'task') { view.taskRef = ref; render(); }
-    else if (name === 'refresh') await refresh();
+    else if (name === 'refresh') await recover(true);
     else if (name === 'close-dialog') closeForm();
-    else if (name === 'new-project') openForm('添加项目', field('name', '项目名称') + field('root', '项目目录', '', false, '填写本机现有项目目录的完整路径。'), values => act('project.create', values));
+    else if (name === 'new-project') openForm({ kind: 'project.create', values: { name: '', root: '' } });
     else if (name === 'create-charter') { await act('charter.create', { projectRef: ref, expectedRevision: p.revision }); toast('总纲任务已创建'); }
     else if (name === 'copy-charter') await copy('bc-charter', ref, ' continue');
     else if (name === 'copy-plan') await copy('bc-plan', ref);
@@ -92,25 +181,50 @@
     else if (name === 'confirm-charter') { await act('charter.confirm', { taskRef: ref, version: charterFor(ref)?.version, expectedRevision: t.revision }); toast('总纲版本已确认'); }
     else if (name === 'new-task') taskForm();
     else if (name === 'edit-task') taskForm(t);
+    else if (name === 'rebase-dialog' && view.dialogDraft) { const current = dialogEntity(view.dialogDraft); if (current && confirm('已核对当前保存内容，保留你的输入继续编辑？')) { view.dialogDraft.expectedRevision = current.revision; openForm(view.dialogDraft); } }
+    else if (name === 'rebase-note' && view.drafts['note:' + ref] && confirm('已核对当前任务成果和验收记录，保留说明继续验收？')) { view.drafts['note:' + ref].revision = t.revision; saveView(); render(); }
     else if (name === 'revoke') { if (confirm('请先停止原工具中的执行。结束当前执行并允许重新领取？')) { await act('task.revoke', { taskRef: ref, expectedRevision: t.revision }); toast('当前执行已结束'); } }
     else if (name === 'human-pass' || name === 'human-fail') { const note = $('review-note').value.trim(); if (name === 'human-fail' && !note) throw Error('请填写退回原因'); await act('task.humanReview', { taskRef: ref, expectedRevision: view.drafts['note:' + ref]?.revision ?? t.revision, passed: name === 'human-pass', note: note || '人工验收通过' }); toast(name === 'human-pass' ? '人工验收已通过' : '任务已退回修改'); }
     else if (name === 'start-batch') { await act('batch.start', { projectRef: ref, expectedRevision: p.revision }); toast('项目验收批次已创建'); }
     else if (name === 'confirm-batch') { const batch = data.batches.find(item => item.ref === ref); await act('batch.confirm', { batchRef: ref, expectedRevision: batch.revision }); toast('项目验收已确认'); }
-    else if (name === 'new-issue') openForm('记录验收问题', field('title', '问题名称') + field('description', '问题表现及复现步骤', '', true), values => act('issue.create', { ...values, projectRef: p.ref, expectedRevision: p.revision }));
+    else if (name === 'new-issue') openForm({ kind: 'issue.create', projectRef: p.ref, expectedRevision: p.revision, values: { title: '', description: '' } });
     else if (name === 'repair-issue') { const issue = data.issues.find(item => item.ref === ref); const result = await act('issue.repair', { issueRef: ref, expectedRevision: issue.revision }); toast('修复任务已创建：' + result.task.ref); }
-    else if (name === 'retest-issue' || name === 'retest-fail') { const issue = data.issues.find(item => item.ref === ref); openForm('问题复验', field('note', name === 'retest-issue' ? '复验说明' : '未通过原因', '', true), values => act('issue.retest', { issueRef: ref, expectedRevision: issue.revision, passed: name === 'retest-issue', ...values })); }
+    else if (name === 'retest-issue' || name === 'retest-fail') { const issue = data.issues.find(item => item.ref === ref); openForm({ kind: 'issue.retest', ref, projectRef: p.ref, expectedRevision: issue.revision, passed: name === 'retest-issue', values: { note: '' } }); }
   }
   document.addEventListener('click', event => { const target = event.target.closest('[data-action]'); if (!target || target.disabled) return; action(target.dataset.action, target.dataset.ref).catch(error => toast(error.message || '操作未完成，请重试')); });
-  document.addEventListener('input', event => { const node = event.target; if (node.dataset.draft) { view.drafts[node.dataset.draft] = { content: node.value, revision: Number(node.dataset.revision) }; saveView(); } else if (node.id === 'task-search') { view.search = node.value; render(); } });
+  document.addEventListener('input', event => { const node = event.target; if (node.name && node.closest('#dialog-fields') && view.dialogDraft) { view.dialogDraft.values[node.name] = node.value; saveView(); } else if (node.dataset.draft) { view.drafts[node.dataset.draft] = { content: node.value, revision: Number(node.dataset.revision) }; saveView(); } else if (node.id === 'task-search') { view.search = node.value; render(); } });
   document.addEventListener('change', event => { if (event.target.id === 'task-filter') { view.filter = event.target.value; render(); } else if (event.target.id === 'tool') { view.tool = event.target.value; saveView(); } });
-  $('dialog-form').addEventListener('submit', async event => { event.preventDefault(); if (!modal || busy) return; $('dialog-submit').disabled = true; try { await modal(Object.fromEntries(new FormData(event.target))); closeForm(); toast('已保存'); } catch (error) { $('dialog-error').textContent = error.message || '保存未完成，请重试'; } finally { $('dialog-submit').disabled = false; } });
+  $('form-dialog').addEventListener('cancel', event => { event.preventDefault(); closeForm(); });
+  $('dialog-form').addEventListener('submit', async event => {
+    event.preventDefault(); if (!modal || busy) return; $('dialog-submit').disabled = true;
+    const submitted = modal, values = Object.fromEntries(new FormData(event.target)); submitted.values = { ...values }; saveView();
+    try {
+      const result = await submitDialog(submitted, values);
+      if (view.dialogDraft === submitted && JSON.stringify(submitted.values) === JSON.stringify(values)) { closeForm(); toast('已保存'); }
+      else if (view.dialogDraft === submitted) {
+        const entity = submitted.kind === 'issue.create' ? result.project : result.task || result.issue || result.project;
+        if (entity) { submitted.expectedRevision = entity.revision; if (submitted.kind === 'task.create') { submitted.kind = 'task.update'; submitted.ref = entity.ref; } }
+        saveView(); toast('已保存，后续输入已保留。');
+      }
+    } catch (error) {
+      if (error.code === 'revision_conflict') { await refresh().catch(() => {}); if (view.dialogDraft === submitted) openForm(submitted); }
+      $('dialog-error').textContent = error.message || '保存未完成，请重试';
+    } finally { $('dialog-submit').disabled = false; }
+  });
   function connect() {
     stream?.close(); stream = new EventSource('/api/workflow/v1/events?cursor=' + data.cursor);
-    stream.addEventListener('open', async () => { try { const current = await (await fetch('/api/workflow/v1/session')).json(); if (current.revision && current.revision !== serviceRevision) { location.reload(); return; } $('connection').textContent = '实时同步'; $('connection').classList.add('online'); await refresh(); } catch (error) { toast(error.message); } });
+    stream.addEventListener('open', async () => { try { if (!await ensureSession(true)) return; $('connection').textContent = '实时同步'; $('connection').classList.add('online'); await refresh(); } catch (error) { toast(error.message); } });
     stream.addEventListener('change', () => { void refresh().catch(error => toast(error.message)); });
-    stream.addEventListener('error', () => { $('connection').textContent = '正在重连'; $('connection').classList.remove('online'); });
+    stream.addEventListener('error', () => { $('connection').textContent = '正在重连'; $('connection').classList.remove('online'); void ensureSession(true).catch(() => {}); });
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh().catch(() => {}); });
-  async function start() { $('content').innerHTML = empty('正在加载面板', '请稍候'); try { const response = await fetch('/api/workflow/v1/session'); const result = await response.json(); if (!response.ok) throw Error(result.message); csrf = result.csrf; serviceRevision = result.revision; await refresh(); connect(); } catch (error) { $('connection').textContent = '尚未连接'; $('content').innerHTML = empty('面板尚未连接', error.message || '请从 Codex 顶部重新打开面板。'); } }
-  void start();
+  function recover(force = false) {
+    if (recoveryPromise) return recoveryPromise;
+    recoveryPromise = (async () => { if (!await ensureSession(force)) return; await refresh(); if (!stream) connect(); })().finally(() => { recoveryPromise = null; });
+    return recoveryPromise;
+  }
+  function reconnect() { void recover(true).catch(error => { if (!hasState) $('content').innerHTML = empty('面板尚未连接', error.message || '请点击刷新重试。'); if (error.status !== 401) { $('connection').textContent = '等待重连'; $('connection').classList.remove('online'); } }); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnect(); });
+  window.addEventListener('online', reconnect);
+  window.addEventListener('beforeunload', saveView);
+  $('content').innerHTML = empty('正在加载面板', '请稍候'); reconnect();
 })();

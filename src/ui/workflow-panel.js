@@ -138,7 +138,8 @@ var BetterCodexWorkflowPanel = (() => {
         const host = driver.host(), snapshot = driver.snapshot();
         let needsNavigation = !host || host.disposed || snapshot?.isSuspended ||
           !matchesTarget(snapshot, target);
-        if (!needsNavigation && driver.authRequired) needsNavigation = await driver.authRequired();
+        if (!needsNavigation && !snapshot?.isLoading && !snapshot?.isWaitingForResponse &&
+            (snapshot?.committedUrl || snapshot?.url) === target.stableUrl && driver.authRequired) needsNavigation = await driver.authRequired();
         if (destroyed) return false;
         if (!driver.open(scope, needsNavigation ? target.url : undefined)) throw new Error("panel_native_open_rejected");
         driver.retainOnClose(scope);

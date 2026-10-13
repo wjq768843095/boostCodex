@@ -1,21 +1,22 @@
 'use strict';
-const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), os = require('node:os'), crypto = require('node:crypto'), cp = require('node:child_process');
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), os = require('node:os'), crypto = require('node:crypto'), cp = require('node:child_process'), http = require('node:http');
 const manager = require('../integration/workflow-service.cjs');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-workflow-http-')), home = path.join(temp, 'home'), projectRoot = path.join(temp, 'project'), root = path.resolve(__dirname, '..');
 fs.mkdirSync(home); fs.mkdirSync(projectRoot); fs.writeFileSync(path.join(projectRoot, 'app.js'), 'const fixture = 1;\n'); const sentinel = Buffer.from('old database untouched'); fs.writeFileSync(path.join(home, 'better-codex.db'), sentinel);
-let port, cookie, csrf, streamReader, child;
+let port, cookie, csrf, streamReader, child, servicePid;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function human(op, input, revision, options = {}) { const response = await fetch('http://127.0.0.1:' + port + '/api/workflow/v1/actions/' + op, { method: 'POST', headers: { Cookie: cookie, Origin: 'http://127.0.0.1:' + port, 'X-Workflow-CSRF': csrf, 'Content-Type': 'application/json', ...options.headers }, body: JSON.stringify({ ...input, requestId: options.requestId || crypto.randomUUID(), ...(revision === undefined ? {} : { expectedRevision: revision }) }) }); return { status: response.status, value: await response.json() }; }
 async function state() { return (await fetch('http://127.0.0.1:' + port + '/api/workflow/v1/state', { headers: { Cookie: cookie } })).json(); }
 async function agent(op, input) { return manager.agentRequest(op, input, { home, root, client: 'codex' }); }
-async function stopped() { for (let i = 0; i < 80 && await manager.health(home); i++) await sleep(50); }
+function alive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
+async function stopped() { for (let i = 0; i < 100 && alive(servicePid); i++) await sleep(50); assert(!alive(servicePid), 'owned fixture service exits before cleanup'); }
 (async () => {
-  const ready = await manager.ensureStarted({ home, root }); port = ready.port;
+  const ready = await manager.ensureStarted({ home, root }); port = ready.port; servicePid = ready.pid;
   assert.equal(ready.ready, true); assert.equal((await manager.ensureStarted({ home, root })).instanceId, ready.instanceId, 'single service instance');
   const base = 'http://127.0.0.1:' + port;
   assert.equal((await fetch(base + '/api/workflow/v1/state')).status, 401);
   assert.equal((await fetch(base + '/health', { headers: { Origin: 'https://untrusted.example' } })).status, 403);
-  assert.equal((await fetch(base + '/health', { headers: { Host: 'attacker.example:' + port } })).status, 403);
+  const hostileHost = await new Promise((resolve, reject) => { const request = http.get(base + '/health', { headers: { Host: 'attacker.example:' + port } }, response => { response.resume(); resolve(response.statusCode); }); request.on('error', reject); }); assert.equal(hostileHost, 403);
   const launch = await manager.panelUrl({ home, root }); assert.equal(launch.stableUrl, base + '/');
   const opened = await fetch(launch.url, { redirect: 'manual' }); assert.equal(opened.status, 302); assert.equal(opened.headers.get('location'), '/'); cookie = opened.headers.get('set-cookie').split(';')[0]; assert(opened.headers.get('set-cookie').includes('HttpOnly')); assert(opened.headers.get('set-cookie').includes('SameSite=Strict'));
   assert.equal((await fetch(launch.url, { redirect: 'manual' })).status, 401, 'launch tickets are single-use');
@@ -43,7 +44,7 @@ async function stopped() { for (let i = 0; i < 80 && await manager.health(home);
   const update = await Promise.race([pending, sleep(3000).then(() => { throw Error('SSE event timeout'); })]); assert(Buffer.from(update.value).toString().includes('event: change'));
   await streamReader.cancel(); streamReader = null;
   await manager.controlRequest('stop', {}, home); await stopped();
-  const restarted = await manager.ensureStarted({ home, root }); assert.equal(restarted.port, port); assert.notEqual(restarted.instanceId, ready.instanceId); assert.equal((await state()).projects[0].ref, project.ref, 'persisted cookie and data work across restart');
+  const restarted = await manager.ensureStarted({ home, root }); servicePid = restarted.pid; assert.equal(restarted.port, port); assert.notEqual(restarted.instanceId, ready.instanceId); assert.equal((await state()).projects[0].ref, project.ref, 'persisted cookie and data work across restart');
   assert(fs.readFileSync(path.join(home, 'better-codex.db')).equals(sentinel));
   await manager.controlRequest('stop', {}, home); await stopped();
   // Native clients discover stdio tools without opening any workflow database.
@@ -56,4 +57,4 @@ async function stopped() { for (let i = 0; i < 80 && await manager.health(home);
   assert(output.includes('bc_context'), errors || 'real stable launcher discovers MCP tools'); assert(!fs.existsSync(path.join(discoveryHome, 'workflow-v1.db'))); assert(!fs.existsSync(path.join(discoveryHome, 'run/workflow-runtime.json')));
   child.stdin.end(); for (let i = 0; i < 40 && child.exitCode === null; i++) await sleep(50); assert.equal(child.exitCode, 0);
   console.log('PASS: independent workflow HTTP auth/CSRF/roles, real API leases, SSE, restart persistence, historical sentinel, stable stdio launcher without database side effects');
-})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { try { await streamReader?.cancel(); } catch {} if (child?.exitCode === null) child.kill(); try { if (await manager.health(home)) { await manager.controlRequest('stop', {}, home); await stopped(); } } catch {} const resolved = path.resolve(temp); assert(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) && path.basename(resolved).startsWith('bc-workflow-http-')); fs.rmSync(resolved, { recursive: true, force: true }); });
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { try { await streamReader?.cancel(); } catch {} if (child?.exitCode === null) { child.kill(); for (let i = 0; i < 40 && child.exitCode === null; i++) await sleep(50); } try { if (alive(servicePid)) { await manager.controlRequest('stop', {}, home); await stopped(); } } catch {} const resolved = path.resolve(temp); assert(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) && path.basename(resolved).startsWith('bc-workflow-http-')); if (!alive(servicePid)) fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { SKILLS, installWorkflow } = require('../integration/workflow-install.cjs');
+const { TOOL_DEFINITIONS } = require('../src/backend/workflow-mcp.cjs');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-workflow-install-'));
 const repoRoot = path.join(root, '项目 with spaces');
 const userHome = path.join(root, '用户 home');
@@ -33,6 +34,10 @@ try {
     assert.ok(!/\{\{[A-Z_]+\}\}/.test(codexBody)); assert.ok(!/\{\{[A-Z_]+\}\}/.test(claudeBody));
     assert.equal(fs.readFileSync(path.join(codexFolder, 'agents/openai.yaml'), 'utf8'), 'policy:\n  allow_implicit_invocation: false\n');
     assert.match(claudeBody.split('\n---\n')[0], /disable-model-invocation: true/);
+    const callableTools = new Set(TOOL_DEFINITIONS.map(tool => tool.name));
+    for (const match of codexBody.matchAll(/mcp__better_codex_workflow__(bc_[a-z_]+)/g)) assert.ok(callableTools.has(match[1]), 'Unavailable skill tool: ' + match[1]);
+    for (const match of claudeBody.matchAll(/mcp__better_codex_workflow__(bc_[a-z_]+)/g)) assert.ok(callableTools.has(match[1]), 'Unavailable skill tool: ' + match[1]);
+    assert.ok(!codexBody.includes('章程')); assert.ok(!claudeBody.includes('章程'));
   }
   const bytes = fs.readFileSync(codex); const second = installWorkflow(options); assert.equal(second.changed, false); assert.equal(second.backupDirectory, null); assert.ok(fs.readFileSync(codex).equals(bytes));
   // Updates to the single source update both clients, preserve user fields and back up changes.

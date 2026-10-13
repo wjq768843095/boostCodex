@@ -20,8 +20,8 @@ async function startServer({ home = process.env.BETTER_CODEX_HOME || path.join(o
   const saveSessions = () => atomic(sessionFile, sessions);
   function session(request) { const prefix = 'bc_workflow_' + readyPort + '='; const cookies = String(request.headers.cookie || '').split(';').map(item => item.trim()); const value = cookies.find(item => item.startsWith(prefix))?.slice(prefix.length); const key = digest(value || ''); const selected = sessions[key]; if (!selected || selected.expiresAt <= Date.now()) return null; return selected; }
   function originAllowed(request) { return !request.headers.origin || request.headers.origin === 'http://127.0.0.1:' + readyPort; }
-  function events(response, after) { const pending = store.eventsAfter(after); for (const event of pending) response.write('id: ' + event.id + '\nevent: change\ndata: ' + JSON.stringify(event) + '\n\n'); }
-  function broadcast() { for (const stream of streams) { try { events(stream.response, stream.cursor); stream.cursor = store.state().cursor; } catch { stream.response.end(); streams.delete(stream); } } }
+  function events(response, after) { let cursor = after; while (true) { const pending = store.eventsAfter(cursor); for (const event of pending) { response.write('id: ' + event.id + '\nevent: change\ndata: ' + JSON.stringify(event) + '\n\n'); cursor = event.id; } if (pending.length < 1000) return cursor; } }
+  function broadcast() { for (const stream of streams) { try { stream.cursor = events(stream.response, stream.cursor); } catch { stream.response.end(); streams.delete(stream); } } }
   async function stop() { if (closed) return; draining = true; for (const stream of streams) stream.response.end(); streams.clear(); await new Promise(resolve => { const timer = setInterval(() => { if (!inFlight) { clearInterval(timer); resolve(); } }, 20); }); closed = true; clearInterval(heartbeat); store.close(); await new Promise(resolve => { server.close(resolve); server.closeIdleConnections(); }); if (read(stateFile)?.instanceId === instanceId) fs.unlinkSync(stateFile); }
   const server = http.createServer(async (request, response) => {
     try {
@@ -53,7 +53,7 @@ async function startServer({ home = process.env.BETTER_CODEX_HOME || path.join(o
       if (!agent && method === 'GET' && url.pathname === '/api/workflow/v1/events') {
         if (draining) return json(response, 503, { error: 'SERVICE_RESTARTING', message: '连接正在恢复，请稍候' });
         response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); response.write('retry: 1000\n\n');
-        const cursor = Number(request.headers['last-event-id'] || url.searchParams.get('cursor') || 0); const stream = { response, cursor: Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0 }; streams.add(stream); events(response, stream.cursor); stream.cursor = store.state().cursor; response.on('close', () => streams.delete(stream)); return;
+        const cursor = Number(request.headers['last-event-id'] || url.searchParams.get('cursor') || 0); const stream = { response, cursor: Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0 }; streams.add(stream); stream.cursor = events(response, stream.cursor); response.on('close', () => streams.delete(stream)); return;
       }
       if (method !== 'POST') return json(response, 405, { error: 'METHOD_NOT_ALLOWED', message: '当前操作不可用' });
       if (draining) return json(response, 503, { error: 'SERVICE_RESTARTING', message: '连接正在恢复，请稍候' });

@@ -181,8 +181,11 @@ class WorkflowStore {
     const finish = execution => { execution.status = 'finished'; execution.endedAt = at; bump(execution); };
     const evidence = passed => {
       if (!Array.isArray(input.evidence) || !input.evidence.length || input.evidence.length > 100) fail('evidence_required');
-      const items = input.evidence.map(item => ({ kind: text(item.kind, 'evidence_kind', 100), result: text(item.result, 'evidence_result', 100), detail: text(item.detail, 'evidence_detail', 20000) }));
-      if (passed && (!items.some(item => /^(passed|pass|通过)$/i.test(item.result)) || items.some(item => /^(failed|fail|not_run|blocked|未测|未执行|失败)$/i.test(item.result)))) fail('passing_evidence_required');
+      const items = input.evidence.map(item => {
+        if (item.required !== undefined && typeof item.required !== 'boolean') fail('invalid_evidence_required');
+        return { kind: text(item.kind, 'evidence_kind', 100), result: text(item.result, 'evidence_result', 100), detail: text(item.detail, 'evidence_detail', 20000), required: item.required !== false };
+      });
+      if (passed && (!items.some(item => item.required && /^(passed|pass|通过)$/i.test(item.result)) || items.some(item => /^(failed|fail|失败)$/i.test(item.result) || item.required && !/^(passed|pass|通过)$/i.test(item.result)))) fail('passing_evidence_required');
       return items;
     };
     const confirmed = (p, version = p.confirmedCharterVersion) => { const charter = state.charters.find(item => item.projectRef === p.ref && item.version === version && item.status === 'confirmed'); if (!charter || version !== p.confirmedCharterVersion) fail('confirmed_charter_required', 409); return charter; };

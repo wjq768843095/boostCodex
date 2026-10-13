@@ -2,12 +2,13 @@ const assert = require('node:assert/strict');
 const { create } = require('../src/ui/workflow-panel.js');
 
 function fixture() {
-  let scope = { route: '/' }, host = null, snapshot = null, visible = false;
+  let scope = { route: '/' }, host = null, snapshot = null, visible = false, authRequired = false;
   const opens = [], closeHandlers = [], errors = [];
   const native = {
     getScope: () => scope,
     host: () => host,
     snapshot: () => snapshot,
+    authRequired: async () => authRequired,
     open(current, url) {
       opens.push({ route: current.route, url });
       if (url) { host = { identity: Symbol('page'), disposed: false }; snapshot = { committedUrl: url, isSuspended: false }; }
@@ -24,6 +25,7 @@ function fixture() {
     route: route => { scope = { route }; },
     host: () => host,
     snapshot: value => { snapshot = value; },
+    requireAuth: value => { authRequired = value; },
     suspend: () => { host = null; snapshot.isSuspended = true; }
   };
 }
@@ -73,9 +75,13 @@ async function main() {
   authenticated.snapshot({ url: stableUrl + 'launch?ticket=one-time-1', committedUrl: stableUrl, isLoading: false });
   assert.equal(await authenticatedPanel.open(), true);
   assert.equal(authenticated.opens.at(-1).url, undefined, 'the committed root wins over a stale launch URL');
+  authenticated.requireAuth(true);
+  assert.equal(await authenticatedPanel.open(), true);
+  assert.equal(authenticated.opens.at(-1).url, stableUrl + 'launch?ticket=one-time-5', 'a 401-marked live page receives a fresh bootstrap');
+  authenticated.requireAuth(false);
   authenticated.suspend();
   assert.equal(await authenticatedPanel.open(), true);
-  assert.equal(authenticated.opens.at(-1).url, stableUrl + 'launch?ticket=one-time-5', 'actual recovery uses a fresh launch ticket');
+  assert.equal(authenticated.opens.at(-1).url, stableUrl + 'launch?ticket=one-time-6', 'actual recovery uses a fresh launch ticket');
   for (const unexpected of [
     'http://127.0.0.1:40124/launch?ticket=foreign',
     stableUrl + 'other?ticket=wrong-path',

@@ -11,13 +11,13 @@ const object = (properties, required = Object.keys(properties)) => ({ type: 'obj
 const array = items => ({ type: 'array', items, maxItems: 1000 });
 const write = { expectedRevision: { type: 'integer', minimum: 0 }, requestId: { type: 'string', minLength: 1, maxLength: 200 } };
 const lease = { executionId: string, leaseToken: string };
-const evidence = array(object({ kind: string, result: string, detail: string }));
+const evidence = array(object({ kind: string, result: string, detail: string, required: { type: 'boolean' } }, ['kind', 'result', 'detail']));
 const definitions = [
   ['context', 'Read current workflow state and permanent references.', object({ projectRef, taskRef, batchRef }, []), true],
   ['project.list', 'List projects, local roots and current revisions.', object({}), true],
   ['charter.create', 'Create or resume the project charter draft.', object({ projectRef, ...write }), false],
   ['charter.save', 'Save a charter draft under a valid charter lease.', object({ taskRef, content: string, ...lease, ...write }), false],
-  ['charter.submit', 'Submit the charter for human confirmation.', object({ taskRef, content: string, ...lease, ...write }), false],
+  ['charter.submit', 'Submit the saved project charter for human confirmation.', object({ taskRef, ...lease, ...write }), false],
   ['plan.tasks', 'Create tasks from the human-confirmed charter.', object({ projectRef, charterVersion: { type: 'integer', minimum: 1 }, tasks: array(object({ title: string, requirements: string, acceptance: string, scopePaths: array(string) })), ...write }), false],
   ['task.claim', 'Claim a 30-minute execution lease for a workflow phase.', object({ taskRef, phase: { type: 'string', enum: ['develop', 'charter', 'review'] }, ...write }), false],
   ['task.renew', 'Renew the current execution lease before it expires.', object({ taskRef, ...lease, ...write }), false],
@@ -73,7 +73,7 @@ function createMcpServer({ input = process.stdin, output = process.stdout, clien
       if (initialized) return failure(id, -32600, 'Already initialized');
       if (!message.params || typeof message.params.protocolVersion !== 'string') return failure(id, -32602, 'protocolVersion is required');
       initialized = true;
-      return send({ jsonrpc: '2.0', id, result: { protocolVersion: PROTOCOLS.includes(message.params.protocolVersion) ? message.params.protocolVersion : PROTOCOLS[0], capabilities: { tools: {} }, serverInfo: { name: 'better-codex-workflow', version: '1.0.0' }, instructions: 'Use permanent project/task/batch references. Human confirmation tools are unavailable.' } });
+      return send({ jsonrpc: '2.0', id, result: { protocolVersion: PROTOCOLS.includes(message.params.protocolVersion) ? message.params.protocolVersion : PROTOCOLS[0], capabilities: { tools: {} }, serverInfo: { name: 'better-codex-workflow', version: '1.0.0' }, instructions: 'Only use workflow mutation tools after the human explicitly invokes a bc-charter, bc-plan, bc-develop, bc-review or bc-project-review Skill. Ordinary coding requests do not start this workflow. Use permanent project/task/batch references and latest revisions. Human confirmation tools are unavailable. Never infer a target from the current chat or working directory.' } });
     }
     if (message.method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
     if (!ready) return failure(id, -32600, 'Server is not initialized');

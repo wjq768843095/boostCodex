@@ -13,6 +13,10 @@
     "status": "node .dev/launcher.cjs dev-status",
     "repair": "node .dev/launcher.cjs repair",
     "stop": "node .dev/launcher.cjs dev-stop",
-    "test": "node tests/run.cjs"
+    "test": "node tests/run.cjs",
+    "workflow:start": "node integration/workflow-service.cjs start",
+    "workflow:status": "node integration/workflow-service.cjs status",
+    "workflow:stop": "node integration/workflow-service.cjs stop",
+    "workflow:install": "node integration/workflow-install.cjs"
   }
 }

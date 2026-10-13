@@ -13,6 +13,7 @@ fs.writeFileSync(path.join(home, 'better-codex.db'), sentinel);
 let clock = Date.now(), sequence = 0, store;
 const human = { role: 'human', client: 'web' }, agent = { role: 'agent', client: 'codex' }, claude = { role: 'agent', client: 'claude' };
 const evidence = [{ kind: 'static', result: 'passed', detail: 'Isolated fixture validation' }];
+const stagedEvidence = [...evidence, { kind: 'device', result: 'not_run', detail: 'Device acceptance reserved for manual review', required: false }];
 function current(collection, ref) { return store.state()[collection].find(item => item.ref === ref); }
 function call(op, data, actor = human) {
   let entity;
@@ -28,7 +29,14 @@ function complete(taskRef, worker = agent) {
   call('task.submit', { taskRef, executionId: lease.executionId, leaseToken: lease.leaseToken, summary: 'Implemented fixture', evidence }, worker);
   const reviewer = call('task.claim', { taskRef, phase: 'review' }, claude);
   rejects(() => call('task.review', { taskRef, executionId: reviewer.executionId, leaseToken: reviewer.leaseToken, passed: true, summary: 'Untested cannot pass', evidence: [{ kind: 'browser', result: 'not_run', detail: 'No browser run' }] }, claude), 'passing_evidence_required');
-  call('task.review', { taskRef, executionId: reviewer.executionId, leaseToken: reviewer.leaseToken, passed: true, summary: 'Reviewed fixture', evidence }, claude);
+  rejects(() => call('task.review', { taskRef, executionId: reviewer.executionId, leaseToken: reviewer.leaseToken, passed: true, summary: 'All optional cannot pass', evidence: [{ kind: 'static', result: 'passed', detail: 'Optional only', required: false }] }, claude), 'passing_evidence_required');
+  rejects(() => call('task.review', { taskRef, executionId: reviewer.executionId, leaseToken: reviewer.leaseToken, passed: true, summary: 'Optional failures still block', evidence: [...evidence, { kind: 'device', result: 'failed', detail: 'Observed failure', required: false }] }, claude), 'passing_evidence_required');
+  rejects(() => call('task.review', { taskRef, executionId: reviewer.executionId, leaseToken: reviewer.leaseToken, passed: true, summary: 'Required unknown blocks', evidence: [...evidence, { kind: 'browser', result: 'unknown', detail: 'Unknown result' }] }, claude), 'passing_evidence_required');
+  const reviewed = call('task.review', { taskRef, executionId: reviewer.executionId, leaseToken: reviewer.leaseToken, passed: true, summary: 'Reviewed fixture with device acceptance pending', evidence: stagedEvidence }, claude);
+  assert.equal(reviewed.task.status, 'human_review');
+  assert.equal(reviewed.review.evidence[0].required, true);
+  assert.equal(reviewed.review.evidence[1].required, false);
+  assert.equal(reviewed.review.evidence[1].result, 'not_run', 'deferred device check stays explicitly unexecuted');
   call('task.humanReview', { taskRef, passed: true, note: 'Manual fixture accepted' });
 }
 try {
@@ -96,7 +104,11 @@ try {
   call('issue.retest', { issueRef: issue.ref, passed: true, note: 'Repair manually retested' });
   rejects(() => call('batch.confirm', { batchRef: batch.ref }), 'batch_task_set_changed');
   batch = call('batch.start', { projectRef }).batch;
-  call('batch.report', { batchRef: batch.ref, passed: true, summary: 'Integrated project passed', evidence, issues: [] }, agent);
+  rejects(() => call('batch.report', { batchRef: batch.ref, passed: true, summary: 'Required device unexecuted', evidence: [...evidence, { kind: 'device', result: 'not_run', detail: 'Required manual device run' }], issues: [] }, agent), 'passing_evidence_required');
+  const stagedBatch = call('batch.report', { batchRef: batch.ref, passed: true, summary: 'AI integration accepted with device check reserved for human', evidence: stagedEvidence, issues: [] }, agent);
+  assert.equal(stagedBatch.batch.status, 'awaiting_confirmation');
+  assert.equal(stagedBatch.batch.report.evidence[1].result, 'not_run');
+  assert.equal(stagedBatch.batch.report.evidence[1].required, false);
   rejects(() => call('batch.confirm', { batchRef: batch.ref }, agent), 'role_forbidden');
   fs.appendFileSync(path.join(root, 'src', 'app.js'), 'const finalChange = true;\n');
   rejects(() => call('batch.confirm', { batchRef: batch.ref }), 'source_baseline_changed');
