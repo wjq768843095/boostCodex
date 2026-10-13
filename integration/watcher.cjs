@@ -1,30 +1,14 @@
 const fs=require('node:fs'),path=require('node:path');const lib=require('./lib.cjs');
 let running=false,stopping=false,rejected=null,pending=false,force=false,recoveryFailures=0;const handles=[];
-function preserveExpression(){return `(() => {const panel=document.querySelector('#better-codex-panel');return {surface:panel?.dataset.surface,open:!!panel&&!panel.hidden,project:document.querySelector('.bc-project-row.is-active')?.dataset.projectId||localStorage.getItem('better-codex-managed-project'),tab:document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view][aria-current="page"]')?.dataset.projectDashboardView,...window.__betterCodexInjection__?.captureReloadState?.(),fields:[...document.querySelectorAll('#better-codex-panel textarea,#better-codex-panel input')].map(e=>({key:e.getAttribute('name')||e.id||e.getAttribute('placeholder'),value:e.value,focus:e===document.activeElement,start:e.selectionStart,end:e.selectionEnd})),scroll:[...document.querySelectorAll('#better-codex-panel [class]')].filter(e=>e.scrollTop>0).map(e=>({cls:e.className,top:e.scrollTop}))};})()`;}
-function restoredViewMatches(saved,current){
- if(!current||current.surface!==saved.surface||!current.open)return false;
- if(saved.nativeConversation){
-  const expected=saved.nativeConversation.target,actual=current.nativeConversation?.target;
-  return !!expected&&!!actual&&['project_id','kind','issue_id','conversation_id'].every(key=>expected[key]===undefined||expected[key]===actual[key])&&String(expected.history_id||'')===String(actual.history_id||'');
- }
- return (!saved.project||saved.project===current.project)&&(!saved.tab||saved.tab===current.tab);
-}
+function preserveExpression(){return `(() => ({...window.__betterCodexInjection__?.captureReloadState?.()}))()`;}
 async function cdp(expression){const targets=await(await fetch('http://127.0.0.1:9229/json/list',{signal:AbortSignal.timeout(3000)})).json();const target=targets.find(t=>t.url==='app://-/index.html');if(!target)throw Error('Codex window unavailable');const ws=new WebSocket(target.webSocketDebuggerUrl);return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{ws.close();reject(Error('CDP timeout'));},20000);ws.onerror=()=>{clearTimeout(timer);reject(Error('CDP unavailable'));};ws.onopen=()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression,returnByValue:true,awaitPromise:true}}));ws.onmessage=e=>{const r=JSON.parse(e.data);if(r.id!==1)return;clearTimeout(timer);ws.close();if(r.result?.exceptionDetails)reject(Error('UI evaluation failed: '+String(r.result.exceptionDetails.exception?.description||r.result.exceptionDetails.text||'unknown error').split('\n')[0].slice(0,400)));else resolve(r.result?.result?.value);};});}
 async function refresh(savedView){
  let saved=savedView;try{saved ||= await cdp(preserveExpression());}catch{lib.log('injection_deferred',{reason:'Codex window unavailable'});return {deferred:true};}
  await lib.inject();
- if(saved?.open){const result=await cdp(`(async()=>{
-  const saved=${JSON.stringify(saved)},sleep=ms=>new Promise(r=>setTimeout(r,ms));
-  if(window.__betterCodexInjection__?.restoreReloadState)await window.__betterCodexInjection__.restoreReloadState(saved);else window.__betterCodexInjection__?.open(saved.surface,{projectId:saved.project});
-  const viewMatches=${restoredViewMatches.toString()};
-  for(let i=0;i<50;i++){if(window.__betterCodexInjection__?.ready?.()&&viewMatches(saved,window.__betterCodexInjection__?.captureReloadState?.()))break;await sleep(100);}
-  if(saved.surface==='projects'&&saved.tab&&!saved.nativeConversation){document.querySelector('.better-codex-project-dashboard-tabs-desktop [data-project-dashboard-view="'+saved.tab+'"]')?.click();for(let i=0;i<20;i++){if(document.querySelector('.better-codex-project-dashboard-tabs-desktop [aria-current="page"]')?.dataset.projectDashboardView===saved.tab)break;await sleep(100);}}
-  await sleep(100);
-  for(const f of saved.fields){const e=[...document.querySelectorAll('#better-codex-panel textarea,#better-codex-panel input')].find(e=>(e.getAttribute('name')||e.id||e.getAttribute('placeholder'))===f.key);if(!e)continue;e.value=f.value;e.dispatchEvent(new Event('input',{bubbles:true}));if(f.focus){e.focus();if(typeof e.setSelectionRange==='function')e.setSelectionRange(f.start,f.end);}}
-  for(const s of saved.scroll){const e=[...document.querySelectorAll('#better-codex-panel [class]')].find(e=>e.className===s.cls);if(e)e.scrollTop=s.top;}
-  return {error:window.__betterCodexInjection__?.bootstrapError?.()};
- })()`);if(result?.error)throw Error(result.error);}
- else{const result=await cdp(`({ready:window.__betterCodexInjection__?.ready?.(),error:window.__betterCodexInjection__?.bootstrapError?.()})`);if(result?.error)throw Error(result.error);}
+ const result=await cdp(`(async()=>{const saved=${JSON.stringify(saved)};if(window.__betterCodexInjection__?.restoreReloadState)await window.__betterCodexInjection__.restoreReloadState(saved);return {ready:window.__betterCodexInjection__?.ready?.(),error:window.__betterCodexInjection__?.bootstrapError?.()};})()`);
+ if(result?.error)throw Error(result.error);
+ if(!result?.ready)throw Error('injection_not_ready');
+ return result;
 }
 async function reconcile(){
  if(running||stopping)return;running=true;
@@ -84,4 +68,4 @@ async function start(){
  // Recover an unavailable service only after this project has been activated.
  handles.push(setInterval(()=>void recover(),10000));
 }
-module.exports={start,reconcile,recover,refresh,cdp,preserveExpression,restoredViewMatches};
+module.exports={start,reconcile,recover,refresh,cdp,preserveExpression};

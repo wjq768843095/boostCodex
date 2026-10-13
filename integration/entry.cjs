@@ -16,7 +16,7 @@ const args=process.argv.slice(2),command=args[0]||'launch';
  }
  if(command==='dev-start'){lib.ensureWatcher();await lib.ensureLocalRuntime();await lib.inject();console.log(JSON.stringify({started:true,watcher:lib.read(path.join(lib.DEV,'watcher.json')),runtime:await lib.api('/readyz')}));return;}
  if(command==='dev-stop'){const idle=await lib.api('/api/dev/status','GET',{},true);if(idle&&!idle.ready)throw Error('Wait for active work before stopping');lib.save(path.join(lib.DEV,'watcher-stop.json'),{at:Date.now()});await new Promise(r=>setTimeout(r,1000));if(idle)await lib.api('/api/dev/drain','POST');lib.runCore(['stop','--json']);console.log(JSON.stringify({stopped:true}));return;}
- if(['launch','start','runtime','mcp'].includes(command))lib.ensureWatcher();
+ if(['launch','start','runtime'].includes(command))lib.ensureWatcher();
  if(command==='launch'||command==='start')await lib.ensureLocalRuntime();
  const child=cp.spawn(process.execPath,[lib.coreFile(),...args.length?args:['launch']],{cwd:root,env:lib.environment(),stdio:'inherit',windowsHide:true});
  child.on('error',e=>{console.error(e.message);process.exitCode=1;});child.on('close',code=>{process.exitCode=code||0;});
