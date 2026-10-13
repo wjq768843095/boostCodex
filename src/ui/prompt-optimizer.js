@@ -95,8 +95,22 @@
     return null;
   }
   function create({ api }) {
+    const shortcut = root.BetterCodexPromptShortcut;
     const bars = new Map();
     let dialog = null, opener = null, disposed = false, busy = false;
+    let hotkey = shortcut.DEFAULT, shortcutReady = false, shortcutRequest = null, shortcutRevision = 0;
+    function updateShortcut(value) {
+      hotkey = shortcut.normalize(value === undefined ? shortcut.DEFAULT : value); shortcutReady = true;
+      for (const bar of bars.values()) bar.optimize.title = hotkey ? '用 DeepSeek 优化提示词（' + shortcut.label(hotkey) + '）' : '用 DeepSeek 优化提示词';
+    }
+    function loadShortcut() {
+      if (disposed || shortcutRequest) return shortcutRequest;
+      const revision = shortcutRevision;
+      shortcutRequest = api('/api/dev/prompt-optimizer/settings').then(settings => {
+        if (!disposed && revision === shortcutRevision) updateShortcut(settings.hotkey);
+      }).catch(() => {}).finally(() => { shortcutRequest = null; });
+      return shortcutRequest;
+    }
     const style = document.createElement("style");
     style.textContent = `
       .bc-prompt-tools{display:flex;align-items:center;gap:5px;min-width:0}
@@ -146,6 +160,7 @@
       try { settings = await api("/api/dev/prompt-optimizer/settings"); }
       catch (error) { if (dialog === current) loading.textContent = errorText(error); return; }
       if (disposed || dialog !== current) return;
+      shortcutRevision++; updateShortcut(settings.hotkey);
       loading.remove(); current.lastElementChild.remove();
       const form = document.createElement("form");
       function field(label, control) { const node = document.createElement("label"); node.append(document.createTextNode(label), control); form.append(node); }
@@ -163,9 +178,25 @@
         const option = document.createElement("option"); option.value = value; option.textContent = name; contextMode.append(option);
       }
       contextMode.value = settings.contextMode || 'recent'; field("关联上下文", contextMode);
+      let selectedHotkey = settings.hotkey === undefined ? shortcut.DEFAULT : settings.hotkey;
+      const hotkeyInput = document.createElement('input'); hotkeyInput.readOnly = true; hotkeyInput.value = shortcut.label(selectedHotkey); hotkeyInput.setAttribute('aria-label', '优化快捷键');
+      field('优化快捷键（点击后按下组合键）', hotkeyInput);
+      const hotkeyError = document.createElement('p'); hotkeyError.className = 'bc-prompt-error'; hotkeyError.setAttribute('role', 'alert');
+      hotkeyInput.addEventListener('keydown', event => {
+        if (event.key === 'Tab' || event.key === 'Escape') return;
+        event.preventDefault(); event.stopPropagation();
+        if (event.isComposing || event.repeat) return;
+        const value = shortcut.fromEvent(event);
+        if (value === null) return;
+        try { selectedHotkey = shortcut.normalize(value); hotkeyInput.value = shortcut.label(selectedHotkey); hotkeyError.textContent = ''; }
+        catch { hotkeyError.textContent = '请按带 Ctrl、Alt 或 Meta 的组合键；复制、粘贴和撤销等快捷键不可使用。'; }
+      });
+      const hotkeyActions = document.createElement('div'); hotkeyActions.className = 'bc-prompt-actions';
+      hotkeyActions.append(button('恢复默认快捷键', () => { selectedHotkey = shortcut.DEFAULT; hotkeyInput.value = shortcut.label(selectedHotkey); hotkeyError.textContent = ''; }), button('禁用快捷键', () => { selectedHotkey = ''; hotkeyInput.value = shortcut.label(selectedHotkey); hotkeyError.textContent = ''; }));
+      form.append(hotkeyError, hotkeyActions);
       const prompt = document.createElement("textarea"); prompt.value = settings.systemPrompt; prompt.maxLength = 12000; prompt.required = true;
       field("优化指令", prompt);
-      const hint = document.createElement("p"); hint.textContent = "选择最近对话时，当前聊天最近 6 轮的文字会随本次输入发送给 DeepSeek。优化成功后直接替换输入框，可按 Ctrl + Z 还原。优化快捷键：Ctrl + Alt + P。";
+      const hint = document.createElement("p"); hint.textContent = "选择最近对话时，当前聊天最近 6 轮的文字会随本次输入发送给 DeepSeek。优化成功后直接替换输入框，可按 Ctrl + Z 还原。快捷键保存后生效。";
       const error = document.createElement("p"); error.className = "bc-prompt-error"; error.setAttribute("role", "alert");
       const actions = document.createElement("div"); actions.className = "bc-prompt-actions";
       const save = button("保存", () => {}); save.type = "submit"; save.className = "bc-prompt-save";
@@ -176,7 +207,8 @@
       form.addEventListener("submit", async event => {
         event.preventDefault(); if (save.disabled) return; save.disabled = true; error.textContent = "";
         try {
-          await api("/api/dev/prompt-optimizer/settings", { method: "POST", body: JSON.stringify({ apiKey: key.value.trim(), clearApiKey: clearApiKey && !key.value.trim(), model: model.value.trim(), contextMode: contextMode.value, systemPrompt: prompt.value.trim() }) });
+          const saved = await api("/api/dev/prompt-optimizer/settings", { method: "POST", body: JSON.stringify({ apiKey: key.value.trim(), clearApiKey: clearApiKey && !key.value.trim(), model: model.value.trim(), contextMode: contextMode.value, systemPrompt: prompt.value.trim(), hotkey: selectedHotkey }) });
+          if (!disposed) { shortcutRevision++; updateShortcut(saved.hotkey); }
           key.value = ""; if (dialog === current) close();
         } catch (failure) { if (dialog === current) { error.textContent = errorText(failure); save.disabled = false; } }
       });
@@ -238,7 +270,7 @@
         const node = document.createElement("div"); node.className = "bc-prompt-tools"; node.setAttribute("data-better-codex-owned", "true");
         const status = document.createElement("span"); status.className = "bc-prompt-status"; status.setAttribute("role", "status");
         const bar = { node, status };
-        bar.optimize = button("优化提示词", () => void optimize(editor, bar)); bar.optimize.title = "用 DeepSeek 优化提示词（Ctrl + Alt + P）"; bar.optimize.disabled = busy;
+        bar.optimize = button("优化提示词", () => void optimize(editor, bar)); bar.optimize.title = hotkey ? '用 DeepSeek 优化提示词（' + shortcut.label(hotkey) + '）' : '用 DeepSeek 优化提示词'; bar.optimize.disabled = busy;
         bar.restore = button("还原原文", () => {
           const previous = bar.previous;
           if (!previous || busy) return;
@@ -253,13 +285,15 @@
       }
     }
     function keydown(event) {
-      if (event.isComposing || event.repeat || !event.ctrlKey || !event.altKey || event.shiftKey || event.metaKey || event.code !== "KeyP") return;
+      if (!shortcutReady || !hotkey || event.isComposing || event.repeat || shortcut.fromEvent(event) !== hotkey) return;
       const editor = event.target.closest?.('[data-codex-composer][contenteditable="true"]');
       if (!editor || !bars.has(editor) || dialog?.open) return;
       event.preventDefault(); event.stopPropagation(); void optimize(editor, bars.get(editor));
     }
     document.addEventListener("keydown", keydown, true);
-    return { configure, sync, destroy() { disposed = true; close(); document.removeEventListener("keydown", keydown, true); for (const bar of bars.values()) bar.node.remove(); bars.clear(); style.remove(); } };
+    root.addEventListener('focus', loadShortcut);
+    void loadShortcut();
+    return { configure, sync, destroy() { disposed = true; close(); document.removeEventListener("keydown", keydown, true); root.removeEventListener('focus', loadShortcut); for (const bar of bars.values()) bar.node.remove(); bars.clear(); style.remove(); } };
   }
   root.BetterCodexPromptOptimizer = { create, nativeController, conversationContext, limitContext };
 })(window);

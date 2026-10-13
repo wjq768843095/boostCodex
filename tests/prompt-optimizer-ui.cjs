@@ -8,7 +8,7 @@ class Element {
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(node => node !== this); this.parentElement = null; }
   setAttribute(k, v) { this.attributes[k] = v; }
   getAttribute(k) { return this.attributes[k]; }
-  matches(selector) { if (selector.startsWith('.')) return this.className === selector.slice(1); return [...selector.matchAll(/\[([^=\]]+)(?:="([^"]*)")?\]/g)].every(([, key, value]) => key in this.attributes && (value === undefined || this.attributes[key] === value)); }
+  matches(selector) { if (selector.startsWith('.')) return this.className === selector.slice(1); if (!selector.startsWith('[')) return this.tagName === selector; return [...selector.matchAll(/\[([^=\]]+)(?:="([^"]*)")?\]/g)].every(([, key, value]) => key in this.attributes && (value === undefined || this.attributes[key] === value)); }
   closest(selector) { for (let node = this; node; node = node.parentElement) if (node.matches(selector)) return node; return null; }
   querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
   querySelector(selector) { return this.querySelectorAll(selector)[0]; }
@@ -20,7 +20,7 @@ class Element {
   showModal() { this.open = true; }
   close() { this.open = false; }
 }
-function fixture({ mode = 'recent' } = {}) {
+function fixture({ mode = 'recent', hotkey = 'Ctrl+Alt+P' } = {}) {
   const document = new Element('document'); document.owner = document; document.root = true;
   document.createElement = tag => new Element(tag, document); document.createTextNode = text => Object.assign(new Element('text', document), { textContent: text });
   document.head = document.createElement('head'); document.body = document.createElement('body'); document.append(document.head, document.body);
@@ -40,12 +40,15 @@ function fixture({ mode = 'recent' } = {}) {
   ] } }, sibling: { memoizedProps: { conversationId: 'other-chat' }, child: { memoizedProps: { turn: { turnId: 'foreign', items: [{ type: 'userMessage', content: [{ type: 'text', text: '另一聊天私密消息' }] }] } } } } } };
   editor.__reactFiber$fixture = { memoizedProps: { composerController: controller }, return: thread };
   surface.__reactFiber$fixture = thread;
-  const window = { location: { href: 'app://-/local/fixture' } }; let complete, fail;
-  const api = (route, options) => { if (route.endsWith('/settings')) return Promise.resolve({ contextMode: mode }); calls.push({ route, options }); return new Promise((resolve, reject) => { complete = resolve; fail = reject; }); };
+  const window = new Element('window', document); window.location = { href: 'app://-/local/fixture' }; let complete, fail;
+  let settings = {hasApiKey:true,contextMode:mode,hotkey,model:'deepseek-flash',systemPrompt:'优化当前输入'};
+  const saves=[];
+  const api = (route, options) => { if (route.endsWith('/settings')) { if (options?.method === 'POST') { const input=JSON.parse(options.body);saves.push(input);settings={...settings,...input}; } return Promise.resolve({...settings}); } calls.push({ route, options }); return new Promise((resolve, reject) => { complete = resolve; fail = reject; }); };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/modules/prompt-optimizer-shortcut.js'), 'utf8'), { window });
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/ui/prompt-optimizer.js'), 'utf8'), { window, document, navigator: {} });
   const instance = window.BetterCodexPromptOptimizer.create({ api }); instance.sync();
   const optimize = document.querySelector('.bc-prompt-tools').children[0];
-  return { document, editor, controller, window, instance, optimize, calls, writes, doc, thread, complete: value => complete(value), fail: value => fail(value) };
+  return { document, editor, controller, window, instance, optimize, calls, saves, writes, doc, thread, complete: value => complete(value), fail: value => fail(value) };
 }
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 (async () => {
@@ -76,6 +79,20 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
   const input = fixture({ mode: 'input' }); input.optimize.dispatch('click'); await flush(); assert.deepEqual(JSON.parse(input.calls[0].options.body).context, []); input.instance.destroy();
   const hidden = fixture(); hidden.optimize.dispatch('click'); await flush(); hidden.editor.hidden = true; hidden.complete({ text: '隐藏聊天结果' }); await flush(); assert.equal(hidden.writes.length, 0); hidden.instance.destroy();
   const unavailable = fixture(); unavailable.thread.child = null; unavailable.optimize.dispatch('click'); await flush(); assert.equal(unavailable.calls.length, 0, 'missing history must not silently optimize without context'); unavailable.instance.destroy();
+  const custom = fixture({ hotkey: 'Ctrl+Shift+K' }); await flush();
+  const dispatchKey = (test, extras) => test.document.dispatch('keydown', { target: test.editor, ctrlKey: true, ...extras });
+  dispatchKey(custom, {code:'KeyP',altKey:true}); await flush(); assert.equal(custom.calls.length,0,'the old shortcut is inactive');
+  dispatchKey(custom, {code:'KeyK',shiftKey:true}); await flush(); assert.equal(custom.calls.length,1,'a persisted custom shortcut triggers');
+  custom.complete({text:'自定义快捷键结果'}); await flush();
+  await custom.instance.configure(custom.optimize);
+  const recorder=custom.document.querySelector('[aria-label="优化快捷键"]');
+  recorder.dispatch('keydown',{code:'KeyZ',key:'z',ctrlKey:true});assert.equal(recorder.value,'Ctrl + Shift + K','undo shortcut is reserved');
+  recorder.dispatch('keydown',{code:'F8',key:'F8',ctrlKey:true,altKey:true});assert.equal(recorder.value,'Ctrl + Alt + F8');
+  custom.document.querySelector('form').dispatch('submit');await flush();assert.equal(custom.saves.at(-1).hotkey,'Ctrl+Alt+F8');
+  dispatchKey(custom,{code:'KeyK',shiftKey:true});await flush();assert.equal(custom.calls.length,1,'saving disables the former binding immediately');
+  dispatchKey(custom,{code:'F8',altKey:true});await flush();assert.equal(custom.calls.length,2,'saving activates the new binding immediately');
+  custom.complete({text:'功能键结果'});await flush();custom.instance.destroy();
+  const disabled=fixture({hotkey:''});await flush();dispatchKey(disabled,{code:'KeyP',altKey:true});await flush();assert.equal(disabled.calls.length,0);disabled.optimize.dispatch('click');await flush();assert.equal(disabled.calls.length,1,'disabling the shortcut does not disable the button');disabled.instance.destroy();
   const bounded = f.window.BetterCodexPromptOptimizer.limitContext(Array.from({length:14}, (_,i)=>({role:'user',content:String(i).repeat(10000)})));
   assert.ok(bounded.messages.length<=12); assert.ok(bounded.messages.reduce((sum,m)=>sum+m.content.length,0)<=32000); assert.equal(bounded.truncated,true);
   console.log('PASS: scoped recent context, automatic replacement without dialogs, native history boundaries, draft/visibility guards, restore and hotkey (mock responses only)');

@@ -41,11 +41,18 @@ function routeFixture(service) {
 
 (async () => {
   const defaults = optimizer.createPromptOptimizer({ home: path.join(root, 'defaults'), fetch() { assert.fail('settings must not send model requests'); } });
-  assert.deepEqual(defaults.getSettings(), { hasApiKey: false, systemPrompt: optimizer.DEFAULT_SYSTEM_PROMPT, model: 'deepseek-flash', contextMode: 'recent' });
+  assert.deepEqual(defaults.getSettings(), { hasApiKey: false, systemPrompt: optimizer.DEFAULT_SYSTEM_PROMPT, model: 'deepseek-flash', contextMode: 'recent', hotkey: 'Ctrl+Alt+P' });
   await assert.rejects(defaults.optimize({ text: '需求' }), code('PROMPT_OPTIMIZER_KEY_REQUIRED'));
   const saved = defaults.saveSettings({ apiKey: '  fixture-key  ', systemPrompt: '  自定义规则  ', model: 'deepseek-v4-pro' });
-  assert.deepEqual(saved, { hasApiKey: true, systemPrompt: '自定义规则', model: 'deepseek-v4-pro', contextMode: 'recent' });
+  assert.deepEqual(saved, { hasApiKey: true, systemPrompt: '自定义规则', model: 'deepseek-v4-pro', contextMode: 'recent', hotkey: 'Ctrl+Alt+P' });
   assert.ok(!JSON.stringify(saved).includes('fixture-key'));
+  assert.equal(defaults.saveSettings({ hotkey: 'Shift+Ctrl+K' }).hotkey, 'Ctrl+Shift+K');
+  const reopened = optimizer.createPromptOptimizer({ home: path.join(root, 'defaults'), fetch() { assert.fail('shortcut settings cannot send model requests'); } });
+  assert.equal(reopened.getSettings().hotkey, 'Ctrl+Shift+K', 'the shortcut persists across service restarts');
+  assert.equal(reopened.getSettings().hasApiKey, true, 'changing a shortcut preserves the key');
+  for (const hotkey of ['P', 'Shift+P', 'Ctrl+Z', 'Ctrl+Shift+Z', 'Ctrl+V', 'Ctrl+Shift+V', 'Ctrl+Enter', 'Ctrl+Ctrl+P', null, 3]) assert.throws(() => defaults.saveSettings({hotkey}), code('PROMPT_OPTIMIZER_SHORTCUT_INVALID'));
+  assert.equal(defaults.saveSettings({hotkey:''}).hotkey, '', 'shortcut can be disabled');
+  defaults.saveSettings({hotkey:'Ctrl+Alt+P'});
   defaults.saveSettings({ apiKey: '' });
   assert.equal(defaults.getSettings().hasApiKey, true);
   defaults.saveSettings({ apiKey: '   ' });
@@ -75,7 +82,7 @@ function routeFixture(service) {
   fs.writeFileSync(fileFor(legacyHome), legacyData);
   const contextualCalls = [];
   const contextual = optimizer.createPromptOptimizer({ home: legacyHome, fetch: async (_url, parameters) => { contextualCalls.push(JSON.parse(parameters.body)); return reply(); } });
-  assert.deepEqual(contextual.getSettings(), { hasApiKey: true, systemPrompt: '历史自定义提示词', model: 'deepseek-v4-pro', contextMode: 'recent' });
+  assert.deepEqual(contextual.getSettings(), { hasApiKey: true, systemPrompt: '历史自定义提示词', model: 'deepseek-v4-pro', contextMode: 'recent', hotkey: 'Ctrl+Alt+P' });
   assert.equal(fs.readFileSync(fileFor(legacyHome), 'utf8'), legacyData, 'reading legacy settings never migrates the file implicitly');
   const context = [{ role: 'user', content: '原需求需要预览。' }, { role: 'assistant', content: '建议直接应用。' }, { role: 'user', content: '不要直接应用。' }];
   assert.equal((await contextual.optimize({ text: '就按刚才说的改', context, contextMode: 'input' })).contextCount, 3, 'stored recent wins over a stale input-mode request');

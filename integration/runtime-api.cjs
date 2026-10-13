@@ -11,6 +11,11 @@ function idle(worker){
 async function handle({url,method,request,response,worker,readBody,sendJson,stopHost}){
  const dev=path.join(process.env.BETTER_CODEX_LOCAL_PROJECT,'.dev');
  // /api/dev/ is authenticated by the core before entering this extension.
+ if(url.pathname==='/api/dev/workflow/panel-url'&&method==='POST'){
+  try{const result=await require('./workflow-service.cjs').panelUrl();sendJson(response,200,result);}
+  catch(error){console.error('workflow_panel_open_failed',error.code||error.message);sendJson(response,503,{error:'WORKFLOW_PANEL_UNAVAILABLE',message:'面板暂时无法打开，请稍后重试。'});}
+  return true;
+ }
  if(url.pathname==='/api/dev/prompt-optimizer/settings'||url.pathname==='/api/dev/prompt-optimizer/optimize'){
   const optimizer=require('../src/modules/prompt-optimizer.cjs');
   const controller=new AbortController();

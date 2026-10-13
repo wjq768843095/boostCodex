@@ -393,6 +393,65 @@ var BetterCodexInjected = (() => {
       destroy() { clearInterval(timer); window.removeEventListener("storage", storageChanged); clearDrag(); closeDialog(); for (const bar of bars.values()) bar.node.remove(); bars.clear(); style.remove(); }
     };
   }
+  function createComposerPlanToggle(renderIcon = () => "") {
+    const buttons = new Map();
+    function picker(editor) {
+      const seen = new Set();
+      let props = null, locked = false;
+      for (let node = editor; node; node = node.parentElement) {
+        let fiber = node[Object.keys(node).find(key => key.startsWith("__reactFiber$"))], top = fiber;
+        while (top?.return) top = top.return;
+        if (top?.stateNode?.current && top.stateNode.current !== top) fiber = fiber?.alternate;
+        for (; fiber; fiber = fiber.return) {
+          if (seen.has(fiber)) continue;
+          seen.add(fiber);
+          const value = fiber.memoizedProps;
+          if (value?.lockedCollaborationMode != null) locked = true;
+          if (!props && Array.isArray(value?.collaborationModes) && typeof value.setSelectedCollaborationMode === "function") props = value;
+        }
+      }
+      return { props, locked };
+    }
+    function available({ props, locked }) {
+      return !!props && !locked && !props.disabled && !props.hideModeControls && !props.isThreadHistoryLoading && !props.isThreadHandoffInProgress &&
+        props.collaborationModes.some(mode => mode.mode === "plan") && props.collaborationModes.some(mode => mode.mode === "default");
+    }
+    const style = document.createElement("style");
+    style.textContent = `
+      .bc-prompt-tools .bc-composer-plan{display:flex;align-items:center;justify-content:center;flex:0 0 26px;width:26px;height:26px;padding:0;border-color:transparent}
+      .bc-composer-plan svg{width:18px;height:18px}
+      .bc-prompt-tools .bc-composer-plan[aria-pressed="true"]{color:#438cff;background:rgba(67,140,255,.12);border-color:transparent}
+    `;
+    document.head.append(style);
+    function sync() {
+      for (const [editor, button] of buttons) if (!editor.isConnected || !button.isConnected) { button.remove(); buttons.delete(editor); }
+      for (const editor of document.querySelectorAll('[data-codex-composer][contenteditable="true"]')) {
+        const tools = editor.closest('[data-composer-surface-variant]')?.querySelector('.bc-prompt-tools');
+        if (!tools) continue;
+        let button = buttons.get(editor);
+        if (!button) {
+          button = document.createElement("button"); button.type = "button"; button.className = "bc-composer-plan";
+          button.innerHTML = renderIcon();
+          button.addEventListener("click", () => {
+            const current = picker(editor);
+            if (!available(current) || !editor.isConnected) return;
+            current.props.setSelectedCollaborationMode(current.props.activeCollaborationMode?.mode === "plan" ? "default" : "plan");
+            sync();
+          });
+          buttons.set(editor, button);
+        }
+        if (button.parentElement !== tools) tools.insertBefore(button, tools.firstChild);
+        const current = picker(editor), enabled = current.props?.activeCollaborationMode?.mode === "plan";
+        button.disabled = !available(current);
+        const label = enabled ? "关闭计划模式" : "开启计划模式";
+        if (button.getAttribute("aria-pressed") !== String(enabled)) button.setAttribute("aria-pressed", String(enabled));
+        if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
+        button.title = button.disabled ? "当前无法切换计划模式" : label;
+      }
+    }
+    const timer = setInterval(sync, 600);
+    return { sync, destroy() { clearInterval(timer); for (const button of buttons.values()) button.remove(); buttons.clear(); style.remove(); } };
+  }
   function createComposerFooterLayout() {
     const footers = new Set();
     const style = document.createElement("style");
@@ -449,7 +508,7 @@ var BetterCodexInjected = (() => {
     }
     previous?.destroy?.();
     const requests = new Map();
-    let destroyed = false, observer = null, shortcuts = null, accountAdapter = null, optimizer = null, composerLayout = null;
+    let destroyed = false, observer = null, shortcuts = null, accountAdapter = null, optimizer = null, composerLayout = null, planToggle = null, workflowPanel = null;
     let sequence = 0, refreshTimer = null, usageTimer = null, usagePending = false, accountCheckedAt = 0;
     const locale = config.initialLocale || "zh-CN";
     const english = locale.startsWith("en");
@@ -496,6 +555,13 @@ var BetterCodexInjected = (() => {
         group.className = "no-drag";
         group.setAttribute("data-better-codex-owned", "true");
         group.style.cssText = "display:flex;align-items:center;gap:8px;white-space:nowrap;-webkit-app-region:no-drag";
+        const panel = document.createElement("button");
+        panel.type = "button"; panel.className = help.className; panel.textContent = "面板";
+        panel.dataset.workflowPanel = "true";
+        panel.addEventListener("click", async () => {
+          panel.disabled = true;
+          try { await workflowPanel?.open(); } finally { panel.disabled = false; }
+        });
         const archive = document.createElement("button");
         archive.type = "button"; archive.className = help.className;
         archive.textContent = text("已归档聊天");
@@ -508,7 +574,7 @@ var BetterCodexInjected = (() => {
         settings.type = "button"; settings.className = help.className;
         settings.textContent = "提示词优化设置";
         settings.addEventListener("click", () => void optimizer?.configure(settings));
-        group.append(settings, archive, usage);
+        group.append(panel, settings, archive, usage);
         void refreshTitlebarUsage(group);
       }
       if (help.nextElementSibling !== group) help.after(group);
@@ -539,6 +605,7 @@ var BetterCodexInjected = (() => {
       composerLayout?.sync();
       shortcuts?.sync();
       optimizer?.sync();
+      planToggle?.sync();
       if (accountAdapter && !window.__betterCodexAccountTransportRecovery__?.request && Date.now() - accountCheckedAt > 10000) {
         accountCheckedAt = Date.now();
         void accountAdapter.connect().catch(() => {});
@@ -552,7 +619,7 @@ var BetterCodexInjected = (() => {
       if (destroyed) return;
       accountAdapter?.destroy();
       destroyed = true;
-      observer?.disconnect(); shortcuts?.destroy(); optimizer?.destroy(); composerLayout?.destroy();
+      observer?.disconnect(); shortcuts?.destroy(); planToggle?.destroy(); optimizer?.destroy(); composerLayout?.destroy();
       clearTimeout(refreshTimer); clearInterval(usageTimer);
       document.removeEventListener("DOMContentLoaded", mount);
       document.removeEventListener("visibilitychange", onVisible);
@@ -560,6 +627,7 @@ var BetterCodexInjected = (() => {
       document.getElementById("better-codex-titlebar-actions")?.remove();
       for (const pending of requests.values()) { clearTimeout(pending.timer); pending.reject(new Error("injection_destroyed")); }
       requests.clear();
+      workflowPanel?.destroy();
       if (window.__betterCodexBridgeResolve === resolveBridge) delete window.__betterCodexBridgeResolve;
       if (window.__betterCodexInjection__ === controller) delete window.__betterCodexInjection__;
     }
@@ -571,6 +639,11 @@ var BetterCodexInjected = (() => {
       composerLayout = createComposerFooterLayout(); composerLayout.sync();
       shortcuts = createComposerModelShortcuts(() => icon("fast", "2"), () => icon("settings", "1.8"), () => icon("grip", "1.8"));
       optimizer = window.BetterCodexPromptOptimizer?.create({ api });
+      workflowPanel = window.BetterCodexWorkflowPanel?.create({
+        getPanelUrl: () => api("/api/dev/workflow/panel-url", { method: "POST", body: "{}", timeoutMs: 45000 }),
+        reportError: error => { const button = document.querySelector('[data-workflow-panel]'); if (button) button.title = error.message; }
+      });
+      planToggle = createComposerPlanToggle(() => icon("plan", "1.8"));
       if (typeof window.BetterCodexNativeConversation?.create === "function") accountAdapter = window.BetterCodexNativeConversation.create({ api });
       observer = new MutationObserver(scheduleRefresh);
       observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current"] });
@@ -581,8 +654,9 @@ var BetterCodexInjected = (() => {
       version: config.version, bundleChecksum: config.bundleChecksum, profile: config.profile, host: "codex", endpoint: config.baseUrl,
       refresh, pulse: () => !destroyed, ready: () => !destroyed && !!shortcuts, bootstrapError: () => "",
       open: () => refresh(), openThread: threadId => navigate((config.navigation?.threadRoutePrefix || "/local/") + encodeURIComponent(threadId)), close: () => {}, destroy,
-      captureReloadState: () => ({ shortcutConfiguration: shortcuts?.capture() || null }),
-      restoreReloadState: async saved => { refresh(); shortcuts?.restore(saved?.shortcutConfiguration); return { error: "" }; }
+      openPanel: () => workflowPanel?.open(), hidePanel: () => workflowPanel?.hide(),
+      captureReloadState: () => ({ shortcutConfiguration: shortcuts?.capture() || null, workflowPanel: workflowPanel?.capture() || null }),
+      restoreReloadState: async saved => { refresh(); shortcuts?.restore(saved?.shortcutConfiguration); if (saved?.workflowPanel?.open) await workflowPanel?.open(); return { error: "" }; }
     };
     window.__betterCodexInjection__ = controller;
     document.addEventListener("visibilitychange", onVisible);

@@ -9,12 +9,13 @@ function log(event,data={}){fs.mkdirSync(DEV,{recursive:true});fs.appendFileSync
 function status(patch){const file=path.join(DEV,'status.json');const value={...read(file,{}),...patch,updatedAt:new Date().toISOString()};save(file,value);return value;}
 function alive(pid){if(!Number.isInteger(pid)||pid<1)return false;try{process.kill(pid,0);return true;}catch{return false;}}
 function list(dir){if(!fs.existsSync(dir))return [];return fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?list(path.join(dir,e.name)):[path.join(dir,e.name)]);}
-function sources(){return [...list(path.join(ROOT,'src')),...list(path.join(ROOT,'integration'))].filter(f=>/\.(cjs|js|css|json)$/.test(f)||(f.startsWith(path.join(ROOT,'src','skills')+path.sep)&&f.endsWith('.md'))).sort();}
+function sources(){return [...list(path.join(ROOT,'src')),...list(path.join(ROOT,'integration'))].filter(f=>/\.(cjs|js|css|json|html|md|yaml|yml)$/.test(f)).sort();}
 function uiBundle(base=ROOT){
  const adapter=path.join(base,'src/ui/native-conversation-adapter.js');
  const optimizer=path.join(base,'src/ui/prompt-optimizer.js');
  const shortcut=path.join(base,'src/modules/prompt-optimizer-shortcut.js');
- return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
+ const workflow=path.join(base,'src/ui/workflow-panel.js');
+ return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+(fs.existsSync(workflow)?fs.readFileSync(workflow,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
 }
 function hashes(files=sources()){
  const full=crypto.createHash('sha256'),backend=crypto.createHash('sha256');for(const file of files){const rel=path.relative(ROOT,file),data=fs.readFileSync(file);full.update(rel).update(data);if(!rel.startsWith('src'+path.sep+'ui'+path.sep))backend.update(rel).update(data);}
