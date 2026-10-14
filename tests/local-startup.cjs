@@ -1,0 +1,22 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+const startup=require('../integration/startup.cjs');
+const health={instanceId:'fixture',handoffUpdateId:null};
+const host={runtime_instance_id:'fixture',running:true,command_in_flight:false,pending_requests:0,queued_deliveries:0,active_turns:[],thread_workers:[]};
+assert(startup.idleLegacy(health,host));
+for(const change of [{runtime_instance_id:'another'},{command_in_flight:true},{pending_requests:1},{queued_deliveries:1},{active_turns:['thread']},{thread_workers:['worker']}])assert(!startup.idleLegacy(health,{...host,...change}));
+assert(!startup.idleLegacy({...health,handoffUpdateId:'updating'},host));
+assert(!startup.idleLegacy(health,null));
+assert(startup.legacyProcess({CommandLine:'"C:\\node.exe" "C:\\Users\\user\\AppData\\Local\\BetterCodex\\bin\\better-codex.cjs" runtime'},'runtime'));
+assert(!startup.legacyProcess({CommandLine:'node D:\\other\\better-codex.cjs runtime'},'runtime'));
+assert(!startup.legacyProcess({CommandLine:'node C:\\BetterCodex\\bin\\better-codex.cjs session-host'},'runtime'));
+const home=fs.mkdtempSync(path.join(os.tmpdir(),'bc-startup-'));
+const lib={HOME:home,read(file){try{return JSON.parse(fs.readFileSync(file));}catch{return null;}},alive(pid){try{process.kill(pid,0);return true;}catch{return false;}}};
+(async()=>{
+ let active=0,max=0,completed=0;
+ await Promise.all(Array.from({length:3},()=>startup.withStartupLock(lib,async()=>{active++;max=Math.max(max,active);await new Promise(resolve=>setTimeout(resolve,40));active--;completed++;})));
+ assert.equal(max,1);assert.equal(completed,3);assert(!fs.existsSync(path.join(home,'run/local-startup.lock')));
+ await assert.rejects(startup.withStartupLock(lib,async()=>{throw Error('fixture');}),/fixture/);
+ assert(!fs.existsSync(path.join(home,'run/local-startup.lock')));
+ console.log('PASS: legacy identity/activity guards, simultaneous startup serialization and error lock release');
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>fs.rmSync(home,{recursive:true,force:true}));

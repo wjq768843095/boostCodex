@@ -3140,7 +3140,10 @@ async function main(){
  if(command2==='dev-stop-injector'&&process.env.BETTER_CODEX_LOCAL_PROJECT){setInjectionEnabled(false);await stopInjector();return print({stopped:true});}
  if(command2==='launch')return print(await withLaunchLock(async()=>{
   await ensureRuntime();const port=Number(option(values,'--port') || cdpPort);
-  const restart=values.includes('--restart');
+  let restart=values.includes('--restart');
+  if(!restart&&process.platform==='win32'&&codexProcessRunning()){
+   try{assertTrustedCdpListener(port);}catch(error){if(error.message!=='cdp_listener_absent')throw error;restart=true;}
+  }
   if(restart)await quitCodex();
   setInjectionEnabled(true);const injection=await cdpInject(port,activeRuntimePort(),accessToken2(),true);await ensureInjector(port);return {launched:true,restarted:restart,injection};
  }));
