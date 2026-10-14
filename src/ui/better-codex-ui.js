@@ -656,7 +656,7 @@ var BetterCodexInjected = (() => {
       open: () => refresh(), openThread: threadId => navigate((config.navigation?.threadRoutePrefix || "/local/") + encodeURIComponent(threadId)), close: () => {}, destroy,
       openPanel: () => workflowPanel?.open(), hidePanel: () => workflowPanel?.hide(),
       captureReloadState: () => ({ shortcutConfiguration: shortcuts?.capture() || null, workflowPanel: workflowPanel?.capture() || null }),
-      restoreReloadState: async saved => { refresh(); shortcuts?.restore(saved?.shortcutConfiguration); if (saved?.workflowPanel?.open) await workflowPanel?.open(); return { error: "" }; }
+      restoreReloadState: async saved => { refresh(); shortcuts?.restore(saved?.shortcutConfiguration); if (saved?.workflowPanel?.open) void workflowPanel?.open(); return { error: "" }; }
     };
     window.__betterCodexInjection__ = controller;
     document.addEventListener("visibilitychange", onVisible);
