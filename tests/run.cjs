@@ -1,4 +1,6 @@
 const cp=require('node:child_process'),path=require('node:path');
 const suites=['account-primary-deadline.cjs','account-bridge-deadline.cjs','account-metadata-transport.cjs','account-metadata-runtime-api.cjs','account-transport-recovery.cjs','startup-diagnostics.cjs','local-startup.cjs','codex-usage.cjs','composer-model-shortcuts.cjs','prompt-optimizer.cjs','prompt-optimizer-ui.cjs','reload.cjs','minimal-runtime.cjs','native-account-session.cjs','workflow-panel.cjs','workflow-store.cjs','workflow-mcp.cjs','workflow-install.cjs','workflow-server.cjs','workflow-web.cjs'];
-suites.push('subagent-monitor.cjs','subagent-monitor-ui.cjs','subagent-monitor-bridge.cjs');
+suites.push('subagent-monitor.cjs','subagent-monitor-ui.cjs','subagent-monitor-bridge.cjs','injector-supervisor.cjs');
+suites.push('brand-ui-migration.cjs','brand-compatibility.cjs');
+suites.push('subagent-work.cjs');
 for(const name of suites){const result=cp.spawnSync(process.execPath,[path.join(__dirname,name)],{stdio:'inherit',windowsHide:true});if(result.status!==0)process.exit(result.status||1);}

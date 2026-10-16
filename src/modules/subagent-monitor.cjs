@@ -13,8 +13,9 @@ const validId=value=>typeof value==='string'&&UUID.test(value);
 function createMonitor(options={}){
  const home=path.resolve(options.codexHome||process.env.CODEX_HOME||path.join(os.homedir(),'.codex'));
  const now=options.now||Date.now;
- const limits={directories:128,headers:160,bytes:8*1024*1024,line:512*1024,states:512,files:100000,...options.limits};
+ const limits={directories:128,headers:160,bytes:8*1024*1024,line:512*1024,states:512,files:100000,milliseconds:150,...options.limits};
  const index=new Map(),files=new Map(),directories=new Map(),states=new Map(),effects=new Map();
+ const inFlight=new Map();
  const roots=['sessions','archived_sessions'].map(name=>path.join(home,name));
  let queue=[],pending=[],lastScan=-Infinity,chain=Promise.resolve(),scanLimited=false,visit=0;
 
@@ -47,10 +48,10 @@ function createMonitor(options={}){
   return null;
  }
 
- async function discover(){
+ async function discover(deadline){
   if(!queue.length&&!pending.length&&now()-lastScan>=4000){queue=[...roots];lastScan=now();scanLimited=false;}
   let count=0;
-  while(queue.length&&count++<limits.directories){
+  while(queue.length&&count++<limits.directories&&Date.now()<deadline){
    const directory=queue.shift();
    try{
     const stat=await fs.stat(directory);let cached=directories.get(directory);
@@ -74,7 +75,7 @@ function createMonitor(options={}){
     queue.unshift(...cached.children);
    }catch{}
   }
-  for(let i=0;i<limits.headers&&pending.length;i++){
+  for(let i=0;i<limits.headers&&pending.length&&Date.now()<deadline;i++){
    const file=pending.shift(),meta=await header(file);
    if(!meta){files.delete(file);continue;}
    files.set(file,meta.id);
@@ -159,14 +160,14 @@ function createMonitor(options={}){
   }
  }
 
- async function read(meta,budget){
+ async function read(meta,budget,deadline){
   let state=states.get(meta.id);
   if(!state){state=fresh(meta);states.set(meta.id,state);}state.usedAt=++visit;
   let handle;
   try{
    handle=await fs.open(meta.file,'r');const stat=await handle.stat();
    if(stat.size<state.offset){state=fresh(meta);states.set(meta.id,state);}
-   while(state.offset<stat.size&&budget.bytes>0){
+   while(state.offset<stat.size&&budget.bytes>0&&Date.now()<deadline){
     const size=Math.min(262144,stat.size-state.offset,budget.bytes),buffer=Buffer.alloc(size);
     const {bytesRead}=await handle.read(buffer,0,size,state.offset);if(!bytesRead)break;
     state.offset+=bytesRead;budget.bytes-=bytesRead;
@@ -184,7 +185,10 @@ function createMonitor(options={}){
  }
 
  async function snapshot(threadId){
-  await discover();
+  // A soft wall-clock budget also covers cold disk/antivirus latency. Each
+  // snapshot yields progress rather than queuing an unbounded full history scan.
+  const deadline=Date.now()+limits.milliseconds;
+  await discover(deadline);
   const descendants=[],seen=new Set([threadId]);
   // Traverse explicit parent links only, including nested and archived agents.
   let frontier=[threadId],depth=0;
@@ -197,10 +201,10 @@ function createMonitor(options={}){
   }
   const budget={bytes:limits.bytes};let syncing=!!(queue.length||pending.length||scanLimited);
   const root=index.get(threadId);
-  if(root){const rootBudget={bytes:Math.min(262144,budget.bytes)},before=rootBudget.bytes;syncing=(await read(root,rootBudget))||syncing;budget.bytes-=before-rootBudget.bytes;}
+  if(root){const rootBudget={bytes:Math.min(262144,budget.bytes)},before=rootBudget.bytes;syncing=(await read(root,rootBudget,deadline))||syncing;budget.bytes-=before-rootBudget.bytes;}
   // Fair scheduling: never let a large earlier log starve newly spawned agents.
   const ordered=[...descendants].sort((a,b)=>(states.get(a.meta.id)?.usedAt||0)-(states.get(b.meta.id)?.usedAt||0));
-  for(const {meta} of ordered){if(budget.bytes<=0){syncing=true;break;}syncing=(await read(meta,budget))||syncing;}
+  for(const {meta} of ordered){if(budget.bytes<=0||Date.now()>=deadline){syncing=true;break;}syncing=(await read(meta,budget,deadline))||syncing;}
   const observedAt=now();
   const agents=descendants.map(({meta,depth})=>{
    const state=states.get(meta.id)||fresh(meta);
@@ -219,7 +223,12 @@ function createMonitor(options={}){
  }
  function getSubagents(threadId){
   if(!validId(threadId))return Promise.reject(Object.assign(new Error('Invalid thread ID'),{code:'SUBAGENT_THREAD_INVALID'}));
-  const result=chain.then(()=>snapshot(threadId.toLowerCase()));chain=result.catch(()=>{});return result;
+  const id=threadId.toLowerCase();
+  // Polls for the same conversation share the pending read, including after a
+  // caller disconnects. A slow cold scan therefore cannot build a request queue.
+  if(inFlight.has(id))return inFlight.get(id);
+  const result=chain.then(()=>snapshot(id)).finally(()=>inFlight.delete(id));
+  inFlight.set(id,result);chain=result.catch(()=>{});return result;
  }
  return {getSubagents};
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 "use strict";
+require('../modules/brand.cjs').normalizeEnvironment();
 require("../modules/runtime-warnings.cjs").installSQLiteWarningFilter();
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res, err) => function __init() {
@@ -16,42 +17,42 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 var coreVersion = '0.4.18-local.2';
 function init_version() {}
 var import_node_crypto18=crypto, import_node_child_process14=cp, import_node_fs31=fs, import_node_path27=path, import_node_sea6=require('node:sea');
-var betterCodexProfile, betterCodexHome, peerBetterCodexHome, runPath, logPath, runtimeVersionsPath, runtimeCurrentPath, compatibilityPath, compatibilityStatusPath, compatibilityVersionsPath, compatibilityCurrentPath, runtimeStatePath, runtimeLockPath, runtimeAuthorityPath, tokenPath, injectorLogPath, injectorPidPath, injectionStatePath, launchIntegrationStatePath, launchLockPath, runtimeLogPath, runtimePort, cdpPort;
+var boostCodexProfile, boostCodexHome, peerBoostCodexHome, runPath, logPath, runtimeVersionsPath, runtimeCurrentPath, compatibilityPath, compatibilityStatusPath, compatibilityVersionsPath, compatibilityCurrentPath, runtimeStatePath, runtimeLockPath, runtimeAuthorityPath, tokenPath, injectorLogPath, injectorPidPath, injectionStatePath, launchIntegrationStatePath, launchLockPath, runtimeLogPath, runtimePort, cdpPort;
 var configInitialized=false;
 function init_config() {
   if(configInitialized)return;configInitialized=true;
-  betterCodexProfile=process.env.BETTER_CODEX_PROFILE || 'stable';
-  if(!['stable','development'].includes(betterCodexProfile))throw Error('invalid_better_codex_profile');
-  betterCodexHome=path.resolve(process.env.BETTER_CODEX_HOME || path.join(os.homedir(),betterCodexProfile==='development'?'.better-codex-dev':'.better-codex'));
-  peerBetterCodexHome=path.resolve(process.env.BETTER_CODEX_PEER_HOME || path.join(os.homedir(),betterCodexProfile==='development'?'.better-codex':'.better-codex-dev'));
-  runPath=path.join(betterCodexHome,'run');logPath=path.join(betterCodexHome,'logs');
-  runtimeVersionsPath=path.join(betterCodexHome,'runtime','versions');runtimeCurrentPath=path.join(betterCodexHome,'runtime','current.json');
-  compatibilityPath=path.join(betterCodexHome,'runtime','compatibility');compatibilityStatusPath=path.join(compatibilityPath,'status.json');compatibilityVersionsPath=path.join(compatibilityPath,'versions');compatibilityCurrentPath=path.join(compatibilityPath,'current.json');
+  boostCodexProfile=process.env.BOOST_CODEX_PROFILE || 'stable';
+  if(!['stable','development'].includes(boostCodexProfile))throw Error('invalid_boost_codex_profile');
+  boostCodexHome=path.resolve(process.env.BOOST_CODEX_HOME || path.join(os.homedir(),boostCodexProfile==='development'?'.better-codex-dev':'.better-codex'));
+  peerBoostCodexHome=path.resolve(process.env.BOOST_CODEX_PEER_HOME || path.join(os.homedir(),boostCodexProfile==='development'?'.better-codex':'.better-codex-dev'));
+  runPath=path.join(boostCodexHome,'run');logPath=path.join(boostCodexHome,'logs');
+  runtimeVersionsPath=path.join(boostCodexHome,'runtime','versions');runtimeCurrentPath=path.join(boostCodexHome,'runtime','current.json');
+  compatibilityPath=path.join(boostCodexHome,'runtime','compatibility');compatibilityStatusPath=path.join(compatibilityPath,'status.json');compatibilityVersionsPath=path.join(compatibilityPath,'versions');compatibilityCurrentPath=path.join(compatibilityPath,'current.json');
   runtimeStatePath=path.join(runPath,'runtime.json');runtimeLockPath=path.join(runPath,'runtime.lock');runtimeAuthorityPath=path.join(runPath,'runtime-authority.json');
   tokenPath=path.join(runPath,'token');injectorLogPath=path.join(logPath,'injector.log');injectorPidPath=path.join(runPath,'injector.pid');injectionStatePath=path.join(runPath,'injection.json');
   launchIntegrationStatePath=path.join(runPath,'launch-integration.json');launchLockPath=path.join(os.homedir(),'.better-codex-launch.lock');
   runtimeLogPath=path.join(logPath,'runtime.log');injectorStartLockPath=injectorPidPath+'.start';
-  runtimePort=Number(process.env.BETTER_CODEX_RUNTIME_PORT ?? process.env.BETTER_CODEX_PORT ?? 0);cdpPort=Number(process.env.BETTER_CODEX_CDP_PORT ?? 9229);
+  runtimePort=Number(process.env.BOOST_CODEX_RUNTIME_PORT ?? process.env.BOOST_CODEX_PORT ?? 0);cdpPort=Number(process.env.BOOST_CODEX_CDP_PORT ?? 9229);
 }
 function ensureDirectories(){for(const directory of [runPath,logPath,compatibilityPath])fs.mkdirSync(directory,{recursive:true});}
 function canonicalPath(value){try{return fs.realpathSync(value);}catch{return path.resolve(value);}}
-function sourceProcessArguments(args){return process.env.BETTER_CODEX_LOCAL_PROJECT ? [process.env.BETTER_CODEX_BASE_ENTRYPOINT,...args] : [process.argv[1],...args];}
-function token(){ensureDirectories();if(process.env.BETTER_CODEX_TOKEN)return process.env.BETTER_CODEX_TOKEN;if(fs.existsSync(tokenPath))return fs.readFileSync(tokenPath,'utf8').trim();const value=crypto.randomBytes(32).toString('hex');fs.writeFileSync(tokenPath,value,{mode:0o600});return value;}
+function sourceProcessArguments(args){return process.env.BOOST_CODEX_LOCAL_PROJECT ? [process.env.BOOST_CODEX_BASE_ENTRYPOINT,...args] : [process.argv[1],...args];}
+function token(){ensureDirectories();if(process.env.BOOST_CODEX_TOKEN)return process.env.BOOST_CODEX_TOKEN;if(fs.existsSync(tokenPath))return fs.readFileSync(tokenPath,'utf8').trim();const value=crypto.randomBytes(32).toString('hex');fs.writeFileSync(tokenPath,value,{mode:0o600});return value;}
 function appIconIco(){return fs.readFileSync(path.join(__dirname,'assets','AppIcon.ico'));}
 function appIconIcns(){return fs.readFileSync(path.join(__dirname,'assets','AppIcon.icns'));}
 function init_brand_assets(){}
 var injectedUiBundle='',injectedUiBundleChecksum='',injectedUiBundleSchemaVersion=1;
 var lucideIcons=JSON.parse(fs.readFileSync(path.join(__dirname,'assets','icons.json'),'utf8'));
-function refreshLocalInjectedUi(){const file=process.env.BC_UI_FILE || path.join(__dirname,'../ui/better-codex-ui.js');injectedUiBundle=fs.readFileSync(file,'utf8');injectedUiBundleChecksum=crypto.createHash('sha256').update(injectedUiBundle).digest('hex');}
+function refreshLocalInjectedUi(){const file=process.env.BC_UI_FILE || path.join(__dirname,'../ui/boost-codex-ui.js');injectedUiBundle=fs.readFileSync(file,'utf8');injectedUiBundleChecksum=crypto.createHash('sha256').update(injectedUiBundle).digest('hex');}
 function injectionVersion(){return activeCompatibility().version;}
 function injectionBundleChecksum(){refreshLocalInjectedUi();return injectedUiBundleChecksum;}
 function init_dom(){refreshLocalInjectedUi();}
 function injectionScript(port,accessToken3,action,locale='zh-CN',host='codex'){
  refreshLocalInjectedUi();
- if(action==='uninstall')return `(() => { window.__betterCodexInjection__?.destroy?.(); document.querySelectorAll('[data-better-codex-owned="true"]').forEach(node => node.remove()); document.querySelectorAll('[data-better-codex-native-hidden="true"]').forEach(node => node.removeAttribute('data-better-codex-native-hidden')); document.documentElement.removeAttribute('data-better-codex-open'); delete window.__betterCodexInjection__; return {uninstalled:true}; })()`;
- if(!injectedUiBundle.includes('BetterCodexInjected'))throw Error('injected_ui_bundle_invalid');
+ if(action==='uninstall')return `(() => { window.__boostCodexInjection__?.destroy?.(); window.__betterCodexInjection__?.destroy?.(); document.querySelectorAll('[data-boost-codex-owned="true"], [data-better-codex-owned="true"]').forEach(node => node.remove()); document.querySelectorAll('[data-boost-codex-native-hidden="true"]').forEach(node => node.removeAttribute('data-boost-codex-native-hidden')); document.documentElement.removeAttribute('data-boost-codex-open'); delete window.__boostCodexInjection__; delete window.__betterCodexInjection__; return {uninstalled:true}; })()`;
+ if(!injectedUiBundle.includes('boostCodexInjected'))throw Error('injected_ui_bundle_invalid');
  const compatibility=activeCompatibility();
- return `${injectedUiBundle}\nBetterCodexInjected.install(${JSON.stringify({schemaVersion:injectedUiBundleSchemaVersion,bundleChecksum:injectedUiBundleChecksum,version:compatibility.version,coreVersion,profile:betterCodexProfile,host,baseUrl:`http://127.0.0.1:${port}`,bridgeToken:accessToken3,initialLocale:locale,navigation:compatibility.navigation,lucideIcons})})`;
+ return `${injectedUiBundle}\nboostCodexInjected.install(${JSON.stringify({schemaVersion:injectedUiBundleSchemaVersion,bundleChecksum:injectedUiBundleChecksum,version:compatibility.version,coreVersion,profile:boostCodexProfile,host,baseUrl:`http://127.0.0.1:${port}`,bridgeToken:accessToken3,initialLocale:locale,navigation:compatibility.navigation,lucideIcons})})`;
 }
 function accessToken2(){return token();}
 
@@ -382,7 +383,7 @@ function missingCapabilities(capabilities) {
 }
 function readCompatibilityStatus() {
   const runtime = readRuntimeState();
-  const base = { state: "waiting_window", compatible: false, reason: "probe_pending", version: bundledCompatibility.version, coreVersion, supportedCodexVersions: bundledCompatibility.supportedCodexVersions, platform: process.platform, codexVersion: null, targetId: null, targetUrl: null, documentId: null, capabilities: null, checkedAt: (/* @__PURE__ */ new Date()).toISOString(), lastSuccessfulAt: null, profile: betterCodexProfile, runtimeInstanceId: runtime?.instanceId || null, runtimeGeneration: runtime?.generation ?? null };
+  const base = { state: "waiting_window", compatible: false, reason: "probe_pending", version: bundledCompatibility.version, coreVersion, supportedCodexVersions: bundledCompatibility.supportedCodexVersions, platform: process.platform, codexVersion: null, targetId: null, targetUrl: null, documentId: null, capabilities: null, checkedAt: (/* @__PURE__ */ new Date()).toISOString(), lastSuccessfulAt: null, profile: boostCodexProfile, runtimeInstanceId: runtime?.instanceId || null, runtimeGeneration: runtime?.generation ?? null };
   if (!injectionPreferenceEnabled()) return { ...base, state: "disabled", reason: "disabled" };
   let compatibility;
   try {
@@ -394,7 +395,7 @@ function readCompatibilityStatus() {
   base.supportedCodexVersions = compatibility.supportedCodexVersions;
   try {
     const value = JSON.parse((0, import_node_fs4.readFileSync)(compatibilityStatusPath, "utf8"));
-    if (value.coreVersion !== coreVersion || value.version !== compatibility.version || value.profile !== betterCodexProfile || value.runtimeInstanceId !== (runtime?.instanceId || null) || value.runtimeGeneration !== (runtime?.generation ?? null) || !Number.isFinite(Date.parse(value.checkedAt)) || Date.now() - Date.parse(value.checkedAt) > 9e4) return base;
+    if (value.coreVersion !== coreVersion || value.version !== compatibility.version || value.profile !== boostCodexProfile || value.runtimeInstanceId !== (runtime?.instanceId || null) || value.runtimeGeneration !== (runtime?.generation ?? null) || !Number.isFinite(Date.parse(value.checkedAt)) || Date.now() - Date.parse(value.checkedAt) > 9e4) return base;
     return value;
   } catch (error2) {
     if (error2.code !== "ENOENT") return { ...base, state: "failed", reason: "compatibility_status_invalid", error: String(error2) };
@@ -415,7 +416,7 @@ function writeCompatibilityStatus(input, successful = false) {
     state,
     runtimeInstanceId: runtime?.instanceId || null,
     runtimeGeneration: runtime?.generation ?? null,
-    profile: betterCodexProfile,
+    profile: boostCodexProfile,
     targetUrl: input.targetUrl || null,
     documentId: input.documentId ?? input.capabilities?.documentId ?? null,
     version: compatibility.version,
@@ -529,7 +530,7 @@ function powershellString(value) {
   return `'${value.replace(/'/g, "''")}'`;
 }
 function showNativeChoiceDialog(options) {
-  const assetDirectory = (0, import_node_fs7.mkdtempSync)((0, import_node_path6.join)((0, import_node_os4.tmpdir)(), "better-codex-dialog-"));
+  const assetDirectory = (0, import_node_fs7.mkdtempSync)((0, import_node_path6.join)((0, import_node_os4.tmpdir)(), "boost-codex-dialog-"));
   try {
     if (process.platform === "win32") {
       const iconPath = (0, import_node_path6.join)(assetDirectory, "AppIcon.ico");
@@ -715,7 +716,7 @@ function copiedWindowsApplicationCandidates(applicationPath, tempDirectory) {
   return sources.flatMap((source) => {
     try {
       const stats = (0, import_node_fs14.statSync)(source);
-      const destinationDirectory = (0, import_node_path13.join)(tempDirectory, "better-codex", "codex-cli");
+      const destinationDirectory = (0, import_node_path13.join)(tempDirectory, "boost-codex", "codex-cli");
       const destination = (0, import_node_path13.join)(destinationDirectory, `codex-${stats.size}-${Math.floor(stats.mtimeMs)}.exe`);
       (0, import_node_fs14.mkdirSync)(destinationDirectory, { recursive: true });
       if (!(0, import_node_fs14.existsSync)(destination)) (0, import_node_fs14.copyFileSync)(source, destination);
@@ -746,7 +747,7 @@ function codexExecutableCandidates(options = {}) {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const env = options.env ?? process.env;
-  const configured = [env.BETTER_CODEX_CODEX_PATH, env.CODEX_CLI_PATH];
+  const configured = [env.BOOST_CODEX_CODEX_PATH, env.CODEX_CLI_PATH];
   if (platform === "win32") {
     const applicationPath = options.applicationPath === void 0 ? windowsApplicationPath() : options.applicationPath;
     return unique([
@@ -902,7 +903,7 @@ function queryCodexUsage(executable) {
         }
       }
     });
-    send({ id: 1, method: "initialize", params: { clientInfo: { name: "better-codex", title: "Better Codex", version: coreVersion }, capabilities: { experimentalApi: true } } });
+    send({ id: 1, method: "initialize", params: { clientInfo: { name: "boost-codex", title: "boostCodex", version: coreVersion }, capabilities: { experimentalApi: true } } });
   });
 }
 function refreshCodexUsage() {
@@ -953,9 +954,9 @@ var cdpWebSocketOpenTimeoutMs = 2e3;
 var cdpCommandTimeoutMs = 8e3;
 var cdpTargetScanTimeoutMs = 3e4;
 var cdpTargetCandidateLimit = 32;
-var injectionIdentityExpression = "({ version: window.__betterCodexInjection__?.version || null, bundleChecksum: window.__betterCodexInjection__?.bundleChecksum || null, profile: window.__betterCodexInjection__?.profile || null, endpoint: window.__betterCodexInjection__?.endpoint || null, pulse: typeof window.__betterCodexInjection__?.pulse === 'function', ready: typeof window.__betterCodexInjection__?.ready === 'function' && Boolean(window.__betterCodexInjection__.ready()), documentId: performance.timeOrigin, bootstrapError: window.__betterCodexInjection__?.bootstrapError?.() || null })";
+var injectionIdentityExpression = "({ version: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.version || null, bundleChecksum: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.bundleChecksum || null, profile: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.profile || null, endpoint: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.endpoint || null, pulse: typeof (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.pulse === 'function', ready: typeof (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.ready === 'function' && Boolean((window.__boostCodexInjection__ || window.__betterCodexInjection__).ready()), documentId: performance.timeOrigin, bootstrapError: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.bootstrapError?.() || null })";
 function currentInjectionMatches(existing2, endpoint) {
-  return existing2.version === injectionVersion() && existing2.bundleChecksum === injectionBundleChecksum() && existing2.profile === betterCodexProfile && existing2.endpoint === endpoint && existing2.pulse;
+  return existing2.version === injectionVersion() && existing2.bundleChecksum === injectionBundleChecksum() && existing2.profile === boostCodexProfile && existing2.endpoint === endpoint && existing2.pulse;
 }
 var Connection = class {
   constructor(url, openTimeoutMs = cdpWebSocketOpenTimeoutMs, commandTimeoutMs = cdpCommandTimeoutMs, deadlineAt) {
@@ -1081,7 +1082,7 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
     const optimizerSettings = /^\/api\/dev\/prompt-optimizer\/settings(?:[?]|$)/.test(path);
     const optimizerRequest = /^\/api\/dev\/prompt-optimizer\/optimize(?:[?]|$)/.test(path);
     const workflowPanel = /^\/api\/dev\/workflow\/panel-url(?:[?]|$)/.test(path);
-    const subagentRead = /^\/api\/dev\/subagents(?:[?]|$)/.test(path);
+    const subagentRead = /^\/api\/dev\/subagents(?:\/work)?(?:[?]|$)/.test(path);
     if (!requestId || request2.token !== accessToken3 || !(accountMetadataPath || optimizerSettings || optimizerRequest || workflowPanel || subagentRead || /^\/api\/account\/usage(?:[?]|$)/.test(path)) || !["GET", "POST"].includes(method) || (/^\/api\/account\/usage(?:[?]|$)/.test(path) || subagentRead) && method !== "GET" || (accountMetadataPath || optimizerRequest || workflowPanel) && method !== "POST") throw new Error("invalid_bridge_request");
     // Account metadata has a 12s upstream deadline. Allow it to complete and
     // return a bounded result before the renderer's 18s deadline. Other bridge
@@ -1094,7 +1095,7 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
       headers: {
         authorization: `Bearer ${accessToken3}`,
         "content-type": "application/json",
-        "x-better-codex-trace-id": traceId
+        "x-boost-codex-trace-id": traceId
       },
       body: typeof request2.body === "string" && method !== "GET" ? request2.body : void 0
     });
@@ -1104,7 +1105,7 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
     result2 = { ok: false, status: 0, value: { error: error2 instanceof Error ? error2.message : "runtime_unavailable", diagnostics: { source: "cdp_bridge_request", trace_id: traceId, method, path, failure_type: "transport" } } };
   }
   if (!requestId) return;
-  await evaluate(connection, `window.__betterCodexBridgeResolve?.(${JSON.stringify(requestId)}, ${JSON.stringify(result2)})`);
+  await evaluate(connection, `window.__boostCodexBridgeResolve?.(${JSON.stringify(requestId)}, ${JSON.stringify(result2)})`);
 }
 async function cdpJson(port, path, timeoutMs = cdpHttpTimeoutMs) {
   try {
@@ -1353,7 +1354,7 @@ public interface IApplicationActivationManager {
 [Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
 public class ApplicationActivationManager {}
 
-public static class BetterCodexApplication {
+public static class boostCodexApplication {
   public static uint Activate(string appUserModelId, string arguments) {
     var manager = (IApplicationActivationManager)new ApplicationActivationManager();
     uint processId;
@@ -1366,7 +1367,7 @@ public static class BetterCodexApplication {
 
 Add-Type -TypeDefinition $activationSource
 $arguments = "--remote-debugging-port=${port} --remote-allow-origins=http://127.0.0.1:${port}"
-[void][BetterCodexApplication]::Activate($codexApp.AppID, $arguments)
+[void][boostCodexApplication]::Activate($codexApp.AppID, $arguments)
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
@@ -1423,11 +1424,11 @@ function codexProcessRunning() {
   }
 }
 function chooseCodexRestartAction() {
-  if (process.env.BETTER_CODEX_LOCAL_PROJECT) return 'reuse-current';
+  if (process.env.BOOST_CODEX_LOCAL_PROJECT) return 'reuse-current';
   const chinese = readCodexLocale() === "zh-CN";
   const choice = showNativeChoiceDialog({
-    message: chinese ? "\u201C\u91CD\u7F6E\u670D\u52A1\u201D\u53EA\u4F1A\u91CD\u542F Better Codex Runtime\uFF1B\u201C\u91CD\u542FCodex\u201D\u4F1A\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u6574\u4E2A Codex\u3002\n\nBetter Codex \u5DF2\u5728\u8FD0\u884C\u3002" : "Reset Service restarts only the Better Codex Runtime. Restart Codex closes and reopens the entire Codex app.\n\nBetter Codex is already running.",
-    title: "Better Codex",
+    message: chinese ? "\u201C\u91CD\u7F6E\u670D\u52A1\u201D\u53EA\u4F1A\u91CD\u542F boostCodex Runtime\uFF1B\u201C\u91CD\u542FCodex\u201D\u4F1A\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u6574\u4E2A Codex\u3002\n\nboostCodex \u5DF2\u5728\u8FD0\u884C\u3002" : "Reset Service restarts only the boostCodex Runtime. Restart Codex closes and reopens the entire Codex app.\n\nboostCodex is already running.",
+    title: "boostCodex",
     primaryLabel: chinese ? "\u91CD\u542FCodex" : "Restart Codex",
     secondaryLabel: chinese ? "\u91CD\u7F6E\u670D\u52A1" : "Reset Service"
   });
@@ -1512,16 +1513,16 @@ async function installTarget(target, runtimePort2, accessToken3) {
     await connection.send("Page.setBypassCSP", { enabled: true });
     await connection.send("Runtime.enable");
     try {
-      await connection.send("Runtime.addBinding", { name: "betterCodexRequest" });
+      await connection.send("Runtime.addBinding", { name: "boostCodexRequest" });
     } catch {
     }
     const existing2 = await evaluate(connection, injectionIdentityExpression);
     const expectedEndpoint = `http://127.0.0.1:${runtimePort2}`;
-    const foreignDevelopmentInjection = betterCodexProfile === "development" && (existing2.profile && existing2.profile !== betterCodexProfile || !existing2.profile && existing2.endpoint && existing2.endpoint !== expectedEndpoint);
+    const foreignDevelopmentInjection = boostCodexProfile === "development" && (existing2.profile && existing2.profile !== boostCodexProfile || !existing2.profile && existing2.endpoint && existing2.endpoint !== expectedEndpoint);
     if (foreignDevelopmentInjection) throw new Error("profile_not_active");
-    const storedIdentifier = await evaluate(connection, "window.__betterCodexNewDocumentScriptId || null");
+    const storedIdentifier = await evaluate(connection, "window.__boostCodexNewDocumentScriptId || window.__betterCodexNewDocumentScriptId || null");
     if (currentInjectionMatches(existing2, expectedEndpoint)) {
-      await evaluate(connection, "window.__betterCodexInjection__.refresh()");
+      await evaluate(connection, "window.__boostCodexInjection__.refresh()");
       await recordDesktopIntegration(connection, target, expectedEndpoint);
       return { targetId: target.id, title: target.title, installed: true, reused: true, identifier: typeof storedIdentifier === "string" ? storedIdentifier : void 0 };
     }
@@ -1535,7 +1536,7 @@ async function installTarget(target, runtimePort2, accessToken3) {
     const registration = await connection.send("Page.addScriptToEvaluateOnNewDocument", { source });
     const identifier = String(registration.identifier ?? "");
     await evaluate(connection, source);
-    await evaluate(connection, `window.__betterCodexNewDocumentScriptId = ${JSON.stringify(identifier)}`);
+    await evaluate(connection, `window.__boostCodexNewDocumentScriptId = ${JSON.stringify(identifier)}; delete window.__betterCodexNewDocumentScriptId`);
     await recordDesktopIntegration(connection, target, expectedEndpoint);
     return { targetId: target.id, title: target.title, installed: true, reused: false, identifier };
   } finally {
@@ -1548,12 +1549,12 @@ async function uninstallTarget(target, accessToken3, ownership) {
     await connection.open();
     await connection.send("Page.enable");
     await connection.send("Runtime.enable");
-    const existing2 = await evaluate(connection, "({ profile: window.__betterCodexInjection__?.profile || null, endpoint: window.__betterCodexInjection__?.endpoint || null })");
+    const existing2 = await evaluate(connection, "({ profile: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.profile || null, endpoint: (window.__boostCodexInjection__ || window.__betterCodexInjection__)?.endpoint || null })");
     if (ownership) {
       const owned = existing2.profile ? existing2.profile === ownership.profile : Boolean(ownership.allowLegacyProfileless || ownership.endpoint && existing2.endpoint === ownership.endpoint);
       if (!owned) return { targetId: target.id, title: target.title, uninstalled: false, reason: "profile_not_active" };
     }
-    const stored = await evaluate(connection, "window.__betterCodexNewDocumentScriptId || null");
+    const stored = await evaluate(connection, "window.__boostCodexNewDocumentScriptId || window.__betterCodexNewDocumentScriptId || null");
     const scriptIdentifier = typeof stored === "string" ? stored : "";
     if (scriptIdentifier) {
       try {
@@ -1585,7 +1586,7 @@ async function cdpInject(port, runtimePort2, accessToken3, launch = false) {
   }
   if (values.length === 0) throw new Error("cdp_main_renderer_not_found");
   const installed = await Promise.all(values.map((target) => installTarget(target, runtimePort2, accessToken3)));
-  recordInjectionOwnership(betterCodexProfile, `http://127.0.0.1:${runtimePort2}`);
+  recordInjectionOwnership(boostCodexProfile, `http://127.0.0.1:${runtimePort2}`);
   return installed;
 }
 async function cdpRestartAndInject(port, runtimePort2, accessToken3) {
@@ -1613,14 +1614,14 @@ async function cdpStatus(port) {
       try {
         await connection.open();
         const value = await evaluate(connection, `({
-          version: window.__betterCodexInjection__?.version || null,
-          bundleChecksum: window.__betterCodexInjection__?.bundleChecksum || null,
-          profile: window.__betterCodexInjection__?.profile || null,
-          endpoint: window.__betterCodexInjection__?.endpoint || null,
-          ready: typeof window.__betterCodexInjection__?.ready === 'function' && Boolean(window.__betterCodexInjection__.ready()),
-          entry: Boolean(document.getElementById('better-codex-entry')),
-          panel: Boolean(document.getElementById('better-codex-panel')),
-          open: document.documentElement.hasAttribute('data-better-codex-open')
+          version: window.__boostCodexInjection__?.version || null,
+          bundleChecksum: window.__boostCodexInjection__?.bundleChecksum || null,
+          profile: window.__boostCodexInjection__?.profile || null,
+          endpoint: window.__boostCodexInjection__?.endpoint || null,
+          ready: typeof window.__boostCodexInjection__?.ready === 'function' && Boolean(window.__boostCodexInjection__.ready()),
+          entry: Boolean(document.getElementById('boost-codex-entry')),
+          panel: Boolean(document.getElementById('boost-codex-panel')),
+          open: document.documentElement.hasAttribute('data-boost-codex-open')
         })`);
         rendered.push({ targetId: target.id, title: target.title, url: target.url, ...value });
       } finally {
@@ -1644,7 +1645,7 @@ async function watchInjection(port, accessToken3) {
     for (const [id, current] of attached) {
       if (pulsing.has(id)) continue;
       pulsing.add(id);
-      void evaluate(current.connection, "window.__betterCodexInjection__?.pulse?.()").catch(() => {
+      void evaluate(current.connection, "window.__boostCodexInjection__?.pulse?.()").catch(() => {
       }).finally(() => pulsing.delete(id));
     }
   }, 2e3);
@@ -1724,15 +1725,15 @@ async function watchInjection(port, accessToken3) {
           await connection.send("Page.setBypassCSP", { enabled: true });
           await connection.send("Runtime.enable");
           try {
-            await connection.send("Runtime.addBinding", { name: "betterCodexRequest" });
+            await connection.send("Runtime.addBinding", { name: "boostCodexRequest" });
           } catch {
           }
           connection.on("Runtime.bindingCalled", (params) => {
-            if (params.name === "betterCodexRequest") void bridgeRequest(connection, activeRuntimePort2, accessToken3, params.payload);
+            if (params.name === "boostCodexRequest") void bridgeRequest(connection, activeRuntimePort2, accessToken3, params.payload);
           });
           const existing2 = await evaluate(connection, injectionIdentityExpression);
           const expectedEndpoint = `http://127.0.0.1:${activeRuntimePort2}`;
-          if (betterCodexProfile === "development" && (existing2.profile ? existing2.profile !== betterCodexProfile : Boolean(existing2.endpoint && existing2.endpoint !== expectedEndpoint))) {
+          if (boostCodexProfile === "development" && (existing2.profile ? existing2.profile !== boostCodexProfile : Boolean(existing2.endpoint && existing2.endpoint !== expectedEndpoint))) {
             setInjectionEnabled(false);
             stopping = true;
             yieldedToPeer = true;
@@ -1740,19 +1741,23 @@ async function watchInjection(port, accessToken3) {
           }
           let identifier;
           if (currentInjectionMatches(existing2, expectedEndpoint)) {
-            const stored = await evaluate(connection, "window.__betterCodexNewDocumentScriptId || null");
+            const stored = await evaluate(connection, "window.__boostCodexNewDocumentScriptId || window.__betterCodexNewDocumentScriptId || null");
             identifier = typeof stored === "string" ? stored : void 0;
-            await evaluate(connection, "window.__betterCodexInjection__.refresh()");
+            await evaluate(connection, "window.__boostCodexInjection__.refresh()");
           } else {
+            const oldIdentifier = await evaluate(connection, "window.__boostCodexNewDocumentScriptId || window.__betterCodexNewDocumentScriptId || null");
+            if (typeof oldIdentifier === 'string' && oldIdentifier) {
+              try { await connection.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: oldIdentifier }); } catch {}
+            }
             const source = injectionScript(activeRuntimePort2, accessToken3, "install", readCodexLocale());
             const registration = await connection.send("Page.addScriptToEvaluateOnNewDocument", { source });
             identifier = String(registration.identifier ?? "") || void 0;
             await evaluate(connection, source);
-            await evaluate(connection, `window.__betterCodexNewDocumentScriptId = ${JSON.stringify(identifier ?? "")}`);
+            await evaluate(connection, `window.__boostCodexNewDocumentScriptId = ${JSON.stringify(identifier ?? "")}; delete window.__betterCodexNewDocumentScriptId`);
           }
           attached.set(target.id, { connection, identifier, target });
           transferred = true;
-          recordInjectionOwnership(betterCodexProfile, expectedEndpoint);
+          recordInjectionOwnership(boostCodexProfile, expectedEndpoint);
           await recordDesktopIntegration(connection, target, expectedEndpoint);
         } finally {
           if (!transferred) await connection.close();
@@ -1762,7 +1767,7 @@ async function watchInjection(port, accessToken3) {
       for (const [id, current] of attached) {
         try {
           const existing2 = await evaluate(current.connection, injectionIdentityExpression);
-          if (betterCodexProfile === "development" && (existing2.profile ? existing2.profile !== betterCodexProfile : Boolean(existing2.endpoint && existing2.endpoint !== `http://127.0.0.1:${activeRuntimePort2}`))) {
+          if (boostCodexProfile === "development" && (existing2.profile ? existing2.profile !== boostCodexProfile : Boolean(existing2.endpoint && existing2.endpoint !== `http://127.0.0.1:${activeRuntimePort2}`))) {
             setInjectionEnabled(false);
             stopping = true;
             yieldedToPeer = true;
@@ -1792,7 +1797,7 @@ async function watchInjection(port, accessToken3) {
       const current = readCompatibilityStatus();
       const reason = message.startsWith("cdp_unavailable_") ? "renderer_not_found" : message.startsWith("codex_incompatible_") ? message.slice("codex_incompatible_".length) : "renderer_probe_failed";
       writeCompatibilityStatus({ codexVersion: desktopVersion(), compatible: false, reason, targetId: null, capabilities: null });
-      if (current?.reason !== reason) console.error(`BETTER_CODEX_DIAGNOSTIC ${JSON.stringify({ scope: "desktop", event: "integration_pending", reason, error: message })}`);
+      if (current?.reason !== reason) console.error(`BOOST_CODEX_DIAGNOSTIC ${JSON.stringify({ scope: "desktop", event: "integration_pending", reason, error: message })}`);
     }
     await Promise.race([activity, new Promise((resolve11) => setTimeout(resolve11, settleMs))]);
     wake();
@@ -1830,10 +1835,10 @@ function macMenuBarIcon() {
 
 // src/launch-integration.ts
 init_config();
-var developmentProfile = betterCodexProfile === "development";
-var launcherDisplayName = developmentProfile ? "Better Codex Dev" : "Better Codex";
-var MAC_BUNDLE_ID = developmentProfile ? "com.better-codex.launcher.dev" : "com.better-codex.launcher";
-var MAC_OWNERSHIP_FILE = ".better-codex-owner";
+var developmentProfile = boostCodexProfile === "development";
+var launcherDisplayName = developmentProfile ? "boostCodex Dev" : "boostCodex";
+var MAC_BUNDLE_ID = developmentProfile ? "com.boost-codex.launcher.dev" : "com.boost-codex.launcher";
+var MAC_OWNERSHIP_FILE = ".boost-codex-owner";
 var WINDOWS_SHORTCUT_NAME = `${launcherDisplayName}.lnk`;
 var WINDOWS_LAUNCHER_SCRIPT_NAME = `${launcherDisplayName} Launcher.vbs`;
 function macLauncherPath() {
@@ -1842,8 +1847,10 @@ function macLauncherPath() {
 function legacyMacLauncherPaths() {
   if (developmentProfile) return [];
   return [
+    "/Applications/boostCodex Launcher.app",
+    "/Applications/Better Codex.app",
     "/Applications/Better Codex Launcher.app",
-    (0, import_node_path9.join)((0, import_node_os6.homedir)(), "Applications", "Better Codex Launcher.app")
+    (0, import_node_path9.join)((0, import_node_os6.homedir)(), "Applications", "boostCodex Launcher.app")
   ];
 }
 function allowedMacLauncherPaths() {
@@ -1912,7 +1919,7 @@ function validateOwnedWindowsState(state) {
     if (!shortcut || typeof shortcut !== "object" || typeof shortcut.path !== "string") throw new Error("launch_integration_state_invalid");
     if (isLegacyWindowsShortcut(shortcut)) throw new Error("launch_integration_state_invalid");
     const shortcutPath = (0, import_node_path9.resolve)(shortcut.path);
-    if ((0, import_node_path9.basename)(shortcutPath).toLowerCase() !== WINDOWS_SHORTCUT_NAME.toLowerCase() || !shortcutPath.toLowerCase().endsWith(".lnk")) {
+    if (![WINDOWS_SHORTCUT_NAME, developmentProfile ? "Better Codex Dev.lnk" : "Better Codex.lnk"].some(name => name.toLowerCase() === (0, import_node_path9.basename)(shortcutPath).toLowerCase()) || !shortcutPath.toLowerCase().endsWith(".lnk")) {
       throw new Error("launch_integration_state_invalid");
     }
     if ((0, import_node_fs10.existsSync)(shortcutPath)) {
@@ -1958,8 +1965,8 @@ function managedEntrypoint(path) {
   return !relation || !relation.startsWith("..") && !(0, import_node_path9.isAbsolute)(relation);
 }
 function installationCommand() {
-  const base = process.env.BETTER_CODEX_BASE_ENTRYPOINT;
-  const launcher = process.env.BETTER_CODEX_LAUNCHER_PATH;
+  const base = process.env.BOOST_CODEX_BASE_ENTRYPOINT;
+  const launcher = process.env.BOOST_CODEX_LAUNCHER_PATH;
   let invocation;
   if (base) invocation = [process.execPath, (0, import_node_path9.resolve)(base)];
   else if (launcher) invocation = [(0, import_node_path9.resolve)(launcher)];
@@ -1986,14 +1993,14 @@ function installationCommand() {
 function launcherCommand(command2) {
   if (process.platform !== "win32") return command2;
   ensureDirectories();
-  const scriptPath = (0, import_node_path9.join)(betterCodexHome, WINDOWS_LAUNCHER_SCRIPT_NAME);
+  const scriptPath = (0, import_node_path9.join)(boostCodexHome, WINDOWS_LAUNCHER_SCRIPT_NAME);
   const commandLine = command2.map((value) => `"${value.replace(/"/g, '""')}"`).join(" ");
   (0, import_node_fs10.writeFileSync)(scriptPath, `\uFEFFOption Explicit
 Dim shell
 Set shell = CreateObject("WScript.Shell")
-shell.Environment("Process")("BETTER_CODEX_PROFILE") = "${betterCodexProfile}"
-shell.Environment("Process")("BETTER_CODEX_HOME") = "${betterCodexHome.replace(/"/g, '""')}"
-shell.Environment("Process")("BETTER_CODEX_PEER_HOME") = "${peerBetterCodexHome.replace(/"/g, '""')}"
+shell.Environment("Process")("BOOST_CODEX_PROFILE") = "${boostCodexProfile}"
+shell.Environment("Process")("BOOST_CODEX_HOME") = "${boostCodexHome.replace(/"/g, '""')}"
+shell.Environment("Process")("BOOST_CODEX_PEER_HOME") = "${peerBoostCodexHome.replace(/"/g, '""')}"
 shell.Run "${commandLine.replace(/"/g, '""')}" & " launch", 0, False
 `, { mode: 384, encoding: 'utf16le' });
   return [(0, import_node_path9.join)(process.env.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe"), scriptPath];
@@ -2041,13 +2048,13 @@ function writeMacAppIcon(resources) {
 }
 function writeWindowsAppIcon() {
   ensureDirectories();
-  const path = (0, import_node_path9.join)(betterCodexHome, "AppIcon.ico");
+  const path = (0, import_node_path9.join)(boostCodexHome, "AppIcon.ico");
   (0, import_node_fs10.writeFileSync)(path, appIconIco());
   return path;
 }
 function macLauncherScript(command2) {
   return `#!/bin/sh
-BETTER_CODEX_PROFILE=${shellSingleQuoted(betterCodexProfile)} BETTER_CODEX_HOME=${shellSingleQuoted(betterCodexHome)} BETTER_CODEX_PEER_HOME=${shellSingleQuoted(peerBetterCodexHome)} ${command2.map(shellSingleQuoted).join(" ")} launch >>${shellSingleQuoted((0, import_node_path9.join)(logPath, "launcher.log"))} 2>&1 &
+BOOST_CODEX_PROFILE=${shellSingleQuoted(boostCodexProfile)} BOOST_CODEX_HOME=${shellSingleQuoted(boostCodexHome)} BOOST_CODEX_PEER_HOME=${shellSingleQuoted(peerBoostCodexHome)} ${command2.map(shellSingleQuoted).join(" ")} launch >>${shellSingleQuoted((0, import_node_path9.join)(logPath, "launcher.log"))} 2>&1 &
 exit 0
 `;
 }
@@ -2071,7 +2078,7 @@ function assertOwnedMacApp(appPath, state) {
   if (state.desktopBundle && nativeMacBundle(appPath)) return;
   const marker = (0, import_node_path9.join)(contents, "Resources", MAC_OWNERSHIP_FILE);
   if (state.ownershipToken && (0, import_node_fs10.existsSync)(marker) && !(0, import_node_fs10.lstatSync)(marker).isSymbolicLink() && (0, import_node_fs10.readFileSync)(marker, "utf8") === state.ownershipToken) return;
-  const executable = (0, import_node_path9.join)(contents, "MacOS", "better-codex-launcher");
+  const executable = (0, import_node_path9.join)(contents, "MacOS", "boost-codex-launcher");
   if (!state.ownershipToken && (0, import_node_fs10.existsSync)(executable) && !(0, import_node_fs10.lstatSync)(executable).isSymbolicLink()) {
     const scriptContents = (0, import_node_fs10.readFileSync)(executable, "utf8");
     if (macLauncherOwnershipScripts([state.launcher, ...state.launcherArguments ?? []]).includes(scriptContents)) return;
@@ -2092,17 +2099,17 @@ function installMacLauncher(command2, previous) {
   const appPath = macLauncherPath();
   const migrated = migrateLegacyMacLauncher(appPath, previous);
   const ownedState = migrated && previous ? { ...previous, appPath } : previous;
-  const adopting = process.env.BETTER_CODEX_DESKTOP_APP === appPath && nativeMacBundle(appPath) && JSON.parse((0, import_node_fs10.readFileSync)((0, import_node_path9.join)(appPath, "Contents", "Resources", "desktop-bundle.json"), "utf8")).executableSha256 === (0, import_node_crypto4.createHash)("sha256").update(macMenuBarExecutable()).digest("hex");
+  const adopting = process.env.BOOST_CODEX_DESKTOP_APP === appPath && nativeMacBundle(appPath) && JSON.parse((0, import_node_fs10.readFileSync)((0, import_node_path9.join)(appPath, "Contents", "Resources", "desktop-bundle.json"), "utf8")).executableSha256 === (0, import_node_crypto4.createHash)("sha256").update(macMenuBarExecutable()).digest("hex");
   if ((0, import_node_fs10.existsSync)(appPath) && !adopting) assertOwnedMacApp(appPath, ownedState);
   const existingContents = (0, import_node_path9.join)(appPath, "Contents");
-  const stableCommand = betterCodexProfile === "stable" && (0, import_node_fs10.existsSync)(appPath) && previous?.platform === "darwin" && (0, import_node_path9.resolve)(previous.launcher) === (0, import_node_path9.resolve)(command2[0]) && (previous.launcherArguments ?? []).length === command2.length - 1 && (previous.launcherArguments ?? []).every((argument, index) => argument === command2[index + 1]) ? [previous.launcher, ...previous.launcherArguments ?? []] : command2;
+  const stableCommand = boostCodexProfile === "stable" && (0, import_node_fs10.existsSync)(appPath) && previous?.platform === "darwin" && (0, import_node_path9.resolve)(previous.launcher) === (0, import_node_path9.resolve)(command2[0]) && (previous.launcherArguments ?? []).length === command2.length - 1 && (previous.launcherArguments ?? []).every((argument, index) => argument === command2[index + 1]) ? [previous.launcher, ...previous.launcherArguments ?? []] : command2;
   const [launcher, ...launcherArguments] = stableCommand;
   const ownershipToken = ownedState?.ownershipToken ?? (0, import_node_crypto4.randomUUID)();
   if (adopting || ownedState?.desktopBundle && nativeMacBundle(appPath)) {
     return { platform: "darwin", launcher, launcherArguments, appPath, desktopBundle: true };
   }
   if ((0, import_node_fs10.existsSync)(appPath)) {
-    const existingExecutable = (0, import_node_path9.join)(existingContents, "MacOS", "better-codex-launcher");
+    const existingExecutable = (0, import_node_path9.join)(existingContents, "MacOS", "boost-codex-launcher");
     if (!(0, import_node_fs10.existsSync)(existingExecutable) || (0, import_node_fs10.lstatSync)(existingExecutable).isSymbolicLink()) {
       throw new Error("mac_launcher_replacement_required");
     }
@@ -2119,7 +2126,7 @@ function installMacLauncher(command2, previous) {
 <plist version="1.0"><dict>
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleDisplayName</key><string>${launcherDisplayName}</string>
-<key>CFBundleExecutable</key><string>better-codex-menubar</string>
+<key>CFBundleExecutable</key><string>boost-codex-menubar</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleIdentifier</key><string>${MAC_BUNDLE_ID}</string>
 <key>CFBundleName</key><string>${launcherDisplayName}</string>
@@ -2127,15 +2134,15 @@ function installMacLauncher(command2, previous) {
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>BetterCodexProfile</key><string>${betterCodexProfile}</string>
+<key>boostCodexProfile</key><string>${boostCodexProfile}</string>
 </dict></plist>
 `);
-    const executable = (0, import_node_path9.join)(macos, "better-codex-menubar");
+    const executable = (0, import_node_path9.join)(macos, "boost-codex-menubar");
     (0, import_node_fs10.writeFileSync)(executable, macMenuBarExecutable());
     (0, import_node_fs10.chmodSync)(executable, 493);
     writeMacAppIcon(resources);
     (0, import_node_fs10.writeFileSync)((0, import_node_path9.join)(resources, "MenuBarTemplate.png"), macMenuBarIcon());
-    (0, import_node_fs10.writeFileSync)((0, import_node_path9.join)(resources, "desktop-bundle.json"), JSON.stringify({ kind: "better-codex-desktop", schemaVersion: 1 }));
+    (0, import_node_fs10.writeFileSync)((0, import_node_path9.join)(resources, "desktop-bundle.json"), JSON.stringify({ kind: "boost-codex-desktop", schemaVersion: 1 }));
     (0, import_node_fs10.writeFileSync)((0, import_node_path9.join)(resources, MAC_OWNERSHIP_FILE), ownershipToken, { mode: 384 });
     const backup = `${appPath}.previous.${(0, import_node_crypto4.randomUUID)()}`;
     if ((0, import_node_fs10.existsSync)(appPath)) (0, import_node_fs10.renameSync)(appPath, backup);
@@ -2160,19 +2167,19 @@ function installMacLauncher(command2, previous) {
 function nativeMacBundle(appPath) {
   const contents = (0, import_node_path9.join)(appPath, "Contents");
   const manifest = (0, import_node_path9.join)(contents, "Resources", "desktop-bundle.json");
-  const executable = (0, import_node_path9.join)(contents, "MacOS", "better-codex-menubar");
+  const executable = (0, import_node_path9.join)(contents, "MacOS", "boost-codex-menubar");
   try {
-    return !(0, import_node_fs10.lstatSync)(appPath).isSymbolicLink() && !(0, import_node_fs10.lstatSync)(contents).isSymbolicLink() && !(0, import_node_fs10.lstatSync)(manifest).isSymbolicLink() && !(0, import_node_fs10.lstatSync)(executable).isSymbolicLink() && macBundleIdentifier((0, import_node_path9.join)(contents, "Info.plist")) === MAC_BUNDLE_ID && JSON.parse((0, import_node_fs10.readFileSync)(manifest, "utf8")).kind === "better-codex-desktop";
+    return !(0, import_node_fs10.lstatSync)(appPath).isSymbolicLink() && !(0, import_node_fs10.lstatSync)(contents).isSymbolicLink() && !(0, import_node_fs10.lstatSync)(manifest).isSymbolicLink() && !(0, import_node_fs10.lstatSync)(executable).isSymbolicLink() && macBundleIdentifier((0, import_node_path9.join)(contents, "Info.plist")) === MAC_BUNDLE_ID && JSON.parse((0, import_node_fs10.readFileSync)(manifest, "utf8")).kind === "boost-codex-desktop";
   } catch {
     return false;
   }
 }
 function openMacMenuBar() {
-  if (process.platform !== "darwin" || process.env.BETTER_CODEX_DISABLE_MENUBAR === "1" || process.env.NODE_TEST_CONTEXT) return;
+  if (process.platform !== "darwin" || process.env.BOOST_CODEX_DISABLE_MENUBAR === "1" || process.env.NODE_TEST_CONTEXT) return;
   const state = readState();
-  if (!state?.appPath || !(0, import_node_fs10.existsSync)((0, import_node_path9.join)(state.appPath, "Contents", "MacOS", "better-codex-menubar"))) return;
+  if (!state?.appPath || !(0, import_node_fs10.existsSync)((0, import_node_path9.join)(state.appPath, "Contents", "MacOS", "boost-codex-menubar"))) return;
   assertOwnedMacApp(state.appPath, state);
-  (0, import_node_child_process4.execFileSync)("/usr/bin/open", ["-g", state.appPath, "--args", "--background", "--home", betterCodexHome], { stdio: "ignore", timeout: 5e3 });
+  (0, import_node_child_process4.execFileSync)("/usr/bin/open", ["-g", state.appPath, "--args", "--background", "--home", boostCodexHome], { stdio: "ignore", timeout: 5e3 });
 }
 function restoreLegacyWindowsShortcuts(state) {
   const payload = Buffer.from(JSON.stringify(state.shortcuts ?? []), "utf8").toString("base64");
@@ -2244,6 +2251,17 @@ function cleanupLegacyWindowsBackups() {
   (0, import_node_fs10.rmSync)(backupDirectoryPath(), { recursive: true, force: true });
 }
 function installWindowsShortcuts(command2, previous) {
+  if (previous && !isLegacyWindowsState(previous)) {
+    const oldName = developmentProfile ? "Better Codex Dev.lnk" : "Better Codex.lnk";
+    const oldLinks = previous.shortcuts.filter(item => path.basename(item.path).toLowerCase() === oldName.toLowerCase());
+    if (oldLinks.length) {
+      const backup = path.join(boostCodexHome, "backups", "brand-rename-launcher"); fs.mkdirSync(backup, { recursive: true });
+      fs.copyFileSync(launchIntegrationStatePath, path.join(backup, "launch-integration.json"));
+      for (let i=0;i<oldLinks.length;i++) if(fs.existsSync(oldLinks[i].path)) fs.copyFileSync(oldLinks[i].path,path.join(backup,i+"-"+oldName));
+      const result = removeOwnedWindowsShortcuts({ ...previous, shortcuts: oldLinks }, oldName);
+      if (result.pending) throw Error("brand_shortcut_migration_incomplete");
+    }
+  }
   if (previous && isLegacyWindowsState(previous)) {
     const result2 = restoreLegacyWindowsShortcuts(previous);
     if (result2.pending > 0) throw new Error(`shortcut_restore_incomplete_${result2.pending}`);
@@ -2289,7 +2307,7 @@ $shortcut.Description = ${powershellLiteral(launcherDisplayName)}
     shortcuts: Array.isArray(shortcuts) ? shortcuts : [shortcuts]
   };
 }
-function removeOwnedWindowsShortcuts(state) {
+function removeOwnedWindowsShortcuts(state, shortcutName = WINDOWS_SHORTCUT_NAME) {
   const payload = Buffer.from(JSON.stringify(state.shortcuts ?? []), "utf8").toString("base64");
   const expectedArguments = [...state.launcherArguments ?? [], "launch"].map(windowsArgument).join(" ");
   const script = `$ErrorActionPreference = "Continue"
@@ -2305,7 +2323,7 @@ $roots = @(
 $canonicalRoots = @($roots | ForEach-Object { (Resolve-Path -LiteralPath $_).Path.TrimEnd('\\') })
 function Test-OwnedShortcut([string]$path) {
   try {
-    if ([IO.Path]::GetFileName($path) -ne ${powershellLiteral(WINDOWS_SHORTCUT_NAME)}) { return $false }
+    if ([IO.Path]::GetFileName($path) -ne ${powershellLiteral(shortcutName)}) { return $false }
     $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
     $resolved = (Resolve-Path -LiteralPath $path -ErrorAction Stop).Path
@@ -2433,9 +2451,9 @@ var import_node_path10 = require("node:path");
 var import_node_util = require("node:util");
 init_config();
 init_runtime_state();
-var label = "com.better-codex.runtime";
-var legacyLabel = "com.better-codex.gateway";
-var windowsTask = "Better Codex Runtime";
+var label = "com.boost-codex.runtime";
+var legacyLabel = "com.better-codex.runtime";
+var windowsTask = "boostCodex Runtime";
 var windowsRunKey = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 var launchAgentPath = (0, import_node_path10.join)((0, import_node_os7.homedir)(), "Library", "LaunchAgents", `${label}.plist`);
 var legacyLaunchAgentPath = (0, import_node_path10.join)((0, import_node_os7.homedir)(), "Library", "LaunchAgents", `${legacyLabel}.plist`);
@@ -2462,8 +2480,8 @@ function windowsRuntime() {
     const processInfo = JSON.parse(output);
     if (processInfo.ProcessId !== value.pid || !processInfo.ExecutablePath || !processInfo.CommandLine || !/(?:^|\s)runtime(?:\s|$)/i.test(processInfo.CommandLine)) return null;
     const executable = (0, import_node_path10.resolve)(processInfo.ExecutablePath).toLowerCase();
-    const expected = [command()[0], process.env.BETTER_CODEX_LAUNCHER_PATH].filter((item) => Boolean(item)).map((item) => (0, import_node_path10.resolve)(item).toLowerCase());
-    const managedRoot = (0, import_node_path10.resolve)((0, import_node_path10.join)(betterCodexHome, "runtime", "versions")).toLowerCase();
+    const expected = [command()[0], process.env.BOOST_CODEX_LAUNCHER_PATH].filter((item) => Boolean(item)).map((item) => (0, import_node_path10.resolve)(item).toLowerCase());
+    const managedRoot = (0, import_node_path10.resolve)((0, import_node_path10.join)(boostCodexHome, "runtime", "versions")).toLowerCase();
     const managedRelation = (0, import_node_path10.relative)(managedRoot, executable);
     if (!expected.includes(executable) && (!managedRelation || managedRelation.startsWith("..") || (0, import_node_path10.isAbsolute)(managedRelation))) return null;
     process.kill(value.pid, 0);
@@ -2494,14 +2512,14 @@ function servicePlist() {
 }
 function serviceDefinition() {
   const invocation = command();
-  const environment = { BETTER_CODEX_HOME: betterCodexHome, BETTER_CODEX_CDP_PORT: String(cdpPort) };
-  if (invocation.length === 2) environment.BETTER_CODEX_LAUNCHER_PATH = invocation[0];
-  else if (invocation.length === 3 && invocation[1].endsWith(".cjs")) environment.BETTER_CODEX_BASE_ENTRYPOINT = invocation[1];
+  const environment = { BOOST_CODEX_HOME: boostCodexHome, BOOST_CODEX_CDP_PORT: String(cdpPort) };
+  if (invocation.length === 2) environment.BOOST_CODEX_LAUNCHER_PATH = invocation[0];
+  else if (invocation.length === 3 && invocation[1].endsWith(".cjs")) environment.BOOST_CODEX_BASE_ENTRYPOINT = invocation[1];
   return {
     Label: label,
     ProgramArguments: invocation,
     EnvironmentVariables: environment,
-    WorkingDirectory: betterCodexHome,
+    WorkingDirectory: boostCodexHome,
     RunAtLoad: true,
     KeepAlive: { SuccessfulExit: false },
     ThrottleInterval: 5,
@@ -2521,10 +2539,10 @@ function serviceConfigurationMatches() {
   }
 }
 function repairServiceConfiguration() {
-  if (betterCodexProfile === "development" || process.platform !== "darwin" || !(0, import_node_fs11.existsSync)(launchAgentPath)) return false;
+  if (boostCodexProfile === "development" || process.platform !== "darwin" || !(0, import_node_fs11.existsSync)(launchAgentPath)) return false;
   if (serviceConfigurationMatches()) return false;
   const installed = JSON.parse((0, import_node_child_process5.execFileSync)("/usr/bin/plutil", ["-convert", "json", "-o", "-", launchAgentPath], { encoding: "utf8" }));
-  console.error(`BETTER_CODEX_DIAGNOSTIC ${JSON.stringify({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), scope: "service", event: "configuration_repair", profile: betterCodexProfile, home: betterCodexHome, pid: process.pid, installed, expected: serviceDefinition() })}`);
+  console.error(`BOOST_CODEX_DIAGNOSTIC ${JSON.stringify({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), scope: "service", event: "configuration_repair", profile: boostCodexProfile, home: boostCodexHome, pid: process.pid, installed, expected: serviceDefinition() })}`);
   installService();
   return true;
 }
@@ -2552,10 +2570,19 @@ function domain() {
   return `gui/${uid}`;
 }
 function installService() {
-  if (betterCodexProfile === "development") return { installed: false, label: "Better Codex Dev Runtime", path: null, reason: "development_runtime_unmanaged" };
+  if (boostCodexProfile === "development") return { installed: false, label: "boostCodex Dev Runtime", path: null, reason: "development_runtime_unmanaged" };
   ensureDirectories();
   if (process.platform === "win32") {
-    reg(["ADD", windowsRunKey, "/V", windowsTask, "/T", "REG_SZ", "/D", windowsStartupCommand(), "/F"]);
+    const startup = windowsStartupCommand();
+    const prior = reg(["QUERY", windowsRunKey, "/V", "Better Codex Runtime"], true);
+    if (prior) {
+      const oldCommand = prior.match(/REG_SZ\s+(.+)/)?.[1]?.trim();
+      if (oldCommand !== startup) throw Error("legacy_startup_configuration_not_owned");
+      fs.mkdirSync(path.join(boostCodexHome,"backups","brand-rename-launcher"),{recursive:true});
+      fs.writeFileSync(path.join(boostCodexHome,"backups","brand-rename-launcher","startup.json"),JSON.stringify({name:"Better Codex Runtime",command:oldCommand}));
+    }
+    reg(["ADD", windowsRunKey, "/V", windowsTask, "/T", "REG_SZ", "/D", startup, "/F"]);
+    if (prior) reg(["DELETE", windowsRunKey, "/V", "Better Codex Runtime", "/F"]);
     startService();
     return { installed: true, label: windowsTask, path: null };
   }
@@ -2571,7 +2598,7 @@ function installService() {
   return { installed: true, label, path: launchAgentPath };
 }
 function uninstallService() {
-  if (betterCodexProfile === "development") return { installed: false, label: "Better Codex Dev Runtime", path: null, reason: "development_runtime_unmanaged" };
+  if (boostCodexProfile === "development") return { installed: false, label: "boostCodex Dev Runtime", path: null, reason: "development_runtime_unmanaged" };
   if (process.platform === "win32") {
     stopService();
     reg(["DELETE", windowsRunKey, "/V", windowsTask, "/F"], true);
@@ -2585,12 +2612,12 @@ function uninstallService() {
   return { installed: false, label, path: launchAgentPath };
 }
 function startService() {
-  if (betterCodexProfile === "development") throw new Error("development_runtime_unmanaged");
+  if (boostCodexProfile === "development") throw new Error("development_runtime_unmanaged");
   if (process.platform === "win32") {
     if (!serviceStatus().installed) throw new Error("service_not_installed");
     if (!windowsRuntime()) {
       const [executable, ...args] = command();
-      const child = (0, import_node_child_process5.spawn)(executable, args, { cwd: betterCodexHome, detached: true, stdio: "ignore", windowsHide: true });
+      const child = (0, import_node_child_process5.spawn)(executable, args, { cwd: boostCodexHome, detached: true, stdio: "ignore", windowsHide: true });
       child.unref();
     }
     return { started: true, label: windowsTask };
@@ -2600,7 +2627,7 @@ function startService() {
     const runtime = readRuntimeState();
     const service = serviceStatus();
     if (runtime || service.running) {
-      console.error(`BETTER_CODEX_DIAGNOSTIC ${JSON.stringify({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), scope: "service", event: "configuration_repair_blocked", profile: betterCodexProfile, home: betterCodexHome, pid: process.pid, service_pid: service.pid, runtime_pid: runtime?.pid ?? null, runtime_instance_id: runtime?.instanceId ?? null, error: "service_configuration_mismatch_runtime_active" })}`);
+      console.error(`BOOST_CODEX_DIAGNOSTIC ${JSON.stringify({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), scope: "service", event: "configuration_repair_blocked", profile: boostCodexProfile, home: boostCodexHome, pid: process.pid, service_pid: service.pid, runtime_pid: runtime?.pid ?? null, runtime_instance_id: runtime?.instanceId ?? null, error: "service_configuration_mismatch_runtime_active" })}`);
       throw new Error("service_configuration_mismatch_runtime_active");
     }
     repairServiceConfiguration();
@@ -2611,7 +2638,7 @@ function startService() {
   return { started: true, label };
 }
 function stopService() {
-  if (betterCodexProfile === "development") return { stopped: true, label: "Better Codex Dev Runtime", unmanaged: true };
+  if (boostCodexProfile === "development") return { stopped: true, label: "boostCodex Dev Runtime", unmanaged: true };
   if (process.platform === "win32") {
     const pid = windowsRuntime();
     if (pid) {
@@ -2630,7 +2657,7 @@ function restartService() {
   return startService();
 }
 function serviceStatus() {
-  if (betterCodexProfile === "development") return { installed: false, running: false, pid: null, label: "Better Codex Dev Runtime", path: null, reason: "development_runtime_unmanaged" };
+  if (boostCodexProfile === "development") return { installed: false, running: false, pid: null, label: "boostCodex Dev Runtime", path: null, reason: "development_runtime_unmanaged" };
   if (process.platform === "win32") {
     const output2 = reg(["QUERY", windowsRunKey, "/V", windowsTask], true);
     const installed2 = Boolean(output2);
@@ -2651,7 +2678,7 @@ function serviceLogs(lines = 50) {
 
 function commandArguments() {
   const values = process.argv.slice(2);
-  const launcher = process.env.BETTER_CODEX_LAUNCHER_PATH;
+  const launcher = process.env.BOOST_CODEX_LAUNCHER_PATH;
   if (launcher && values[0] && canonicalPath(values[0]) === canonicalPath(launcher)) values.shift();
   return values;
 }
@@ -2721,7 +2748,7 @@ function spawnSelf(args, logFile, detached = true) {
   const child = (0, import_node_child_process14.spawn)(process.execPath, ownArgs, {
     cwd: process.cwd(),
     detached,
-    env: { ...process.env, BETTER_CODEX_TOKEN: accessToken2() },
+    env: { ...process.env, BOOST_CODEX_TOKEN: accessToken2() },
     stdio: ["ignore", descriptor, descriptor],
     windowsHide: true
   });
@@ -2736,7 +2763,7 @@ function activeRuntimePort() {
   return runtime.port;
 }
 
-function injectionOwnership(profile = betterCodexProfile, stateRunPath = runPath, allowLegacyProfileless = false) {
+function injectionOwnership(profile = boostCodexProfile, stateRunPath = runPath, allowLegacyProfileless = false) {
   const runtime = readJsonFile((0, import_node_path27.join)(stateRunPath, "runtime.json"));
   const injection = readJsonFile((0, import_node_path27.join)(stateRunPath, "injection.json"));
   const runtimePort2 = Number(runtime?.port);
@@ -2785,6 +2812,19 @@ function injectorPid() {
   return Number.isInteger(pid) && processAlive5(pid) && isInjectorProcess(pid) ? pid : null;
 }
 
+// The supervisor runs every second. Do not block all renderer/API traffic on
+// a synchronous PowerShell process query during its ordinary liveness check.
+async function liveInjectorPid() {
+  let pid;
+  try { pid = Number(import_node_fs31.readFileSync(injectorPidPath, 'utf8')); } catch { return null; }
+  if (!Number.isInteger(pid) || !processAlive5(pid)) return null;
+  const windows = process.platform === 'win32';
+  const command = windows ? 'powershell.exe' : 'ps';
+  const args = windows ? ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`] : ['-p', String(pid), '-o', 'command='];
+  const line = await new Promise(resolve => import_node_child_process14.execFile(command, args, { encoding: 'utf8', windowsHide: true, timeout: 5000, maxBuffer: 65536 }, (error, stdout) => resolve(error ? '' : stdout.trim())));
+  return /\bwatch-inject\b/.test(line) && processAlive5(pid) ? pid : null;
+}
+
 function tryStartInjector(portNumber) {
   const existing2 = injectorPid();
   if (existing2) return existing2;
@@ -2815,12 +2855,12 @@ function tryStartInjector(portNumber) {
 async function ensureInjector(portNumber) {
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
-    const pid = injectorPid();
+    const pid = await liveInjectorPid();
     if (pid) return pid;
     const started = tryStartInjector(portNumber);
     if (started) {
       await new Promise((resolve11) => setTimeout(resolve11, 100));
-      const running = injectorPid();
+      const running = await liveInjectorPid();
       if (running) return running;
     } else {
       try {
@@ -2952,8 +2992,8 @@ function sendJson(response, status, value) {
     "content-type": "application/json; charset=utf-8",
     "access-control-allow-origin": "app://-",
     "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-    "access-control-allow-headers": "authorization, content-type, x-better-codex-trace-id",
-    "access-control-expose-headers": "x-better-codex-trace-id, x-better-codex-request-id",
+    "access-control-allow-headers": "authorization, content-type, x-boost-codex-trace-id",
+    "access-control-expose-headers": "x-boost-codex-trace-id, x-boost-codex-request-id",
     "access-control-allow-private-network": "true",
     "cross-origin-resource-policy": "cross-origin",
     "vary": "Origin"
@@ -2965,7 +3005,7 @@ function sendPreflight(response) {
   response.writeHead(204, {
     "access-control-allow-origin": "app://-",
     "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-    "access-control-allow-headers": "authorization, content-type, x-better-codex-trace-id",
+    "access-control-allow-headers": "authorization, content-type, x-boost-codex-trace-id",
     "access-control-allow-private-network": "true",
     "access-control-max-age": "600",
     "vary": "Origin"
@@ -3076,7 +3116,7 @@ function startServer(){
  try{identity=claimRuntimeAuthority(initial);if(identity.handoffUpdateId)throw Error('runtime_update_in_progress');}catch(error){clearRuntimeState(initial.instanceId);throw error;}
  accessToken=token();
  const {NativeAccountSession}=require('../modules/native-account-session.cjs');
- nativeSession=new NativeAccountSession({home:betterCodexHome,executable:codexExecutablePath,version:coreVersion});
+ nativeSession=new NativeAccountSession({home:boostCodexHome,executable:codexExecutablePath,version:coreVersion});
  nativeSession.publish();
  const worker=createLocalWorker(nativeSession);
  let cleaned=false;
@@ -3084,16 +3124,16 @@ function startServer(){
  const server=http.createServer((request2,response)=>{
   void(async()=>{
    if(!request2.url||!loopback(request2)||!trustedOrigin(request2))return sendJson(response,403,{error:'forbidden'});
-   if(request2.headers['x-better-codex-relay']!==undefined)return sendJson(response,403,{error:'local_access_required'});
+   if(request2.headers['x-boost-codex-relay']!==undefined||request2.headers['x-better-codex-relay']!==undefined)return sendJson(response,403,{error:'local_access_required'});
    const url=new URL(request2.url,'http://127.0.0.1'),method=request2.method || 'GET';
    if(method==='OPTIONS')return sendPreflight(response);
    if(['/health','/livez','/readyz'].includes(url.pathname)&&method==='GET'){
     const address=server.address(),port=typeof address==='object'&&address?address.port:0,runtimeIdentity=runtimeIdentityHealth({...identity,port});
     const ready=runtimeIdentity.ok&&!worker.__devDraining;
-    return sendJson(response,url.pathname==='/readyz'&&!ready?503:200,{ok:url.pathname==='/readyz'?ready:runtimeIdentity.ok,serving_ready:ready,name:'Better Codex Runtime',version:coreVersion,pid:process.pid,port,instanceId:identity.instanceId,generation:identity.generation,runtime_identity:runtimeIdentity,database:{ok:true,opened:false},storage:storageStatus(),compatibility:readCompatibilityStatus(),session_host:nativeSession.status()});
+    return sendJson(response,url.pathname==='/readyz'&&!ready?503:200,{ok:url.pathname==='/readyz'?ready:runtimeIdentity.ok,serving_ready:ready,name:'boostCodex Runtime',version:coreVersion,pid:process.pid,port,instanceId:identity.instanceId,generation:identity.generation,runtime_identity:runtimeIdentity,database:{ok:true,opened:false},storage:storageStatus(),compatibility:readCompatibilityStatus(),session_host:nativeSession.status()});
    }
    if(!validAccessToken(bearerToken(request2)))return sendJson(response,401,{error:'unauthorized'});
-   if(process.env.BETTER_CODEX_LOCAL_PROJECT && url.pathname.startsWith('/api/dev/')){
+   if(process.env.BOOST_CODEX_LOCAL_PROJECT && url.pathname.startsWith('/api/dev/')){
     const hook=process.env.BC_RUNTIME_API;
     if(hook&&await require(hook).handle({url,method,request:request2,response,worker,readBody,sendJson,stopHost:()=>nativeSession.stop()}))return;
    }
@@ -3111,7 +3151,7 @@ function startServer(){
  server.listen(runtimePort,'127.0.0.1',()=>{
   const port=server.address().port;identity={...identity,port};publishRuntimeState(identity);
   if(!process.env.NODE_TEST_CONTEXT)void nativeSession.start().catch(()=>{});
-  console.log(`Better Codex Runtime ${coreVersion} listening on http://127.0.0.1:${port}`);
+  console.log(`boostCodex Runtime ${coreVersion} listening on http://127.0.0.1:${port}`);
  });
  process.once('SIGINT',stop);process.once('SIGTERM',stop);process.once('exit',cleanup);
  return server;
@@ -3131,14 +3171,14 @@ async function runRuntime(){
  process.once('exit',()=>{stopping=true;if(timer)clearInterval(timer);const pid=injectorPid();if(pid)try{process.kill(pid,'SIGTERM');}catch{}});
  return server;
 }
-function usage(){console.log('better-codex version | launch [--restart] | start | stop | status | doctor | refresh-injection | inject [--launch] | eject | launcher install|uninstall|status | service install|repair|uninstall|start|stop|restart|status|logs');}
+function usage(){console.log('boost-codex version | launch [--restart] | start | stop | status | doctor | refresh-injection | inject [--launch] | eject | launcher install|uninstall|status | service install|repair|uninstall|start|stop|restart|status|logs');}
 async function main(){
  const [command2='launch',action,...args]=commandArguments();const values=[action,...args].filter(Boolean);
- if(['version','--version','-v'].includes(command2))return print({...activeVersions(),profile:betterCodexProfile,home:betterCodexHome});
+ if(['version','--version','-v'].includes(command2))return print({...activeVersions(),profile:boostCodexProfile,home:boostCodexHome});
  if(command2==='runtime')return runRuntime();if(command2==='serve')return startServer();
  if(command2==='update')throw Error('local_project_update_managed');
  if(command2==='watch-inject')return watchInjection(Number(action || cdpPort),accessToken2());
- if(command2==='dev-stop-injector'&&process.env.BETTER_CODEX_LOCAL_PROJECT){setInjectionEnabled(false);await stopInjector();return print({stopped:true});}
+ if(command2==='dev-stop-injector'&&process.env.BOOST_CODEX_LOCAL_PROJECT){setInjectionEnabled(false);await stopInjector();return print({stopped:true});}
  if(command2==='launch')return print(await withLaunchLock(async()=>{
   await ensureRuntime();const port=Number(option(values,'--port') || cdpPort);
   let restart=values.includes('--restart');
@@ -3150,7 +3190,7 @@ async function main(){
  }));
  if(command2==='start'){const runtime=await ensureRuntime();if(values.includes('--runtime-only'))return print({runtime});setInjectionEnabled(true);const port=Number(option(values,'--port')||cdpPort);await cdpInject(port,activeRuntimePort(),accessToken2(),values.includes('--launch'));await ensureInjector(port);return print({runtime,injection:await cdpStatus(port)});}
  if(command2==='stop'){setInjectionEnabled(false);await stopInjector();try{await cdpEject(cdpPort,accessToken2(),injectionOwnership());}catch{}let runtime;try{runtime=await request('/api/shutdown',{method:'POST'});}catch(error){if(readRuntimeState())throw error;runtime={stopped:true,alreadyStopped:true};}return print({runtime,injection:{stopped:true}});}
- if(command2==='status'||command2==='doctor'){let runtime;try{runtime=await health();}catch{runtime={ok:false,error:'runtime_unavailable'};}const injection=await cdpStatus(Number(option(values,'--port')||cdpPort));return print({ok:runtime.ok===true,profile:betterCodexProfile,home:betterCodexHome,core:activeVersions(),runtime,injection,injectionEnabled:injectionEnabled(),injectorPid:injectorPid()});}
+ if(command2==='status'||command2==='doctor'){let runtime;try{runtime=await health();}catch{runtime={ok:false,error:'runtime_unavailable'};}const injection=await cdpStatus(Number(option(values,'--port')||cdpPort));return print({ok:runtime.ok===true,profile:boostCodexProfile,home:boostCodexHome,core:activeVersions(),runtime,injection,injectionEnabled:injectionEnabled(),injectorPid:injectorPid()});}
  if(command2==='refresh-injection'||command2==='inject')return print(await withLaunchLock(async()=>{
   const port=Number(option(values,'--port')||cdpPort);setInjectionEnabled(false);await stopInjector();
   try{await ensureRuntime();const removed=command2==='refresh-injection'?await cdpEject(port,accessToken2(),injectionOwnership()):[];const injection=await cdpInject(port,activeRuntimePort(),accessToken2(),values.includes('--launch'));setInjectionEnabled(true);const pid=await ensureInjector(port);return {refreshed:true,removed,injection,injectorPid:pid};}catch(error){setInjectionEnabled(false);await stopInjector();throw error;}

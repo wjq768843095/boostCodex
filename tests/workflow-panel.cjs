@@ -13,7 +13,7 @@ function fixture() {
       opens.push({ route: current.route, url });
       if (url) { host = { identity: Symbol('page'), disposed: false }; snapshot = { committedUrl: url, isSuspended: false }; }
       visible = true;
-      return 'manual:better-codex-global-workflow-panel';
+      return 'manual:boost-codex-global-workflow-panel';
     },
     active: () => visible,
     hide: () => { visible = false; },
@@ -31,7 +31,7 @@ function fixture() {
 }
 
 async function main() {
-  const tabId = 'manual:better-codex-global-workflow-panel', tab = { tabId };
+  const tabId = 'manual:boost-codex-global-workflow-panel', tab = { tabId };
   const tabSignal = Symbol('tab'), activeSignal = Symbol('active');
   let painted = true, nativeTabId = tabId;
   const presentationCalls = [], nativeScope = { get: signal => signal === tabSignal || signal === activeSignal ? tab : false };

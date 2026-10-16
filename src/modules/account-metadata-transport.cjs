@@ -136,7 +136,7 @@ function fetchAccountMetadata(input, dependencies = {}) {
       const beforeSend = await nativeIdentity(deps, userId);
       if (finished) return;
       if (identity.token !== beforeSend.token || identity.authPath !== beforeSend.authPath) throw failure('ACCOUNT_METADATA_AUTH_CHANGED');
-      const headers = { Authorization: `Bearer ${identity.token}`, 'ChatGPT-Account-ID': accountId, originator: 'codex_cli_rs', 'User-Agent': 'BetterCodex/0.4.18', Accept: 'application/json', 'Accept-Encoding': 'identity' };
+      const headers = { Authorization: `Bearer ${identity.token}`, 'ChatGPT-Account-ID': accountId, originator: 'codex_cli_rs', 'User-Agent': 'boostCodex/0.4.18', Accept: 'application/json', 'Accept-Encoding': 'identity' };
       const receive = response => {
         deps.track(response);
         if (finished) return;

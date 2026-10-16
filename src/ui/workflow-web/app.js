@@ -1,11 +1,22 @@
 'use strict';
 (() => {
-  const key = 'better-codex-workflow-view-v1', $ = id => document.getElementById(id), esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+  const key = 'boost-codex-workflow-view-v1', $ = id => document.getElementById(id), esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
   const labels = { pending: '待开发', in_progress: '进行中', ai_review: '待 AI 验收', human_review: '待人工验收', completed: '已完成', draft: '草稿', awaiting_confirmation: '待确认', submitted: '待确认', confirmed: '已确认', active: '进行中', open: '待解决', repairing: '修复中', needs_retest: '需复验', closed: '已解决', passed: '通过', failed: '不通过', ready: '待确认', reviewing: '验收中' };
   const kindLabels = { source: '源码检查', static: '源码检查', build: '构建', api: '接口', database: '数据', browser: '界面', device: '设备', manual: '人工', test: '测试' };
   const resultLabels = { passed: '通过', failed: '不通过', not_run: '未执行', unknown: '未核验', pass: '通过', fail: '不通过' };
   const clientLabels = { codex: 'Codex', claude: 'Claude Code', web: '面板' };
-  let view; try { view = JSON.parse(localStorage.getItem(key)); } catch {} view = { projectRef: '', tab: 'charter', taskRef: '', filter: '', search: '', tool: 'codex', drafts: {}, ...view };
+  let view;
+  try {
+    let stored = localStorage.getItem(key);
+    if (stored === null) {
+      stored = localStorage.getItem('better-codex-workflow-view-v1');
+      if (stored !== null) {
+        try { localStorage.setItem(key, stored); } catch { /* Keep the restored view usable if storage is full. */ }
+      }
+    }
+    view = JSON.parse(stored);
+  } catch {}
+  view = { projectRef: '', tab: 'charter', taskRef: '', filter: '', search: '', tool: 'codex', drafts: {}, ...view };
   let data = { projects: [], tasks: [], charters: [], reviews: [], batches: [], issues: [], executions: [], cursor: 0 }, csrf, serviceRevision, stream, busy = false, modal = null, toastTimer, refreshPromise = null, refreshWanted = false, finalAcceptance = null;
   let sessionPromise = null, recoveryPromise = null, hasState = false, reloading = false;
   const requests = new Map(Object.entries(view.pendingRequests || {}));

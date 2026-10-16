@@ -33,7 +33,7 @@ class Element {
   closest(selector) { for (let node = this; node; node = node.parentElement) if (node.matches(selector)) return node; return null; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
   removeEventListener(name, callback) { this.listeners[name] = (this.listeners[name] || []).filter(item => item !== callback); }
-  dispatch(name) { for (const callback of [...(this.listeners[name] || [])]) callback({ target: this, preventDefault() {}, stopPropagation() {} }); }
+  dispatch(name, extras = {}) { for (const callback of [...(this.listeners[name] || [])]) callback({ target: this, preventDefault() {}, stopPropagation() {}, ...extras }); }
   getClientRects() { return this.hidden ? [] : [this.getBoundingClientRect()]; }
   getBoundingClientRect() { return this.rect || { top: 40, left: 240, width: 800, height: 800 }; }
 }
@@ -43,25 +43,29 @@ function fixture() {
   document.createElement = tag => new Element(tag, document);
   document.head = document.createElement('head'); document.body = document.createElement('body'); document.append(document.head, document.body);
   const frame = document.createElement('main'); frame.className = 'app-shell-main-content-frame'; document.body.append(frame);
-  const window = new Element('window', document), intervals = new Map(), storage = new Map(), calls = [];
-  let time = 100000, threadId = 'thread-a', nextTimer = 0;
+  const window = new Element('window', document), intervals = new Map(), timers = new Map(), storage = new Map(), calls = [];
+  let time = 100000, threadId = 'thread-a', nextTimer = 0, content = [];
   window.innerHeight = 900;
+  window.innerWidth = 1200;
   window.location = { href: 'app://-/local/019a0000-0000-7000-8000-000000000001' };
   window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) };
   window.setInterval = (callback, delay) => { const id = ++nextTimer; intervals.set(id, { callback, delay }); return id; };
   window.clearInterval = id => intervals.delete(id);
+  window.setTimeout = (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, at: time + delay }); return id; };
+  window.clearTimeout = id => timers.delete(id);
   const api = (route, options) => new Promise((resolve, reject) => calls.push({ route, options, resolve, reject }));
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/ui/subagent-monitor.js'), 'utf8'), { window, document, URL });
-  const create = () => window.BetterCodexSubagentMonitor.create({ api, getThreadId: () => threadId, now: () => time });
+  const create = () => window.boostCodexSubagentMonitor.create({ api, getThreadId: () => threadId, now: () => time, getContentRects: () => content });
   const instance = create();
   return {
-    document, window, calls, storage, intervals, frame, instance, create,
+    document, window, calls, storage, intervals, timers, frame, instance, create,
     get panel() { return document.querySelector('.bc-subagent-panel'); },
     get list() { return document.querySelector('.bc-subagent-list'); },
     get toggle() { return document.querySelector('.bc-subagent-toggle'); },
     get notice() { return document.querySelector('.bc-subagent-notice'); },
     setThread(value) { threadId = value; },
-    advance(ms) { time += ms; for (const { callback } of [...intervals.values()]) callback(); },
+    setContent(value) { content = value; },
+    advance(ms) { time += ms; for (const [id, timer] of [...timers]) if (timer.at <= time) { timers.delete(id); timer.callback(); } for (const { callback } of [...intervals.values()]) callback(); },
     complete(agents, extras = {}, index = calls.length - 1) { calls[index].resolve({ threadId, agents, observedAt: time, syncing: false, ...extras }); },
     rows() { return document.querySelectorAll('.bc-subagent-row'); }
   };
@@ -87,9 +91,12 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   ]); await flush();
   assert.equal(live.panel.hidden, false, 'agents automatically open the panel');
   assert.equal(live.toggle.getAttribute('aria-expanded'), 'true'); assert.equal(live.list.hidden, false);
-  assert.match(live.toggle.textContent, /进行中 2 · 已完成 1/);
+  assert.equal(live.toggle.querySelector('.bc-subagent-count-running').textContent, '进行中 2');
+  assert.equal(live.toggle.querySelector('.bc-subagent-count-completed').textContent, '已完成 1');
+  assert.equal(live.toggle.querySelector('.bc-subagent-disclosure').getAttribute('aria-hidden'), 'true');
+  assert.match(live.toggle.getAttribute('aria-label'), /^收起子代理/);
   assert.deepEqual(live.rows().map(name), ['first', 'later', 'done', 'interrupted'], 'active agents precede finished agents, then use start time');
-  assert.match(live.panel.style.cssText, /left:252px;top:94px;width:330px/);
+  assert.match(live.panel.style.cssText, /left:240px;top:94px;width:180px/);
   assert.equal(elapsed(live.rows()[1]), '22秒', 'running duration adds completed intervals and the server-observed active interval');
   assert.equal(elapsed(live.rows()[2]), '1分5秒');
   live.advance(2000);
@@ -100,7 +107,7 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   assert.equal(live.rows().length, 4, 'poll errors preserve the last good data');
   assert.ok(!live.panel.textContent.includes('private server path'));
   live.toggle.dispatch('click'); assert.equal(live.list.hidden, true);
-  assert.equal(live.storage.get('bc-subagents-collapsed:thread-a'), 'true');
+  assert.equal(live.storage.size, 0, 'automatic layout replaces persistent manual folding');
   live.setThread('thread-b'); live.instance.sync(); assert.equal(live.panel.hidden, true);
   live.complete([agent('other', 'running')]); await flush(); assert.equal(live.list.hidden, false, 'folding is independent in each chat');
   live.setThread('thread-a'); live.instance.sync(); live.complete([agent('return', 'completed')]); await flush();
@@ -109,11 +116,33 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   assert.equal(live.intervals.size, 1, 'recreating the monitor tears down the old polling interval');
   assert.equal(live.document.querySelectorAll('.bc-subagent-panel').length, 1, 'recreating the monitor leaves a single panel');
   assert.equal(live.document.querySelectorAll('style').length, 1);
-  live.complete([agent('restored', 'completed')]); await flush(); assert.equal(live.list.hidden, true, 'folding persists in localStorage across controller replacement');
+  live.storage.set('bc-subagents-collapsed:thread-a', 'true');
+  live.complete([agent('restored', 'completed')]); await flush(); assert.equal(live.list.hidden, false, 'safe layouts automatically open instead of restoring obsolete saved folding');
   live.instance.destroy(); assert.equal(live.intervals.size, 1, 'destroying the replaced controller cannot tear down its replacement');
   replacement.destroy(); replacement.destroy();
   assert.equal(live.intervals.size, 0); assert.equal(live.panel, null); assert.equal(live.document.querySelectorAll('style').length, 0);
   assert.equal((live.document.listeners.visibilitychange || []).length, 0); assert.equal((live.window.listeners.resize || []).length, 0);
+
+  const adaptive = fixture();
+  const obstruction = { left: 300, right: 600, top: 340, bottom: 370 };
+  adaptive.setContent([obstruction]); adaptive.complete([agent('adaptive', 'running')]); await flush();
+  assert.equal(adaptive.list.hidden, true, 'content within the expanded footprint automatically folds the list');
+  adaptive.instance.sync(); adaptive.instance.sync();
+  assert.equal(adaptive.list.hidden, true, 'measuring expanded geometry avoids collapse/expand oscillation');
+  adaptive.toggle.dispatch('click'); assert.equal(adaptive.list.hidden, false, 'click can open an obstructing panel');
+  adaptive.instance.sync(); assert.equal(adaptive.list.hidden, false, 'manual expansion survives ordinary refresh with the same layout');
+  adaptive.setContent([]); adaptive.document.dispatch('scroll'); assert.equal(adaptive.list.hidden, false, 'scrolling into clear space automatically expands');
+  adaptive.setContent([obstruction]); adaptive.document.dispatch('scroll');
+  assert.equal(adaptive.list.hidden, true, 'returning to obstructing content automatically folds again');
+  adaptive.setContent([{ left: 510, right: 800, top: 100, bottom: 450 }]); adaptive.instance.sync();
+  assert.equal(adaptive.list.hidden, false, 'message-column blank margins do not count as obstruction');
+  adaptive.setContent([{ left: 300, right: 400, top: 650, bottom: 680 }]); adaptive.instance.sync();
+  assert.equal(adaptive.list.hidden, false, 'content below the expanded panel does not force folding');
+  adaptive.setContent([obstruction]); adaptive.instance.sync(); assert.equal(adaptive.list.hidden, true);
+  adaptive.toggle.dispatch('click'); assert.equal(adaptive.list.hidden, false);
+  adaptive.frame.rect = { top: 40, left: 240, width: 700, height: 800 }; adaptive.window.dispatch('resize');
+  assert.equal(adaptive.list.hidden, true, 'a resized layout reevaluates a previous manual expansion');
+  adaptive.instance.destroy(); assert.equal((adaptive.document.listeners.scroll || []).length, 0);
 
   const stale = fixture();
   stale.setThread('thread-b'); stale.instance.sync();
@@ -171,7 +200,7 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   const inertSurface = native.document.createElement('section'); inertSurface.setAttribute('inert', ''); native.frame.append(inertSurface);
   addEditor(inertSurface, inactiveId);
   const activeEditor = addEditor(native.frame, activeId);
-  assert.equal(native.window.BetterCodexSubagentMonitor.currentThread(), activeId, 'the visible composer parent fiber identifies native memory-router chats');
+  assert.equal(native.window.boostCodexSubagentMonitor.currentThread(), activeId, 'the visible composer parent fiber identifies native memory-router chats');
   native.complete([agent('native', 'running')]); await flush();
   assert.match(native.panel.style.cssText, /--bc-subagent-list-height:152px/, 'positioning respects the visible composer and ignores inactive editors');
   const inactiveFrame = native.document.createElement('main'); inactiveFrame.className = 'app-shell-main-content-frame'; inactiveFrame.hidden = true;
@@ -182,14 +211,48 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
     memoizedProps: { conversationId: inactiveId }, return: staleRoot,
     alternate: { memoizedProps: { conversationId: activeId }, return: liveRoot }
   };
-  assert.equal(native.window.BetterCodexSubagentMonitor.currentThread(), activeId, 'the committed alternate fiber wins over a stale native composer branch');
+  assert.equal(native.window.boostCodexSubagentMonitor.currentThread(), activeId, 'the committed alternate fiber wins over a stale native composer branch');
   activeEditor.__reactFiber$fixture = { memoizedProps: { conversationId: 'new-chat' } };
   native.window.location.href = 'app://-/local/' + inactiveId;
-  assert.equal(native.window.BetterCodexSubagentMonitor.currentThread(), null, 'a visible unsaved native chat must not reuse a stale route ID');
+  assert.equal(native.window.boostCodexSubagentMonitor.currentThread(), null, 'a visible unsaved native chat must not reuse a stale route ID');
   activeEditor.hidden = true;
-  assert.equal(native.window.BetterCodexSubagentMonitor.currentThread(), inactiveId, 'a valid route remains available when no active native composer identifies a chat');
+  assert.equal(native.window.boostCodexSubagentMonitor.currentThread(), inactiveId, 'a valid route remains available when no active native composer identifies a chat');
   native.window.location.href = 'app://-/index.html?initialRoute=' + encodeURIComponent('/threads/' + activeId);
-  assert.equal(native.window.BetterCodexSubagentMonitor.currentThread(), activeId, 'initialRoute supports routed chat windows');
+  assert.equal(native.window.boostCodexSubagentMonitor.currentThread(), activeId, 'initialRoute supports routed chat windows');
   native.instance.destroy();
-  console.log('PASS: subagent monitor visibility, scoped polling, status/order, cumulative timing, folding persistence, stale/error responses, hierarchy, native composer identity and singleton lifecycle (mock data only)');
+
+  const hover = fixture(); hover.complete([agent('work-a', 'running'), agent('work-b', 'completed')]); await flush();
+  const detail = hover.document.querySelector('.bc-subagent-detail');
+  hover.panel.rect = { left: 252, right: 472, top: 94, bottom: 380, width: 220, height: 286 };
+  hover.list.rect = { left: 252, right: 472, top: 130, bottom: 380, width: 220, height: 250 };
+  for (const [index, row] of hover.rows().entries()) row.rect = { left: 260, right: 464, top: 140 + index * 80, bottom: 210 + index * 80, width: 204, height: 70 };
+  const workCalls = () => hover.calls.filter(call => call.route.includes('/work?'));
+  const reply = (call, id, fields = {}) => call.resolve({ threadId: 'thread-a', agentId: id, task: '核对接口权限', progress: '正在检查返回结果', result: '', syncing: false, truncated: false, ...fields });
+  hover.rows()[0].dispatch('mouseenter'); hover.advance(249); assert.equal(workCalls().length, 0, 'brief pointer crossings do not fetch work');
+  hover.rows()[0].dispatch('mouseleave'); hover.advance(1); assert.equal(workCalls().length, 0);
+  hover.rows()[0].dispatch('mouseenter'); hover.advance(250);
+  assert.equal(detail.hidden, false); assert.equal(workCalls().length, 1);
+  assert.match(workCalls()[0].route, /threadId=thread-a&agentId=work-a/);
+  assert.match(detail.style.cssText, /left:480px;top:140px;width:380px/);
+  hover.rows()[1].dispatch('mouseenter'); assert.equal(workCalls().length, 2, 'moving between rows switches immediately once the card is open');
+  reply(workCalls()[1], 'work-b', { result: '<img src=x onerror=alert(1)>完成权限核对' }); await flush();
+  reply(workCalls()[0], 'work-a', { task: '不得出现的过期内容' }); await flush();
+  assert.ok(!detail.textContent.includes('不得出现的过期内容')); assert.ok(detail.textContent.includes('完成权限核对'));
+  assert.equal(detail.querySelectorAll('img').length, 0, 'work excerpts remain literal text');
+  hover.rows()[1].dispatch('mouseleave'); detail.dispatch('mouseenter'); hover.advance(300);
+  assert.equal(detail.hidden, false, 'moving from a row into the card keeps it available for reading/copying');
+  hover.rows()[1].dispatch('blur'); hover.advance(300); assert.equal(detail.hidden, false, 'clicking text inside the card must not close it after the original row blurs');
+  hover.advance(1000); const refresh = workCalls().at(-1); refresh.reject(new Error('sensitive local path')); await flush();
+  assert.ok(detail.textContent.includes('同步中')); assert.ok(detail.textContent.includes('完成权限核对')); assert.ok(!detail.textContent.includes('sensitive local path'));
+  detail.dispatch('mouseleave'); hover.advance(220); assert.equal(detail.hidden, true);
+  hover.rows()[0].dispatch('focus'); assert.equal(detail.hidden, false, 'keyboard focus opens work details');
+  const lateWork = workCalls().at(-1);
+  hover.setThread('thread-b'); hover.instance.sync(); assert.equal(detail.hidden, true);
+  reply(lateWork, 'work-a', { task: '上一聊天工作内容' }); await flush(); assert.equal(detail.hidden, true, 'switching chats rejects pending work');
+  hover.complete([agent('new-work', 'running')]); await flush();
+  hover.rows()[0].dispatch('focus'); assert.equal(detail.hidden, false); hover.rows()[0].dispatch('keydown', { key: 'Escape' }); assert.equal(detail.hidden, true);
+  hover.rows()[0].dispatch('focus'); hover.toggle.dispatch('click'); assert.equal(detail.hidden, true, 'collapsing the list closes its card');
+  hover.toggle.dispatch('click'); hover.rows()[0].dispatch('focus'); hover.document.hidden = true; hover.document.dispatch('visibilitychange'); assert.equal(detail.hidden, true);
+  hover.instance.destroy(); assert.equal(hover.document.querySelector('.bc-subagent-detail'), null); assert.equal(hover.timers.size, 0);
+  console.log('PASS: subagent monitor visibility, scoped polling, status/order, cumulative timing, adaptive occlusion/manual folding, stale/error responses, hierarchy, native composer identity and singleton lifecycle (mock data only)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

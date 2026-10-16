@@ -1,7 +1,8 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),vm=require('node:vm'),cp=require('node:child_process');
-const ROOT=process.env.BETTER_CODEX_LOCAL_PROJECT || path.resolve(__dirname,'..');
-const HOME=process.env.BETTER_CODEX_HOME || path.join(process.env.USERPROFILE,'.better-codex');
-const DEV=path.join(ROOT,'.dev'),LIVE=path.join(DEV,'live/better-codex-ui.js'),ENTRY=path.join(DEV,'launcher.cjs');
+require('../src/modules/brand.cjs').normalizeEnvironment();
+const ROOT=process.env.BOOST_CODEX_LOCAL_PROJECT || path.resolve(__dirname,'..');
+const HOME=process.env.BOOST_CODEX_HOME || path.join(process.env.USERPROFILE,'.better-codex');
+const DEV=path.join(ROOT,'.dev'),LIVE=path.join(DEV,'live/boost-codex-ui.js'),ENTRY=path.join(DEV,'launcher.cjs');
 function read(file,fallback=null){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return fallback;}}
 function atomic(file,data){fs.mkdirSync(path.dirname(file),{recursive:true});const temp=file+'.tmp-'+process.pid;fs.writeFileSync(temp,data);fs.renameSync(temp,file);}
 function save(file,data){atomic(file,JSON.stringify(data,null,2));}
@@ -16,7 +17,7 @@ function uiBundle(base=ROOT){
  const shortcut=path.join(base,'src/modules/prompt-optimizer-shortcut.js');
  const workflow=path.join(base,'src/ui/workflow-panel.js');
  const subagents=path.join(base,'src/ui/subagent-monitor.js');
- return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+(fs.existsSync(workflow)?fs.readFileSync(workflow,'utf8')+'\n;\n':'')+(fs.existsSync(subagents)?fs.readFileSync(subagents,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
+ return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+(fs.existsSync(workflow)?fs.readFileSync(workflow,'utf8')+'\n;\n':'')+(fs.existsSync(subagents)?fs.readFileSync(subagents,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/boost-codex-ui.js'),'utf8');
 }
 function hashes(files=sources()){
  const full=crypto.createHash('sha256'),backend=crypto.createHash('sha256');for(const file of files){const rel=path.relative(ROOT,file),data=fs.readFileSync(file);full.update(rel).update(data);if(!rel.startsWith('src'+path.sep+'ui'+path.sep))backend.update(rel).update(data);}
@@ -24,7 +25,7 @@ function hashes(files=sources()){
 }
 function validate(files=sources()){
  for(const file of files){const content=fs.readFileSync(file,'utf8');if(/\.(js|cjs)$/.test(file))new vm.Script(content,{filename:file});else if(file.endsWith('.json'))JSON.parse(content);}
- const ui=fs.readFileSync(path.join(ROOT,'src/ui/better-codex-ui.js'),'utf8');if(!ui.includes('BetterCodexInjected'))throw Error('UI export missing');
+ const ui=fs.readFileSync(path.join(ROOT,'src/ui/boost-codex-ui.js'),'utf8');if(!ui.includes('boostCodexInjected'))throw Error('UI export missing');
 }
 function snapshot(hash=hashes()){
  const dest=path.join(DEV,'builds',hash.sourceHash);for(const folder of ['src','integration'])for(const file of list(path.join(ROOT,folder))){const target=path.join(dest,path.relative(ROOT,file));fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(file,target);}
@@ -32,8 +33,8 @@ function snapshot(hash=hashes()){
 }
 function state(){return read(path.join(DEV,'state.json'));}
 function bootstrap(){validate();const hash=hashes();const current=snapshot(hash);atomic(LIVE,uiBundle());atomic(ENTRY,fs.readFileSync(path.join(ROOT,'integration/entry.cjs')));save(path.join(DEV,'state.json'),{current,...hash,previous:null});status({phase:'prepared',revision:hash.sourceHash});return state();}
-function environment(build=state()?.current){if(!build)throw Error('No accepted build');return {...process.env,BETTER_CODEX_LOCAL_PROJECT:ROOT,BETTER_CODEX_HOME:HOME,BETTER_CODEX_PROFILE:'stable',BETTER_CODEX_BASE_ENTRYPOINT:ENTRY,BC_UI_FILE:LIVE,BC_RUNTIME_API:path.join(build,'integration/runtime-api.cjs'),BC_COMPATIBILITY_FILE:path.join(build,'integration/codex-compatibility.json'),BC_REVISION:read(path.join(build,'manifest.json')).backendHash};}
-function coreFile(build=state()?.current){return path.join(build,'src/backend/better-codex.cjs');}
+function environment(build=state()?.current){if(!build)throw Error('No accepted build');return {...process.env,BOOST_CODEX_LOCAL_PROJECT:ROOT,BOOST_CODEX_HOME:HOME,BOOST_CODEX_PROFILE:'stable',BOOST_CODEX_BASE_ENTRYPOINT:ENTRY,BC_UI_FILE:LIVE,BC_RUNTIME_API:path.join(build,'integration/runtime-api.cjs'),BC_COMPATIBILITY_FILE:path.join(build,'integration/codex-compatibility.json'),BC_REVISION:read(path.join(build,'manifest.json')).backendHash};}
+function coreFile(build=state()?.current){return path.join(build,'src/backend/boost-codex.cjs');}
 function runCore(args,options={}){return cp.execFileSync(process.execPath,[coreFile(options.build),...args],{env:environment(options.build),windowsHide:true,encoding:'utf8',timeout:options.timeout||60000,stdio:options.stdio||['ignore','pipe','pipe']});}
 async function api(url,method='GET',body={},optional=false){
  const runtime=read(path.join(HOME,'run/runtime.json'));if(!runtime){if(optional)return null;throw Error('runtime_unavailable');}

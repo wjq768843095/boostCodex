@@ -19,7 +19,7 @@ function fixture(first = challenge(), fallback = data()) {
     async safeGet(path, options) { calls.push({ path, options }); if (first instanceof Error) throw first; return first; }
   };
   const original = request.safeGet;
-  const recovery = context.__betterCodexAccountTransportRecovery__;
+  const recovery = context.__boostCodexAccountTransportRecovery__;
   recovery.identityFor = accountId => ({ accountId, userId: 'native-user' });
   recovery.bridge = async (identity, signal) => { bridgeCalls.push({ identity, signal }); if (fallback instanceof Error) throw fallback; return fallback; };
   assert.equal(recovery.installRequest(request), true);
@@ -34,7 +34,7 @@ function fixture(first = challenge(), fallback = data()) {
     const check = { queryKey: ['accounts', 'check'], state: { status: 'success', fetchStatus: 'idle', isInvalidated: false, data: checkData }, isActive: () => true, ...extra };
     const queries = [usage, check];
     context.__codexRoot = { _internalRoot: { current: { memoizedProps: { client: { getQueryCache: () => ({ getAll: () => queries }) } } } } };
-    return { recovery: context.__betterCodexAccountTransportRecovery__, queries };
+    return { recovery: context.__boostCodexAccountTransportRecovery__, queries };
   }
   const checkData = { accounts: [{ id: 'workspace', structure: 'personal' }], account_ordering: ['workspace'] };
   const cold = nativeIdentity(undefined, checkData);
@@ -140,12 +140,12 @@ function fixture(first = challenge(), fallback = data()) {
     const context = vm.createContext({ URL, DOMException, crypto: { randomUUID: () => 'request-' + ++sequence } });
     vm.runInContext(source, context);
     const calls = [], pending = [];
-    const owner = () => context.BetterCodexNativeConversation.create({ api(path, options) {
+    const owner = () => context.boostCodexNativeConversation.create({ api(path, options) {
       calls.push({ path, requestId: JSON.parse(options.body).requestId });
       if (path.endsWith('/cancel')) return Promise.resolve({ cancelled: true });
       return new Promise(resolve => pending.push(resolve));
     } });
-    return { context, calls, pending, owner, recovery: context.__betterCodexAccountTransportRecovery__ };
+    return { context, calls, pending, owner, recovery: context.__boostCodexAccountTransportRecovery__ };
   }
   for (const action of ['dispose', 'destroy', 'reload']) {
     const x = lifecycleFixture(), owner = x.owner();
@@ -180,8 +180,8 @@ function fixture(first = challenge(), fallback = data()) {
   vm.runInContext(source, f.context);
   assert.equal(f.request.safeGet, f.original, 'hot reload restores the previous method');
   assert.equal(f.recovery.disposed, true);
-  assert.equal(f.context.__betterCodexAccountTransportRecovery__.installRequest(f.request), true);
-  f.context.__betterCodexAccountTransportRecovery__.dispose();
+  assert.equal(f.context.__boostCodexAccountTransportRecovery__.installRequest(f.request), true);
+  f.context.__boostCodexAccountTransportRecovery__.dispose();
   assert.equal(f.request.safeGet, f.original);
   console.log('account transport recovery: authenticated bridge, policy, identity, cancellation and reload checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

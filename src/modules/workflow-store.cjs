@@ -29,7 +29,7 @@ function scopes(value = []) {
     return normalized;
   }))].sort();
 }
-const excluded = file => file.split('/').some(part => /^(?:\.git|node_modules|vendor|dist|build|coverage|\.dev|\.next|\.nuxt|unpackage|logs?|tmp|temp|backups?|\.agents|\.claude|\.codex|\.better-codex(?:-dev)?|\.ssh)$/i.test(part)) || /(?:^|\/)(?:\.env(?:\..*)?|auth\.json|prompt-optimizer-settings\.json|credentials(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|token|[^/]+\.(?:pem|key|p12|pfx|db|sqlite|sqlite3|log))$/i.test(file);
+const excluded = file => file.split('/').some(part => /^(?:\.git|node_modules|vendor|dist|build|coverage|\.dev|\.next|\.nuxt|unpackage|logs?|tmp|temp|backups?|\.agents|\.claude|\.codex|\.(?:better|boost)-codex(?:-dev)?|\.ssh)$/i.test(part)) || /(?:^|\/)(?:\.env(?:\..*)?|auth\.json|prompt-optimizer-settings\.json|credentials(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|token|[^/]+\.(?:pem|key|p12|pfx|db|sqlite|sqlite3|log))$/i.test(file);
 function git(root, args) {
   try { return cp.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', windowsHide: true, timeout: 10000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }); }
   catch { return null; }

@@ -1,11 +1,11 @@
 const fs=require('node:fs'),path=require('node:path');const lib=require('./lib.cjs');
 let running=false,stopping=false,rejected=null,pending=false,force=false,recoveryFailures=0;const handles=[];
-function preserveExpression(){return `(() => ({...window.__betterCodexInjection__?.captureReloadState?.()}))()`;}
+function preserveExpression(){return `(() => ({...(window.__boostCodexInjection__ || window.__betterCodexInjection__)?.captureReloadState?.()}))()`;}
 async function cdp(expression){const targets=await(await fetch('http://127.0.0.1:9229/json/list',{signal:AbortSignal.timeout(3000)})).json();const target=targets.find(t=>t.url==='app://-/index.html');if(!target)throw Error('Codex window unavailable');const ws=new WebSocket(target.webSocketDebuggerUrl);return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{ws.close();reject(Error('CDP timeout'));},20000);ws.onerror=()=>{clearTimeout(timer);reject(Error('CDP unavailable'));};ws.onopen=()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression,returnByValue:true,awaitPromise:true}}));ws.onmessage=e=>{const r=JSON.parse(e.data);if(r.id!==1)return;clearTimeout(timer);ws.close();if(r.result?.exceptionDetails)reject(Error('UI evaluation failed: '+String(r.result.exceptionDetails.exception?.description||r.result.exceptionDetails.text||'unknown error').split('\n')[0].slice(0,400)));else resolve(r.result?.result?.value);};});}
 async function refresh(savedView){
  let saved=savedView;try{saved ||= await cdp(preserveExpression());}catch{lib.log('injection_deferred',{reason:'Codex window unavailable'});return {deferred:true};}
  await lib.inject();
- const result=await cdp(`(async()=>{const saved=${JSON.stringify(saved)};if(window.__betterCodexInjection__?.restoreReloadState)await window.__betterCodexInjection__.restoreReloadState(saved);return {ready:window.__betterCodexInjection__?.ready?.(),error:window.__betterCodexInjection__?.bootstrapError?.()};})()`);
+ const result=await cdp(`(async()=>{const saved=${JSON.stringify(saved)};if(window.__boostCodexInjection__?.restoreReloadState)await window.__boostCodexInjection__.restoreReloadState(saved);return {ready:window.__boostCodexInjection__?.ready?.(),error:window.__boostCodexInjection__?.bootstrapError?.()};})()`);
  if(result?.error)throw Error(result.error);
  if(!result?.ready)throw Error('injection_not_ready');
  return result;

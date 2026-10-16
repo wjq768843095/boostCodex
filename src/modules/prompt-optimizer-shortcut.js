@@ -21,5 +21,5 @@
   }
   const api = { DEFAULT, normalize, fromEvent, label: value => value ? value.split('+').join(' + ') : '未启用' };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.BetterCodexPromptShortcut = api;
+  else root.boostCodexPromptShortcut = api;
 })(typeof window !== 'undefined' ? window : globalThis);

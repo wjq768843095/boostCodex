@@ -95,7 +95,7 @@
     return null;
   }
   function create({ api }) {
-    const shortcut = root.BetterCodexPromptShortcut;
+    const shortcut = root.boostCodexPromptShortcut;
     const bars = new Map();
     let dialog = null, opener = null, disposed = false, busy = false;
     let hotkey = shortcut.DEFAULT, shortcutReady = false, shortcutRequest = null, shortcutRevision = 0;
@@ -267,7 +267,7 @@
           if (existing.parentElement !== anchor) anchor.append(existing);
           continue;
         }
-        const node = document.createElement("div"); node.className = "bc-prompt-tools"; node.setAttribute("data-better-codex-owned", "true");
+        const node = document.createElement("div"); node.className = "bc-prompt-tools"; node.setAttribute("data-boost-codex-owned", "true");
         const status = document.createElement("span"); status.className = "bc-prompt-status"; status.setAttribute("role", "status");
         const bar = { node, status };
         bar.optimize = button("优化提示词", () => void optimize(editor, bar)); bar.optimize.title = hotkey ? '用 DeepSeek 优化提示词（' + shortcut.label(hotkey) + '）' : '用 DeepSeek 优化提示词'; bar.optimize.disabled = busy;
@@ -295,5 +295,5 @@
     void loadShortcut();
     return { configure, sync, destroy() { disposed = true; close(); document.removeEventListener("keydown", keydown, true); root.removeEventListener('focus', loadShortcut); for (const bar of bars.values()) bar.node.remove(); bars.clear(); style.remove(); } };
   }
-  root.BetterCodexPromptOptimizer = { create, nativeController, conversationContext, limitContext };
+  root.boostCodexPromptOptimizer = { create, nativeController, conversationContext, limitContext };
 })(window);

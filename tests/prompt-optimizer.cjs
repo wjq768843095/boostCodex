@@ -6,7 +6,7 @@ const os = require('node:os');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const optimizer = require('../src/modules/prompt-optimizer.cjs');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'better-codex-prompt-optimizer-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'boost-codex-prompt-optimizer-'));
 const fileFor = home => path.join(home, 'prompt-optimizer-settings.json');
 const code = expected => error => error.code === expected;
 const reply = (text = '优化后的需求', finish = 'stop') => new Response(JSON.stringify({ choices: [{ finish_reason: finish, message: { role: 'assistant', content: text } }] }), { headers: { 'content-type': 'application/json' } });
@@ -21,7 +21,7 @@ function fixture(fetch, options = {}) {
 
 function routeFixture(service) {
   const module = { exports: {} };
-  const sandbox = { module, exports: module.exports, AbortController, process: { env: { BETTER_CODEX_LOCAL_PROJECT: root, BETTER_CODEX_HOME: root } }, require(name) {
+  const sandbox = { module, exports: module.exports, AbortController, process: { env: { BOOST_CODEX_LOCAL_PROJECT: root, BOOST_CODEX_HOME: root } }, require(name) {
     if (name === '../src/modules/prompt-optimizer.cjs') return { ...optimizer, ...service };
     assert.ok(['node:fs', 'node:path'].includes(name)); return require(name);
   } };

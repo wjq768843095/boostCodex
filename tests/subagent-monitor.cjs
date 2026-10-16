@@ -5,7 +5,7 @@ const path=require('node:path');
 const os=require('node:os');
 const vm=require('node:vm');
 const {createMonitor,validId}=require('../src/modules/subagent-monitor.cjs');
-const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'better-codex-subagents-'));
+const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'boost-codex-subagents-'));
 const ids=Array.from({length:12},(_,i)=>`00000000-0000-4000-8000-${String(i+1).padStart(12,'0')}`);
 let fixtureCount=0;
 const event=(time,type,payload={})=>({timestamp:new Date(time).toISOString(),type:'event_msg',payload:{type,...payload}});
@@ -31,7 +31,8 @@ function fixture(limits={}){
   const child=a.file(ids[1],ids[0],[event(1000,'task_started',{turn_id:'a'}),context(1001,'gpt-6.1-sol','high'),event(1100,'task_complete',{turn_id:'a',duration_ms:99})]);
   a.file(ids[2],ids[1],[event(1050,'task_started',{turn_id:'b'}),context(1051,'gpt-6-astra','xhigh')],{archived:true,agentPath:'/root/research/verify'});
   a.file(ids[3],ids[0],[],{fork:true});a.file(ids[4],ids[5],[],{agentPath:'/root/unrelated'});
-  let result=await a.get();assert.equal(result.syncing,false);assert.equal(result.agents.length,2);
+  const firstRead=a.get();assert.equal(a.get(),firstRead,'same-thread polls must share a pending snapshot');
+  let result=await firstRead;assert.equal(result.syncing,false);assert.equal(result.agents.length,2);
   assert.deepEqual(result.agents.map(x=>[x.id,x.parentId,x.depth]),[[ids[1],ids[0],1],[ids[2],ids[1],2]]);
   let row=result.agents[0];assert.equal(row.name,'research');assert.equal(row.nickname,'Euler');
   assert.equal(row.model,'gpt-6.1-sol');assert.equal(row.effort,'high');assert.equal(row.status,'completed');
@@ -61,6 +62,8 @@ function fixture(limits={}){
   // Work is budgeted and incomplete discovery is explicitly observable.
   const d=fixture({headers:1});d.file(ids[1],ids[0]);d.file(ids[2],ids[1],[],{agentPath:'/root/research/deep'});
   result=await d.get();assert.equal(result.syncing,true);result=await d.get();assert.equal(result.syncing,false);assert.equal(result.agents.length,2);
+  const timeLimited=fixture({milliseconds:0});timeLimited.file(ids[1],ids[0]);
+  result=await timeLimited.get();assert.equal(result.syncing,true);assert.equal(result.agents.length,0);
   // Initial empty logs are discovered once their first line has been written.
   const e=fixture();const initial=e.file(ids[1],ids[0]);const saved=fs.readFileSync(initial);fs.writeFileSync(initial,'');assert.equal((await e.get()).agents.length,0);
   fs.writeFileSync(initial,saved);e.advance();assert.equal((await e.get()).agents.length,1);
@@ -84,7 +87,7 @@ function fixture(limits={}){
   await assert.rejects(f.get('invalid'),{code:'SUBAGENT_THREAD_INVALID'});
   // HTTP contract uses the authenticated dev extension, validates UUIDs, and
   // never sends local read failures or session data back to the caller.
-  const mod={exports:{}};const sandbox={module:mod,exports:mod.exports,process:{env:{BETTER_CODEX_LOCAL_PROJECT:temporary}},require(name){if(name==='../src/modules/subagent-monitor.cjs')return {validId,getSubagents:id=>f.get(id)};return require(name);}};
+  const mod={exports:{}};const sandbox={module:mod,exports:mod.exports,process:{env:{BOOST_CODEX_LOCAL_PROJECT:temporary}},require(name){if(name==='../src/modules/subagent-monitor.cjs')return {validId,getSubagents:id=>f.get(id)};return require(name);}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../integration/runtime-api.cjs'),'utf8'),sandbox);
   async function route(query,method='GET'){let received;const handled=await mod.exports.handle({url:new URL('http://local/api/dev/subagents'+query),method,response:{destroyed:false},sendJson(_response,status,data){received={status,data};}});assert.equal(handled,true);return received;}
   assert.equal((await route('?threadId=../../data')).status,400);assert.equal((await route(`?threadId=${ids[0]}`,'POST')).status,405);

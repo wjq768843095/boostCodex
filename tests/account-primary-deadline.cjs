@@ -61,7 +61,7 @@ function fixture({ identity = { accountId: 'fixture-account', userId: 'fixture-u
       });
     }
   };
-  const recovery = context.__betterCodexAccountTransportRecovery__;
+  const recovery = context.__boostCodexAccountTransportRecovery__;
   recovery.identityFor = accountId => identity?.accountId === accountId ? identity : null;
   recovery.bridge = async (value, signal) => {
     assert.equal(nativeSettled, true, 'fallback must wait for the native promise to settle');

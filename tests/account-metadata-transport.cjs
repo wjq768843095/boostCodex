@@ -6,7 +6,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { fetchAccountMetadata } = require('../src/modules/account-metadata-transport.cjs');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'better-codex-account-metadata-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'boost-codex-account-metadata-'));
 const input = { accountId: 'personal-account', userId: 'native-user' };
 const now = Date.now();
 function token(userId = input.userId, expiry = now / 1000 + 3600, extra = {}) {
@@ -107,7 +107,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(f.calls[1].options.headers['ChatGPT-Account-ID'], input.accountId);
   assert.equal(f.calls[1].options.headers.originator, 'codex_cli_rs');
   assert.equal(f.calls[1].options.headers.Authorization, `Bearer ${token()}`);
-  assert.equal(f.calls[1].options.headers['User-Agent'], 'BetterCodex/0.4.18');
+  assert.equal(f.calls[1].options.headers['User-Agent'], 'boostCodex/0.4.18');
   assert.equal(f.calls[1].options.rejectUnauthorized, true);
   assert.equal(f.tlsOptions.rejectUnauthorized, true);
   assert.equal(f.tlsOptions.servername, 'chatgpt.com');

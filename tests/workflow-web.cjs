@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const source = fs.readFileSync(path.join(__dirname, '../src/ui/workflow-web/app.js'), 'utf8');
-const storageKey = 'better-codex-workflow-view-v1';
+const storageKey = 'boost-codex-workflow-view-v1';
 const copy = value => JSON.parse(JSON.stringify(value));
 const decode = value => String(value || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
 const tick = () => new Promise(resolve => setImmediate(resolve));

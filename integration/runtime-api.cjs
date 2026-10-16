@@ -5,13 +5,20 @@ const workflowRequests=new Set();
 const metadataRequestId=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function idle(worker){
  const result=worker.updateDrainStatus();
- let host={};try{host=JSON.parse(fs.readFileSync(path.join(process.env.BETTER_CODEX_HOME,'run/session-host-status.json'),'utf8'));}catch{}
+ let host={};try{host=JSON.parse(fs.readFileSync(path.join(process.env.BOOST_CODEX_HOME,'run/session-host-status.json'),'utf8'));}catch{}
  const hostBusy=!!host.command_in_flight||(host.active_turns||[]).length>0||(host.pending_requests||0)>0||(host.queued_deliveries||0)>0;
  return {...result,ready:result.ready&&!hostBusy&&!optimizerRequests.size&&!workflowRequests.size,sessionHostBusy:hostBusy,promptOptimizerBusy:optimizerRequests.size>0,workflowPanelBusy:workflowRequests.size>0};
 }
 async function handle({url,method,request,response,worker,readBody,sendJson,stopHost}){
- const dev=path.join(process.env.BETTER_CODEX_LOCAL_PROJECT,'.dev');
+ const dev=path.join(process.env.BOOST_CODEX_LOCAL_PROJECT,'.dev');
  // /api/dev/ is authenticated by the core before entering this extension.
+ if(url.pathname==='/api/dev/subagents/work'){
+  if(method!=='GET'){sendJson(response,405,{error:'SUBAGENT_METHOD_NOT_ALLOWED'});return true;}
+  const threadId=url.searchParams.get('threadId'),agentId=url.searchParams.get('agentId');
+  try{const data=await require('../src/modules/subagent-work.cjs').getWork(threadId,agentId);if(!response.destroyed)sendJson(response,200,data);}
+  catch(error){if(!response.destroyed)sendJson(response,[400,403,503].includes(error.status)?error.status:503,{error:/^SUBAGENT_WORK_[A-Z_]+$/.test(error.code||'')?error.code:'SUBAGENT_WORK_UNAVAILABLE'});}
+  return true;
+ }
  if(url.pathname==='/api/dev/subagents'){
   if(method!=='GET'){sendJson(response,405,{error:'SUBAGENT_METHOD_NOT_ALLOWED'});return true;}
   const monitor=require('../src/modules/subagent-monitor.cjs'),threadId=url.searchParams.get('threadId');

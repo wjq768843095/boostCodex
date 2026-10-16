@@ -39,7 +39,7 @@ function fixture() {
   const module = { exports: {} };
   const sandbox = {
     module, exports: module.exports, AbortController,
-    process: { env: { BETTER_CODEX_LOCAL_PROJECT: path.join(__dirname, '..') } },
+    process: { env: { BOOST_CODEX_LOCAL_PROJECT: path.join(__dirname, '..') } },
     require(name) {
       if (name === transportPath) return { fetchAccountMetadata };
       assert.ok(['node:fs', 'node:path'].includes(name), `unexpected module ${name}`);

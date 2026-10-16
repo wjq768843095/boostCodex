@@ -6,7 +6,10 @@
   // Cloudflare challenge. The backend verifies the native token's user, fetches
   // fresh metadata, and refuses organization routing. Native policy checks and
   // the query's before/after identity assertions still consume the real result.
-  root.__betterCodexAccountTransportRecovery__?.dispose?.();
+  const legacy = root.__betterCodexAccountTransportRecovery__;
+  if (legacy && legacy !== root.__boostCodexAccountTransportRecovery__) legacy.dispose?.();
+  if (root.__betterCodexAccountTransportRecovery__ === legacy) delete root.__betterCodexAccountTransportRecovery__;
+  root.__boostCodexAccountTransportRecovery__?.dispose?.();
   const accountTransport = {
     request: null, original: null, wrapper: null, disposed: false, bridge: null, pending: new Set(), startupRetried: new WeakSet(),
     stats: { installed: false, attempted: 0, recovered: 0, rejected: 0, lastFailureStage: null },
@@ -148,7 +151,7 @@
       this.stats.installed = false;
     }
   };
-  root.__betterCodexAccountTransportRecovery__ = accountTransport;
+  root.__boostCodexAccountTransportRecovery__ = accountTransport;
   function create(options) {
     if (typeof options?.api !== "function") throw Error("Account metadata API is required");
     const bridgePending = new Set();
@@ -231,5 +234,5 @@
     return { connect, destroy };
   }
   // Keep the installed bridge name stable across desktop reinjection.
-  root.BetterCodexNativeConversation = Object.freeze({ create });
+  root.boostCodexNativeConversation = Object.freeze({ create });
 })(typeof window !== "undefined" ? window : globalThis);

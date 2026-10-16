@@ -1,7 +1,7 @@
 "use strict";
-var BetterCodexWorkflowPanel = (() => {
-  const OWNER = "better-codex-global-workflow-panel";
-  const TAB = "manual:better-codex-global-workflow-panel";
+var boostCodexWorkflowPanel = (() => {
+  const OWNER = "boost-codex-global-workflow-panel";
+  const TAB = "manual:boost-codex-global-workflow-panel";
   const MESSAGE = "面板暂时无法打开，请稍后重试。";
   let nativePromise = null;
 
@@ -138,7 +138,7 @@ var BetterCodexWorkflowPanel = (() => {
       // Native/transport exceptions can contain a launch URL. Keep bootstrap
       // credentials out of diagnostics, including unexpected error messages.
       const code = /^panel_[a-z_]+$/.test(error?.message || "") ? error.message : "panel_native_failed";
-      if (typeof console !== "undefined") console.warn("Better Codex panel compatibility", { code });
+      if (typeof console !== "undefined") console.warn("boostCodex panel compatibility", { code });
       if (!destroyed) reportError(new Error(MESSAGE));
       return false;
     }
@@ -180,5 +180,5 @@ var BetterCodexWorkflowPanel = (() => {
   }
   return { create, nativeDriver };
 })();
-if (typeof window !== "undefined") window.BetterCodexWorkflowPanel = BetterCodexWorkflowPanel;
-if (typeof module !== "undefined" && module.exports) module.exports = BetterCodexWorkflowPanel;
+if (typeof window !== "undefined") window.boostCodexWorkflowPanel = boostCodexWorkflowPanel;
+if (typeof module !== "undefined" && module.exports) module.exports = boostCodexWorkflowPanel;

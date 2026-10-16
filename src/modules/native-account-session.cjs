@@ -113,7 +113,7 @@ class NativeAccountSession {
     });
     this.publish();
     try {
-      const initialized = await this.send('initialize', { clientInfo: { name: 'better-codex', title: 'Better Codex', version: this.version }, capabilities: { experimentalApi: true } });
+      const initialized = await this.send('initialize', { clientInfo: { name: 'boost-codex', title: 'boostCodex', version: this.version }, capabilities: { experimentalApi: true } });
       if (!initialized || typeof initialized !== 'object' || Array.isArray(initialized)) throw new Error('native_account_initialize_failed');
       if (this.stopped || this.child !== child) throw new Error('native_account_connection_closed');
       this.write({ method: 'initialized', params: {} });

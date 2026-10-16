@@ -8,7 +8,7 @@ function ownedProcess(pid){
  return result?JSON.parse(result):null;
 }
 function legacyProcess(process,role){
- return !!process&&new RegExp(String.raw`[\\/]BetterCodex[\\/]bin[\\/]better-codex\.cjs"?\s+${role}(?:\s|$)`,'i').test(process.CommandLine||'');
+ return !!process&&new RegExp(String.raw`[\\/](?:BetterCodex|boostCodex)[\\/]bin[\\/](?:better-codex|boost-codex)\.cjs"?\s+${role}(?:\s|$)`,'i').test(process.CommandLine||'');
 }
 function idleLegacy(health,host){
  return !health.handoffUpdateId&&host?.runtime_instance_id===health.instanceId&&host.running===true&&host.command_in_flight===false&&host.pending_requests===0&&host.queued_deliveries===0&&Array.isArray(host.active_turns)&&host.active_turns.length===0&&Array.isArray(host.thread_workers)&&host.thread_workers.length===0;

@@ -1,6 +1,7 @@
 const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
-const root=process.env.BETTER_CODEX_LOCAL_PROJECT || path.resolve(__dirname,'..');
-process.env.BETTER_CODEX_LOCAL_PROJECT=root;
+require('../src/modules/brand.cjs').normalizeEnvironment();
+const root=process.env.BOOST_CODEX_LOCAL_PROJECT || path.resolve(__dirname,'..');
+process.env.BOOST_CODEX_LOCAL_PROJECT=root;
 const stateFile=path.join(root,'.dev/state.json');
 if(!fs.existsSync(stateFile)){console.error('Run npm run prepare-local first.');process.exit(1);}
 const state=JSON.parse(fs.readFileSync(stateFile,'utf8'));

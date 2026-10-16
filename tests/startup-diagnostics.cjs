@@ -18,7 +18,7 @@ assert(!result.stderr.includes('SQLite is an experimental feature'));
 assert(result.stderr.includes('unrelated experimental warning'));
 assert(result.stderr.includes('operational warning'));
 
-const source = fs.readFileSync(path.join(__dirname, '../src/backend/better-codex.cjs'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/backend/boost-codex.cjs'), 'utf8');
 const start = source.indexOf('function assertTrustedCdpListener(port) {');
 const end = source.indexOf('\nasync function targets(', start);
 assert(start >= 0 && end > start);

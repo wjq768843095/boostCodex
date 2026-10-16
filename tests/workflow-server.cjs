@@ -49,7 +49,7 @@ async function stopped() { for (let i = 0; i < 100 && alive(servicePid); i++) aw
   await manager.controlRequest('stop', {}, home); await stopped();
   // Native clients discover stdio tools without opening any workflow database.
   const discoveryHome = path.join(temp, 'discovery'); fs.mkdirSync(discoveryHome);
-  child = cp.spawn(process.execPath, [path.join(root, 'integration/workflow-service.cjs'), 'mcp', '--client', 'codex'], { windowsHide: true, env: { ...process.env, BETTER_CODEX_HOME: discoveryHome, BETTER_CODEX_LOCAL_PROJECT: root }, stdio: ['pipe', 'pipe', 'pipe'] });
+  child = cp.spawn(process.execPath, [path.join(root, 'integration/workflow-service.cjs'), 'mcp', '--client', 'codex'], { windowsHide: true, env: { ...process.env, BOOST_CODEX_HOME: discoveryHome, BOOST_CODEX_LOCAL_PROJECT: root }, stdio: ['pipe', 'pipe', 'pipe'] });
   let output = '', errors = ''; child.stdout.on('data', chunk => output += chunk); child.stderr.on('data', chunk => errors += chunk);
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'isolated', version: '1' } } }) + '\n');
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n'); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n');

@@ -1,5 +1,5 @@
 "use strict";
-var BetterCodexInjected = (() => {
+var boostCodexInjected = (() => {
   function isAuxiliaryDesktopUrl(value) {
     try {
       const url = new URL(value);
@@ -11,7 +11,7 @@ var BetterCodexInjected = (() => {
   // Use the owning native picker so draft and existing chats share the same
   // model/effort semantics. Service tier remains exclusively native-owned.
   function createComposerModelShortcuts(renderFastIcon = () => "", renderSettingsIcon = () => "", renderGripIcon = () => "") {
-    const key = "better-codex-composer-model-shortcuts-v1";
+    const key = "boost-codex-composer-model-shortcuts-v1";
     const defaults = [
       { name: "6.1 Sol · 中等", model: "gpt-6.1-sol", effort: "medium" },
       { name: "6.1 Sol · Ultra", model: "gpt-6.1-sol", effort: "ultra" }
@@ -20,7 +20,14 @@ var BetterCodexInjected = (() => {
     const bars = new Map();
     let presets = defaults, dialog = null, returnFocus = null, dragging = null, suppressClickUntil = 0;
     try {
-      const saved = JSON.parse(localStorage.getItem(key));
+      let stored = localStorage.getItem(key);
+      if (stored === null) {
+        stored = localStorage.getItem("better-codex-composer-model-shortcuts-v1");
+        if (stored !== null) {
+          try { localStorage.setItem(key, stored); } catch { /* Read legacy preferences even if storage is full. */ }
+        }
+      }
+      const saved = JSON.parse(stored);
       if (Array.isArray(saved)) presets = saved.filter(p => p && typeof p.name === "string" && typeof p.model === "string" && typeof p.effort === "string").map(p => ({ name: p.name.slice(0, 40), model: p.model, effort: p.effort }));
     } catch { /* Keep usable defaults if local preferences are damaged. */ }
     function picker(trigger) {
@@ -97,7 +104,7 @@ var BetterCodexInjected = (() => {
           row.setAttribute("data-bc-row-dragging", "true");
           if (event.dataTransfer) {
             event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("application/x-better-codex-shortcut-row", "reorder");
+            event.dataTransfer.setData("application/x-boost-codex-shortcut-row", "reorder");
             event.dataTransfer.setDragImage?.(row, 16, 16);
           }
         });
@@ -312,7 +319,7 @@ var BetterCodexInjected = (() => {
             item.setAttribute("data-bc-dragging", "true");
             if (event.dataTransfer) {
               event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("application/x-better-codex-model-shortcut", "reorder");
+              event.dataTransfer.setData("application/x-boost-codex-model-shortcut", "reorder");
             }
           });
           item.addEventListener("dragover", event => {
@@ -488,7 +495,7 @@ var BetterCodexInjected = (() => {
         if (!footer.hasAttribute("data-bc-composer-rows")) footer.setAttribute("data-bc-composer-rows", "true");
         for (const [child, name] of [[input, "input"], [leading, "leading"], [trailing, "trailing"]]) if (!child.hasAttribute("data-bc-composer-" + name)) child.setAttribute("data-bc-composer-" + name, "true");
         if (!footer.querySelector('.bc-composer-lower-actions')) {
-          const row = document.createElement("div"); row.className = "bc-composer-lower-actions"; row.setAttribute("data-better-codex-owned", "true"); footer.append(row);
+          const row = document.createElement("div"); row.className = "bc-composer-lower-actions"; row.setAttribute("data-boost-codex-owned", "true"); footer.append(row);
         }
         footers.add(footer);
       }
@@ -496,12 +503,15 @@ var BetterCodexInjected = (() => {
     return { sync, destroy() { for (const footer of footers) cleanup(footer); footers.clear(); style.remove(); } };
   }
   function install(config) {
+    const legacy = window.__betterCodexInjection__;
+    if (legacy && legacy !== window.__boostCodexInjection__) legacy.destroy?.();
+    if (window.__betterCodexInjection__ === legacy) delete window.__betterCodexInjection__;
     if (isAuxiliaryDesktopUrl(window.location.href)) {
-      window.__betterCodexInjection__?.destroy?.();
+      window.__boostCodexInjection__?.destroy?.();
       return { installed: false, reason: "auxiliary_desktop_window" };
     }
     if (!config || config.schemaVersion !== 1) throw new Error("injected_ui_schema_mismatch");
-    const previous = window.__betterCodexInjection__;
+    const previous = window.__boostCodexInjection__;
     if (previous?.version === config.version && previous?.endpoint === config.baseUrl && previous?.profile === config.profile && previous?.bundleChecksum === config.bundleChecksum && typeof previous.pulse === "function") {
       previous.refresh();
       return { installed: true, reused: true };
@@ -524,13 +534,13 @@ var BetterCodexInjected = (() => {
     function api(path, options = {}) {
       if (destroyed) return Promise.reject(new Error("injection_destroyed"));
       const parameters = { path: path + (path.includes("?") ? "&" : "?") + "locale=" + encodeURIComponent(locale), method: options.method || "GET", body: options.body, timeoutMs: options.timeoutMs };
-      if (typeof window.betterCodexHost?.request === "function") return Promise.resolve(window.betterCodexHost.request(parameters));
-      if (typeof window.betterCodexRequest !== "function") return Promise.reject(new Error("runtime_bridge_unavailable"));
+      if (typeof window.boostCodexHost?.request === "function") return Promise.resolve(window.boostCodexHost.request(parameters));
+      if (typeof window.boostCodexRequest !== "function") return Promise.reject(new Error("runtime_bridge_unavailable"));
       const id = config.version + ":" + ++sequence;
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { requests.delete(id); reject(new Error("runtime_bridge_timeout")); }, Number(options.timeoutMs) || 10000);
         requests.set(id, { resolve, reject, timer });
-        try { window.betterCodexRequest(JSON.stringify({ id, token: config.bridgeToken, ...parameters })); }
+        try { window.boostCodexRequest(JSON.stringify({ id, token: config.bridgeToken, ...parameters })); }
         catch (error) { clearTimeout(timer); requests.delete(id); reject(error); }
       });
     }
@@ -541,19 +551,19 @@ var BetterCodexInjected = (() => {
       if (result?.ok) pending.resolve(result.value);
       else pending.reject(Object.assign(new Error(result?.value?.message || result?.value?.error || "request_failed"), { code: result?.value?.error }));
     };
-    window.__betterCodexBridgeResolve = resolveBridge;
+    window.__boostCodexBridgeResolve = resolveBridge;
     function navigate(path) {
       window.postMessage({ type: config.navigation?.messageType || "navigate-to-route", path }, window.location.origin);
     }
     function ensureTitlebarActions() {
       const help = document.getElementById("application-menu-trigger-help-menu");
       if (!help) return;
-      let group = document.getElementById("better-codex-titlebar-actions");
+      let group = document.getElementById("boost-codex-titlebar-actions");
       if (!group) {
         group = document.createElement("div");
-        group.id = "better-codex-titlebar-actions";
+        group.id = "boost-codex-titlebar-actions";
         group.className = "no-drag";
-        group.setAttribute("data-better-codex-owned", "true");
+        group.setAttribute("data-boost-codex-owned", "true");
         group.style.cssText = "display:flex;align-items:center;gap:8px;white-space:nowrap;-webkit-app-region:no-drag";
         const panel = document.createElement("button");
         panel.type = "button"; panel.className = help.className; panel.textContent = "面板";
@@ -579,7 +589,7 @@ var BetterCodexInjected = (() => {
       }
       if (help.nextElementSibling !== group) help.after(group);
     }
-    async function refreshTitlebarUsage(root = document.getElementById("better-codex-titlebar-actions")) {
+    async function refreshTitlebarUsage(root = document.getElementById("boost-codex-titlebar-actions")) {
       if (destroyed || usagePending || !root) return;
       const output = root.querySelector("[data-titlebar-usage]");
       if (!output) return;
@@ -607,7 +617,7 @@ var BetterCodexInjected = (() => {
       optimizer?.sync();
       planToggle?.sync();
       subagents?.sync();
-      if (accountAdapter && !window.__betterCodexAccountTransportRecovery__?.request && Date.now() - accountCheckedAt > 10000) {
+      if (accountAdapter && !window.__boostCodexAccountTransportRecovery__?.request && Date.now() - accountCheckedAt > 10000) {
         accountCheckedAt = Date.now();
         void accountAdapter.connect().catch(() => {});
       }
@@ -626,12 +636,12 @@ var BetterCodexInjected = (() => {
       document.removeEventListener("DOMContentLoaded", mount);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
-      document.getElementById("better-codex-titlebar-actions")?.remove();
+      document.getElementById("boost-codex-titlebar-actions")?.remove();
       for (const pending of requests.values()) { clearTimeout(pending.timer); pending.reject(new Error("injection_destroyed")); }
       requests.clear();
       workflowPanel?.destroy();
-      if (window.__betterCodexBridgeResolve === resolveBridge) delete window.__betterCodexBridgeResolve;
-      if (window.__betterCodexInjection__ === controller) delete window.__betterCodexInjection__;
+      if (window.__boostCodexBridgeResolve === resolveBridge) delete window.__boostCodexBridgeResolve;
+      if (window.__boostCodexInjection__ === controller) delete window.__boostCodexInjection__;
     }
     function onVisible() { if (!document.hidden) { refresh(); void refreshTitlebarUsage(); } }
     function onOnline() { refresh(); void refreshTitlebarUsage(); }
@@ -640,14 +650,14 @@ var BetterCodexInjected = (() => {
       if (destroyed || observer || !document.documentElement) return;
       composerLayout = createComposerFooterLayout(); composerLayout.sync();
       shortcuts = createComposerModelShortcuts(() => icon("fast", "2"), () => icon("settings", "1.8"), () => icon("grip", "1.8"));
-      optimizer = window.BetterCodexPromptOptimizer?.create({ api });
-      workflowPanel = window.BetterCodexWorkflowPanel?.create({
+      optimizer = window.boostCodexPromptOptimizer?.create({ api });
+      workflowPanel = window.boostCodexWorkflowPanel?.create({
         getPanelUrl: () => api("/api/dev/workflow/panel-url", { method: "POST", body: "{}", timeoutMs: 45000 }),
         reportError: error => { const button = document.querySelector('[data-workflow-panel]'); if (button) button.title = error.message; }
       });
       planToggle = createComposerPlanToggle(() => icon("plan", "1.8"));
-      subagents = window.BetterCodexSubagentMonitor?.create({ api });
-      if (typeof window.BetterCodexNativeConversation?.create === "function") accountAdapter = window.BetterCodexNativeConversation.create({ api });
+      subagents = window.boostCodexSubagentMonitor?.create({ api });
+      if (typeof window.boostCodexNativeConversation?.create === "function") accountAdapter = window.boostCodexNativeConversation.create({ api });
       observer = new MutationObserver(scheduleRefresh);
       observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current"] });
       usageTimer = setInterval(() => { if (!document.hidden) { refresh(); void refreshTitlebarUsage(); } }, 60000);
@@ -661,7 +671,7 @@ var BetterCodexInjected = (() => {
       captureReloadState: () => ({ shortcutConfiguration: shortcuts?.capture() || null, workflowPanel: workflowPanel?.capture() || null }),
       restoreReloadState: async saved => { refresh(); shortcuts?.restore(saved?.shortcutConfiguration); if (saved?.workflowPanel?.open) void workflowPanel?.open(); return { error: "" }; }
     };
-    window.__betterCodexInjection__ = controller;
+    window.__boostCodexInjection__ = controller;
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", onOnline);
     if (document.documentElement) mount(); else document.addEventListener("DOMContentLoaded", mount, { once: true });

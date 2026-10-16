@@ -3,12 +3,12 @@ const vm = require('node:vm');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 
-const source = fs.readFileSync(path.join(__dirname, '../src/ui/better-codex-ui.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/ui/boost-codex-ui.js'), 'utf8');
 const start = source.indexOf('  function createComposerModelShortcuts(');
 const end = source.indexOf('\n  function install(config)', start);
 assert.ok(start >= 0 && end > start, 'the composer shortcut factory is present');
 const factory = source.slice(start, end);
-const preferenceKey = 'better-codex-composer-model-shortcuts-v1';
+const preferenceKey = 'boost-codex-composer-model-shortcuts-v1';
 
 // A small DOM fixture exercises user actions and native callback routing without
 // starting a renderer, changing the real profile, or making model requests.

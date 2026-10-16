@@ -1,6 +1,6 @@
 ---
 name: bc-plan
-description: Explicitly plan Better Codex tasks from the confirmed charter when the user invokes this skill.
+description: Explicitly plan boostCodex tasks from the confirmed charter when the user invokes this skill.
 ---
 
 # 任务规划

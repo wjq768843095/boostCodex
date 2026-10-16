@@ -46,7 +46,7 @@ function fixture({ mode = 'recent', hotkey = 'Ctrl+Alt+P' } = {}) {
   const api = (route, options) => { if (route.endsWith('/settings')) { if (options?.method === 'POST') { const input=JSON.parse(options.body);saves.push(input);settings={...settings,...input}; } return Promise.resolve({...settings}); } calls.push({ route, options }); return new Promise((resolve, reject) => { complete = resolve; fail = reject; }); };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/modules/prompt-optimizer-shortcut.js'), 'utf8'), { window });
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/ui/prompt-optimizer.js'), 'utf8'), { window, document, navigator: {} });
-  const instance = window.BetterCodexPromptOptimizer.create({ api }); instance.sync();
+  const instance = window.boostCodexPromptOptimizer.create({ api }); instance.sync();
   const optimize = document.querySelector('.bc-prompt-tools').children[0];
   return { document, editor, controller, window, instance, optimize, calls, saves, writes, doc, thread, complete: value => complete(value), fail: value => fail(value) };
 }
@@ -93,7 +93,7 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
   dispatchKey(custom,{code:'F8',altKey:true});await flush();assert.equal(custom.calls.length,2,'saving activates the new binding immediately');
   custom.complete({text:'功能键结果'});await flush();custom.instance.destroy();
   const disabled=fixture({hotkey:''});await flush();dispatchKey(disabled,{code:'KeyP',altKey:true});await flush();assert.equal(disabled.calls.length,0);disabled.optimize.dispatch('click');await flush();assert.equal(disabled.calls.length,1,'disabling the shortcut does not disable the button');disabled.instance.destroy();
-  const bounded = f.window.BetterCodexPromptOptimizer.limitContext(Array.from({length:14}, (_,i)=>({role:'user',content:String(i).repeat(10000)})));
+  const bounded = f.window.boostCodexPromptOptimizer.limitContext(Array.from({length:14}, (_,i)=>({role:'user',content:String(i).repeat(10000)})));
   assert.ok(bounded.messages.length<=12); assert.ok(bounded.messages.reduce((sum,m)=>sum+m.content.length,0)<=32000); assert.equal(bounded.truncated,true);
   console.log('PASS: scoped recent context, automatic replacement without dialogs, native history boundaries, draft/visibility guards, restore and hotkey (mock responses only)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

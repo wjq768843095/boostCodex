@@ -1,4 +1,5 @@
 'use strict';
+require('../modules/brand.cjs').normalizeEnvironment();
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), http = require('node:http'), crypto = require('node:crypto');
 const { WorkflowStore } = require('../modules/workflow-store.cjs');
 const ALLOWED_AGENT = new Set(['context', 'project.list', 'charter.create', 'charter.save', 'charter.submit', 'plan.tasks', 'task.claim', 'task.renew', 'task.submit', 'task.review', 'batch.start', 'batch.report', 'issue.create', 'issue.repair']);
@@ -10,7 +11,7 @@ const messages = { revision_conflict: '内容已有更新。未保存内容已�
 function errorMessage(error) { if (!error.code) return '操作未完成，请重试。'; return messages[error.code] || (error.code.endsWith('_not_found') ? '未找到对应记录，请检查编号。' : error.code.startsWith('invalid_') ? '请检查填写内容及编号。' : error.code === 'BODY_TOO_LARGE' ? error.message : '当前操作无法完成，请核对内容和状态后重试。'); }
 function json(response, status, value) { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); response.end(JSON.stringify(value)); }
 async function body(request) { let result = '', bytes = 0; for await (const chunk of request) { bytes += chunk.length; if (bytes > 1024 * 1024) throw Object.assign(Error('内容过长，请分次保存'), { code: 'BODY_TOO_LARGE', status: 413 }); result += chunk; } try { const value = JSON.parse(result || '{}'); if (!value || Array.isArray(value) || typeof value !== 'object') throw Error(); return value; } catch { throw Object.assign(Error('请求内容不完整'), { code: 'INVALID_INPUT', status: 400 }); } }
-async function startServer({ home = process.env.BETTER_CODEX_HOME || path.join(os.homedir(), '.better-codex'), assets = path.join(process.env.BC_WORKFLOW_BUILD || path.resolve(__dirname, '../..'), 'src/ui/workflow-web'), revision = process.env.BC_WORKFLOW_REVISION || 'test', port } = {}) {
+async function startServer({ home = process.env.BOOST_CODEX_HOME || path.join(os.homedir(), '.better-codex'), assets = path.join(process.env.BC_WORKFLOW_BUILD || path.resolve(__dirname, '../..'), 'src/ui/workflow-web'), revision = process.env.BC_WORKFLOW_REVISION || 'test', port } = {}) {
   fs.mkdirSync(path.join(home, 'run'), { recursive: true });
   const run = path.join(home, 'run'), stateFile = path.join(run, 'workflow-runtime.json'), sessionFile = path.join(run, 'workflow-human-sessions.json');
   const agentToken = fs.readFileSync(path.join(run, 'workflow-agent-token'), 'utf8').trim(), controlToken = fs.readFileSync(path.join(run, 'workflow-control-token'), 'utf8').trim();
@@ -27,7 +28,7 @@ async function startServer({ home = process.env.BETTER_CODEX_HOME || path.join(o
     try {
       if (request.headers.host !== '127.0.0.1:' + readyPort || !originAllowed(request)) return json(response, 403, { error: 'ORIGIN_DENIED', message: '无法从当前页面访问面板' });
       const url = new URL(request.url, 'http://127.0.0.1:' + readyPort), method = request.method;
-      if (method === 'GET' && url.pathname === '/health') return json(response, draining ? 503 : 200, { name: 'BetterCodex Workflow', ready: !draining, pid: process.pid, instanceId, revision });
+      if (method === 'GET' && url.pathname === '/health') return json(response, draining ? 503 : 200, { name: 'boostCodex Workflow', ready: !draining, pid: process.pid, instanceId, revision });
       if (url.pathname.startsWith('/_control/')) {
         if (method !== 'POST' || !authorized(request, controlToken)) return json(response, 401, { error: 'UNAUTHORIZED', message: '请重新打开面板' });
         if (url.pathname === '/_control/launch' && !draining) { const ticket = crypto.randomBytes(24).toString('hex'); for (const [key, expires] of tickets) if (expires < Date.now()) tickets.delete(key); tickets.set(ticket, Date.now() + 60000); return json(response, 200, { url: 'http://127.0.0.1:' + readyPort + '/launch?ticket=' + ticket }); }

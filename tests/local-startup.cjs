@@ -7,9 +7,10 @@ assert(startup.idleLegacy(health,host));
 for(const change of [{runtime_instance_id:'another'},{command_in_flight:true},{pending_requests:1},{queued_deliveries:1},{active_turns:['thread']},{thread_workers:['worker']}])assert(!startup.idleLegacy(health,{...host,...change}));
 assert(!startup.idleLegacy({...health,handoffUpdateId:'updating'},host));
 assert(!startup.idleLegacy(health,null));
+assert(startup.legacyProcess({CommandLine:'"C:\\node.exe" "C:\\Users\\user\\AppData\\Local\\boostCodex\\bin\\boost-codex.cjs" runtime'},'runtime'));
 assert(startup.legacyProcess({CommandLine:'"C:\\node.exe" "C:\\Users\\user\\AppData\\Local\\BetterCodex\\bin\\better-codex.cjs" runtime'},'runtime'));
-assert(!startup.legacyProcess({CommandLine:'node D:\\other\\better-codex.cjs runtime'},'runtime'));
-assert(!startup.legacyProcess({CommandLine:'node C:\\BetterCodex\\bin\\better-codex.cjs session-host'},'runtime'));
+assert(!startup.legacyProcess({CommandLine:'node D:\\other\\boost-codex.cjs runtime'},'runtime'));
+assert(!startup.legacyProcess({CommandLine:'node C:\\boostCodex\\bin\\boost-codex.cjs session-host'},'runtime'));
 const home=fs.mkdtempSync(path.join(os.tmpdir(),'bc-startup-'));
 const lib={HOME:home,read(file){try{return JSON.parse(fs.readFileSync(file));}catch{return null;}},alive(pid){try{process.kill(pid,0);return true;}catch{return false;}}};
 (async()=>{

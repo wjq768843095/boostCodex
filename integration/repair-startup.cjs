@@ -6,10 +6,10 @@ const digest=file=>fs.existsSync(file)?crypto.createHash('sha256').update(fs.rea
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function progress(patch){lib.save(reportFile,{...lib.read(reportFile,{}),...patch,updatedAt:new Date().toISOString()});}
 function redirectInstalledEntries(backup){
- const roots=[path.join(process.env.LOCALAPPDATA,'BetterCodex'),path.join(process.env.LOCALAPPDATA,'Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local/BetterCodex')];
- const shim=`// Better Codex local entry redirect. Original installer entry is backed up.\nprocess.env.BETTER_CODEX_LOCAL_PROJECT=${JSON.stringify(lib.ROOT)};\nprocess.env.BETTER_CODEX_HOME=${JSON.stringify(lib.HOME)};\nrequire(${JSON.stringify(lib.ENTRY)});\n`;
+ const roots=['boostCodex','BetterCodex'].flatMap(name=>[path.join(process.env.LOCALAPPDATA,name),path.join(process.env.LOCALAPPDATA,'Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Local',name)]);
+ const shim=`// boostCodex local entry redirect. Original installer entry is backed up.\nprocess.env.BOOST_CODEX_LOCAL_PROJECT=${JSON.stringify(lib.ROOT)};\nprocess.env.BOOST_CODEX_HOME=${JSON.stringify(lib.HOME)};\nrequire(${JSON.stringify(lib.ENTRY)});\n`;
  const changed=[];
- for(let index=0;index<roots.length;index++)for(const name of ['bin/better-codex.cjs','desktop-launch.cjs']){
+ for(let index=0;index<roots.length;index++)for(const name of ['bin/boost-codex.cjs','bin/better-codex.cjs','desktop-launch.cjs']){
   const file=path.join(roots[index],name);if(!fs.existsSync(file))continue;
   if(fs.readFileSync(file,'utf8')===shim)continue;
   const copy=path.join(backup,'installed-'+index,name);fs.mkdirSync(path.dirname(copy),{recursive:true});fs.copyFileSync(file,copy);lib.atomic(file,shim);changed.push(file);
@@ -21,7 +21,7 @@ async function runtimeRepair(){
  const backup=path.join(lib.HOME,'backups','local-startup-'+new Date().toISOString().replace(/[:.]/g,'-'));fs.mkdirSync(backup,{recursive:true});
  progress({phase:'preparing',backup,error:null});
  for(const name of ['state.json','status.json','launcher.cjs']){const file=path.join(lib.DEV,name);if(fs.existsSync(file))fs.copyFileSync(file,path.join(backup,name));}
- for(const name of ['Better Codex Launcher.vbs','run/launch-integration.json']){const file=path.join(lib.HOME,name);if(fs.existsSync(file)){const copy=path.join(backup,name);fs.mkdirSync(path.dirname(copy),{recursive:true});fs.copyFileSync(file,copy);}}
+ for(const name of ['boostCodex Launcher.vbs','Better Codex Launcher.vbs','run/launch-integration.json']){const file=path.join(lib.HOME,name);if(fs.existsSync(file)){const copy=path.join(backup,name);fs.mkdirSync(path.dirname(copy),{recursive:true});fs.copyFileSync(file,copy);}}
  // Stop only this checkout's supervisor before replacing its accepted build.
  const watcher=lib.read(path.join(lib.DEV,'watcher.json'));
  if(watcher?.root===lib.ROOT&&lib.alive(watcher.pid)){
@@ -55,7 +55,7 @@ async function desktopRepair(){
  progress({phase:'restarting_desktop'});
  lib.runCore(['launch','--restart','--json'],{timeout:120000});
  const watcher=require('./watcher.cjs');
- const ui=await watcher.cdp(`({ready:!!window.__betterCodexInjection__?.ready?.(),error:window.__betterCodexInjection__?.bootstrapError?.(),endpoint:window.__betterCodexInjection__?.endpoint,optimizer:!!document.querySelector('[data-bc-optimizer]'),version:window.__betterCodexInjection__?.version})`);
+ const ui=await watcher.cdp(`({ready:!!window.__boostCodexInjection__?.ready?.(),error:window.__boostCodexInjection__?.bootstrapError?.(),endpoint:window.__boostCodexInjection__?.endpoint,optimizer:!!document.querySelector('[data-bc-optimizer]'),version:window.__boostCodexInjection__?.version})`);
  const ready=await lib.api('/readyz');
  if(!ui?.ready||ui.error||ui.endpoint!=='http://127.0.0.1:'+ready.port||!ready.session_host.connected)throw Error('desktop_verification_failed');
  progress({phase:'complete',runtimePid:ready.pid,version:ready.version,ui,sessionConnected:true});

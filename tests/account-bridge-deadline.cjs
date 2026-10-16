@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const backend = fs.readFileSync(path.join(__dirname, '../src/backend/better-codex.cjs'), 'utf8');
+const backend = fs.readFileSync(path.join(__dirname, '../src/backend/boost-codex.cjs'), 'utf8');
 const start = backend.indexOf('async function bridgeRequest(');
 const end = backend.indexOf('\nasync function cdpJson(', start);
 assert(start >= 0 && end > start, 'the real bridgeRequest must be available');
@@ -57,7 +57,7 @@ function fixture(delay = Infinity, status = 200, body = { metadata: true }) {
     },
     async evaluate(actualConnection, expression) {
       assert.equal(actualConnection, connection);
-      vm.runInNewContext(expression, { window: { __betterCodexBridgeResolve: (id, result) => resolved.push({ id, result: plain(result) }) } });
+      vm.runInNewContext(expression, { window: { __boostCodexBridgeResolve: (id, result) => resolved.push({ id, result: plain(result) }) } });
     }
   });
   vm.runInContext(bridgeSource, context);

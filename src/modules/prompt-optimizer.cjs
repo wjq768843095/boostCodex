@@ -71,7 +71,7 @@ function validateContext(value) {
 
 function createPromptOptimizer(options = {}) {
   const disk = options.fs || fs;
-  const home = options.home || process.env.BETTER_CODEX_HOME || path.join(os.homedir(), '.better-codex');
+  const home = options.home || process.env.BOOST_CODEX_HOME || process.env.BETTER_CODEX_HOME || path.join(os.homedir(), '.better-codex');
   const file = path.join(home, 'prompt-optimizer-settings.json');
   const fetchRequest = options.fetch || ((...args) => globalThis.fetch(...args));
   const timeoutMs = options.timeoutMs ?? LIMITS.timeoutMs;

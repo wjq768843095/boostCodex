@@ -1,6 +1,6 @@
 ---
 name: bc-develop
-description: Explicitly develop a numbered Better Codex task under its execution lease when the user invokes this skill.
+description: Explicitly develop a numbered boostCodex task under its execution lease when the user invokes this skill.
 ---
 
 # 任务开发
