@@ -20,7 +20,7 @@ boostCodex 是面向 **Codex Desktop 的本地增强项目**：在保留原生�
 
 ## 界面与用法
 
-以下图片来自实际界面截图，已隐藏项目列表、聊天正文等个人内容并添加功能说明。截图中的模型名称和推理强度仅为拍摄时的选项，实际可用范围由当前 Codex 版本与账号决定。
+以下 5 张图片为作者提供的原始宣传截图，原样保留图片及其中的标注。截图中的模型名称和推理强度仅为拍摄时的选项，实际可用范围由当前 Codex 版本与账号决定。
 
 ### 模型快捷选择
 
@@ -28,7 +28,7 @@ boostCodex 是面向 **Codex Desktop 的本地增强项目**：在保留原生�
 
 这些入口调用 Codex 已有能力，不会解锁账号未提供的模型、推理强度或加速权限。
 
-![模型快捷选项与输入框快捷入口](docs/images/github-original-edits/01-original-model-presets.png)
+![模型配置、快捷选择、加速与计划模式](docs/images/screenshots/03-model-shortcuts.png)
 
 ### DeepSeek 提示词优化
 
@@ -42,7 +42,7 @@ boostCodex 是面向 **Codex Desktop 的本地增强项目**：在保留原生�
 
 **数据去向：**只有用户触发优化时，当前输入及所选聊天文本才会发送到 DeepSeek 官方接口。工具原始输出、思考过程、其他聊天和附件不作为优化上下文。API Key 保存在本机配置文件中，不提交到仓库，设置接口不会回显密钥；请妥善保护本机配置及其备份。DeepSeek 服务需自行开通，调用费用按其服务规则计算。
 
-![DeepSeek 提示词优化设置](docs/images/github-original-edits/02-original-prompt-optimizer.png)
+![DeepSeek 提示词优化设置与快捷键](docs/images/screenshots/02-prompt-optimizer.png)
 
 ### 子代理状态与工作详情
 
@@ -56,7 +56,7 @@ boostCodex 是面向 **Codex Desktop 的本地增强项目**：在保留原生�
 
 监控读取本机 Codex 会话记录，不为了展示状态发起模型请求，不展示隐藏思考过程。无法读取明文任务说明时会提示暂不可读取；较长内容受长度与读取预算限制，显示为原文片段。中文短标题由本地规则整理，复杂任务的标题可能较概括。
 
-![子代理状态与工作详情](docs/images/github-original-edits/03-original-subagent-monitor.png)
+![子代理状态、运行时间与实际调用模型](docs/images/screenshots/01-subagent-monitor.png)
 
 ### 顶部快捷入口与工作流面板
 
@@ -67,9 +67,13 @@ boostCodex 是面向 **Codex Desktop 的本地增强项目**：在保留原生�
 - **已归档聊天**：进入 Codex 原生归档列表。
 - **账号用量**：查看账号返回的周期剩余额度，悬停查看重置时间，点击刷新。读取失败时会显示不可用，不推算剩余值。
 
+![桌面顶部入口与输入框功能总览](docs/images/screenshots/04-desktop-overview.png)
+
 工作流面板提供「登记项目 → 确认总纲 → 拆分任务 → 开发 → AI 验收 → 人工验收 → 项目验收」流程，并支持问题登记、修复及复验。普通关闭只隐藏面板，重新打开保留页面位置与草稿；数据通过实时事件更新。
 
 面板配有 Codex / Claude Code 的共同 Skill 规范和 MCP 入口，使用永久项目、任务、验收批次编号定位。只有明确调用相应 Skill 时才进入工作流；总纲确认和人工验收仍由使用者在面板完成。它不会仅因打开页面或发现 MCP 工具而自动调用模型执行任务。
+
+![boostCodex 项目工作流面板](docs/images/screenshots/05-workflow-panel.png)
 
 ## 环境要求
 
@@ -161,7 +165,7 @@ src/ui/          桌面增强界面、全局工作流网页
 src/skills/      工作流 Skill 共同规范
 integration/    启动、注入、构建与空闲自动重载
 tests/          隔离回归测试
-docs/images/    脱敏功能截图
+docs/images/    作者提供的功能宣传截图
 licenses/       第三方许可文本
 ```
 
