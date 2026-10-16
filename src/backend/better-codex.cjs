@@ -1081,7 +1081,8 @@ async function bridgeRequest(connection, runtimePort2, accessToken3, payload) {
     const optimizerSettings = /^\/api\/dev\/prompt-optimizer\/settings(?:[?]|$)/.test(path);
     const optimizerRequest = /^\/api\/dev\/prompt-optimizer\/optimize(?:[?]|$)/.test(path);
     const workflowPanel = /^\/api\/dev\/workflow\/panel-url(?:[?]|$)/.test(path);
-    if (!requestId || request2.token !== accessToken3 || !(accountMetadataPath || optimizerSettings || optimizerRequest || workflowPanel || /^\/api\/account\/usage(?:[?]|$)/.test(path)) || !["GET", "POST"].includes(method) || /^\/api\/account\/usage(?:[?]|$)/.test(path) && method !== "GET" || (accountMetadataPath || optimizerRequest || workflowPanel) && method !== "POST") throw new Error("invalid_bridge_request");
+    const subagentRead = /^\/api\/dev\/subagents(?:[?]|$)/.test(path);
+    if (!requestId || request2.token !== accessToken3 || !(accountMetadataPath || optimizerSettings || optimizerRequest || workflowPanel || subagentRead || /^\/api\/account\/usage(?:[?]|$)/.test(path)) || !["GET", "POST"].includes(method) || (/^\/api\/account\/usage(?:[?]|$)/.test(path) || subagentRead) && method !== "GET" || (accountMetadataPath || optimizerRequest || workflowPanel) && method !== "POST") throw new Error("invalid_bridge_request");
     // Account metadata has a 12s upstream deadline. Allow it to complete and
     // return a bounded result before the renderer's 18s deadline. Other bridge
     // requests retain their normal timeout; cancellation remains short.

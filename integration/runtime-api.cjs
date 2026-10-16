@@ -12,6 +12,14 @@ function idle(worker){
 async function handle({url,method,request,response,worker,readBody,sendJson,stopHost}){
  const dev=path.join(process.env.BETTER_CODEX_LOCAL_PROJECT,'.dev');
  // /api/dev/ is authenticated by the core before entering this extension.
+ if(url.pathname==='/api/dev/subagents'){
+  if(method!=='GET'){sendJson(response,405,{error:'SUBAGENT_METHOD_NOT_ALLOWED'});return true;}
+  const monitor=require('../src/modules/subagent-monitor.cjs'),threadId=url.searchParams.get('threadId');
+  if(!monitor.validId(threadId)){sendJson(response,400,{error:'SUBAGENT_THREAD_INVALID'});return true;}
+  try{const data=await monitor.getSubagents(threadId);if(!response.destroyed)sendJson(response,200,data);}
+  catch{if(!response.destroyed)sendJson(response,503,{error:'SUBAGENT_MONITOR_UNAVAILABLE'});}
+  return true;
+ }
  if(url.pathname==='/api/dev/workflow/panel-url'&&method==='POST'){
   const requestKey={};workflowRequests.add(requestKey);
   try{const result=await require('./workflow-service.cjs').panelUrl();if(!response.destroyed)sendJson(response,200,result);}

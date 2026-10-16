@@ -15,7 +15,8 @@ function uiBundle(base=ROOT){
  const optimizer=path.join(base,'src/ui/prompt-optimizer.js');
  const shortcut=path.join(base,'src/modules/prompt-optimizer-shortcut.js');
  const workflow=path.join(base,'src/ui/workflow-panel.js');
- return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+(fs.existsSync(workflow)?fs.readFileSync(workflow,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
+ const subagents=path.join(base,'src/ui/subagent-monitor.js');
+ return (fs.existsSync(adapter)?fs.readFileSync(adapter,'utf8')+'\n;\n':'')+(fs.existsSync(shortcut)?fs.readFileSync(shortcut,'utf8')+'\n;\n':'')+(fs.existsSync(optimizer)?fs.readFileSync(optimizer,'utf8')+'\n;\n':'')+(fs.existsSync(workflow)?fs.readFileSync(workflow,'utf8')+'\n;\n':'')+(fs.existsSync(subagents)?fs.readFileSync(subagents,'utf8')+'\n;\n':'')+fs.readFileSync(path.join(base,'src/ui/better-codex-ui.js'),'utf8');
 }
 function hashes(files=sources()){
  const full=crypto.createHash('sha256'),backend=crypto.createHash('sha256');for(const file of files){const rel=path.relative(ROOT,file),data=fs.readFileSync(file);full.update(rel).update(data);if(!rel.startsWith('src'+path.sep+'ui'+path.sep))backend.update(rel).update(data);}

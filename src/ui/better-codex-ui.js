@@ -508,7 +508,7 @@ var BetterCodexInjected = (() => {
     }
     previous?.destroy?.();
     const requests = new Map();
-    let destroyed = false, observer = null, shortcuts = null, accountAdapter = null, optimizer = null, composerLayout = null, planToggle = null, workflowPanel = null;
+    let destroyed = false, observer = null, shortcuts = null, accountAdapter = null, optimizer = null, composerLayout = null, planToggle = null, workflowPanel = null, subagents = null;
     let sequence = 0, refreshTimer = null, usageTimer = null, usagePending = false, accountCheckedAt = 0;
     const locale = config.initialLocale || "zh-CN";
     const english = locale.startsWith("en");
@@ -606,6 +606,7 @@ var BetterCodexInjected = (() => {
       shortcuts?.sync();
       optimizer?.sync();
       planToggle?.sync();
+      subagents?.sync();
       if (accountAdapter && !window.__betterCodexAccountTransportRecovery__?.request && Date.now() - accountCheckedAt > 10000) {
         accountCheckedAt = Date.now();
         void accountAdapter.connect().catch(() => {});
@@ -618,6 +619,7 @@ var BetterCodexInjected = (() => {
     function destroy() {
       if (destroyed) return;
       accountAdapter?.destroy();
+      subagents?.destroy();
       destroyed = true;
       observer?.disconnect(); shortcuts?.destroy(); planToggle?.destroy(); optimizer?.destroy(); composerLayout?.destroy();
       clearTimeout(refreshTimer); clearInterval(usageTimer);
@@ -644,6 +646,7 @@ var BetterCodexInjected = (() => {
         reportError: error => { const button = document.querySelector('[data-workflow-panel]'); if (button) button.title = error.message; }
       });
       planToggle = createComposerPlanToggle(() => icon("plan", "1.8"));
+      subagents = window.BetterCodexSubagentMonitor?.create({ api });
       if (typeof window.BetterCodexNativeConversation?.create === "function") accountAdapter = window.BetterCodexNativeConversation.create({ api });
       observer = new MutationObserver(scheduleRefresh);
       observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-theme", "aria-current"] });
