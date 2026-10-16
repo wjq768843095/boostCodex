@@ -7,7 +7,7 @@ const vm = require('node:vm');
 class Element {
   constructor(tag, owner) {
     this.tagName = tag; this.owner = owner; this.children = []; this.attributes = {}; this.listeners = {};
-    this.style = { _css: '', writes: 0, normalize: false, get cssText() { return this.normalize ? this._css.replace(/;/g, '; ') : this._css; }, set cssText(value) { this.writes++; this._css = value; } }; this.hidden = false; this._text = '';
+    this.style = { _css: '', writes: 0, normalize: false, properties: new Map(), setProperty(key,value,priority=''){this.properties.set(key,{value,priority});},getPropertyValue(key){return this.properties.get(key)?.value||'';},getPropertyPriority(key){return this.properties.get(key)?.priority||'';}, get cssText() { return this.normalize ? this._css.replace(/;/g, '; ') : this._css; }, set cssText(value) { this.writes++; this._css = value; } }; this.hidden = false; this._text = '';
   }
   get hidden() { return this._hidden; }
   set hidden(value) { this._hidden = value; this.hiddenWrites = (this.hiddenWrites || 0) + 1; }
@@ -37,7 +37,7 @@ class Element {
   removeEventListener(name, callback) { this.listeners[name] = (this.listeners[name] || []).filter(item => item !== callback); }
   dispatch(name, extras = {}) { for (const callback of [...(this.listeners[name] || [])]) callback({ target: this, preventDefault() {}, stopPropagation() {}, ...extras }); }
   getClientRects() { return this.hidden ? [] : [this.getBoundingClientRect()]; }
-  getBoundingClientRect() { return this.rect || { top: 40, left: 240, width: 800, height: 800 }; }
+  getBoundingClientRect() { if(this.hostHiddenRule&&this.hidden&&!(this.style.getPropertyValue('display')==='block'&&this.style.getPropertyPriority('display')==='important'))return {top:0,left:0,width:0,height:0,right:0,bottom:0};return this.rect || { top: 40, left: 240, width: 800, height: 800 }; }
 }
 
 function fixture() {
@@ -154,6 +154,18 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   adaptive.instance.destroy(); assert.equal((adaptive.document.listeners.scroll || []).length, 0);
   const routine=fixture();routine.complete([agent('routine','completed')],{syncing:true});await flush();assert.equal(routine.notice.textContent,'','routine background catch-up has no immediate visible status');
   routine.advance(1000);routine.complete([agent('routine','completed')]);await flush();assert.equal(routine.notice.textContent,'','one-poll discovery passes never flash a sync status');routine.instance.destroy();
+  const layered=fixture();
+  layered.document.querySelector('.bc-subagent-header').rect={left:240,top:94,width:180,height:32,right:420,bottom:126};
+  layered.list.rect={left:240,top:126,width:180,height:260,right:420,bottom:386};layered.list.hostHiddenRule=true;
+  layered.setContent([{left:280,right:400,top:260,bottom:290}]);layered.complete([agent('layered','running')]);await flush();
+  assert.equal(layered.list.hidden,true);
+  assert.equal(layered.list.getBoundingClientRect().height,260,'folded geometry survives the host hidden rule');
+  for(let i=0;i<8;i++){layered.instance.sync();assert.equal(layered.list.hidden,true,'a host important hidden rule must not turn folded geometry into a false clear result');}
+  layered.toggle.dispatch('click');assert.equal(layered.list.hidden,false);layered.instance.sync();assert.equal(layered.list.hidden,false,'manual expansion stays stable under the host rule');
+  layered.setContent([]);layered.instance.sync();assert.equal(layered.list.hidden,false,'genuinely clear content still automatically expands');
+  layered.setContent([{left:280,right:400,top:260,bottom:290}]);layered.instance.sync();assert.equal(layered.list.hidden,true);
+  layered.list.style.setProperty('display','none','important');
+  for(let i=0;i<4;i++){layered.instance.sync();assert.equal(layered.list.hidden,true,'unknown measurement cannot cause false automatic expansion');}layered.instance.destroy();
 
   const stale = fixture();
   stale.setThread('thread-b'); stale.instance.sync();

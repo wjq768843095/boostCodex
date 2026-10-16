@@ -159,3 +159,14 @@
 - 避免文档捕获 scroll 时抢先刷新把用户拖回底部；列表自身滚动独立处理，并同步悬停卡片位置。已有闪动修复与增量 DOM 更新保持。
 - UI/reload 回归及源码校验通过，新增覆盖初始到底、新增记录跟随、手动阅读保护、恢复跟随、状态变化顺序与序号稳定、折叠恢复及切换聊天。内置浏览器 13 条默认 bottom=580/top=580；手动 Home 后第 14 条 top 仍为 0；End 恢复后第 15 条 top=721.33/bottom=722，容差内跟随成功。
 - UI 哈希已应用、重载 ready；截图 `.dev/verification/subagent-follow-latest.png` 为隔离样例，未发起模型测试请求。
+
+## 2026-10-16 遮挡场景持续闪烁复现与修复
+
+- 已观察事实：实际桌面 7 秒/988 帧记录了 13 个交替状态。展开时列表约 287.67px、遮挡 13 个矩形；收起后列表测量变为 0、遮挡变为 0，随后再次展开。此前普通场景的短期稳定采样没有覆盖这个触发条件，不能作为遮挡场景已修复的证据。
+- 实际宿主 CSS 包含 `@layer base` 的 `[hidden]:where(:not([hidden="until-found"])) {display:none!important}`。分层 important 规则优先于组件未分层的 important 样式，导致此前“收起时仍保留测量盒”的假设失效。
+- 浏览器 fixture 加入同一宿主样式并将静态聊天文字放在展开列表中部、收起栏下方，修复前稳定复现：35 轮列表请求记录 20 次开合，收起 computed display=none/listHeight=0，展开后有遮挡。证据 `.dev/verification/occlusion-before.json`；针对相同条件的新回归在修复前失败。
+- 修复仅给本组件拥有的列表设置一次 inline `display:block!important`，收起仍保持绝对定位、visibility:hidden 和 pointer-events:none，既不显示也不阻挡聊天，且保留实际测量盒。其他宿主 hidden 规则不变；测量盒异常缺失时按未知尺寸保守判断，不能据此自动认定无遮挡。
+- 同一浏览器条件修复后 51 轮请求/8107 帧只有初次自动收起一次，之后稳定；收起列表仍测得 216.5px，display=block/visibility=hidden，且不进入可访问树。`.dev/verification/occlusion-after-blocked.json` 保存记录。
+- 遮挡下手动展开后，87 轮列表请求和 17 轮详情请求只有初次自动收起及手动展开两次预期变化，没有持续交替；解除再遮挡、浅色主题、窄布局和新增十条记录后依然稳定收起，统计实时更新到进行中 11。记录分别为 `occlusion-after-manual.json`、`occlusion-after-layout.json`，截图 `subagent-occlusion-fixed.png` 均位于 `.dev/verification/`，只含隔离数据。
+- 实际桌面修复后也已测到收起时 display=block/listHeight=75.67px，消除了此前的零高度状态；另一次 8 秒/1142 帧普通状态采样稳定，仅作为补充，不替代上述明确遮挡复现验证。
+- 全部 27 组测试及源码校验通过；新增覆盖宿主隐藏规则、收起测量盒保持、手动展开、真正无遮挡展开和未知尺寸不误展开。UI 哈希已应用、重载 ready。每秒列表/详情轮询、状态/耗时更新、序号、底部跟随未更改，未自动发送模型业务请求作为测试。

@@ -92,6 +92,11 @@
     toggle.append(runningCount, completedCount, disclosure);
     const notice = document.createElement('span'); notice.className = 'bc-subagent-notice'; notice.setAttribute('role', 'status');
     const list = document.createElement('div'); list.className = 'bc-subagent-list'; list.id = 'bc-subagent-list'; toggle.setAttribute('aria-controls', list.id);
+    // Host @layer base declares [hidden] { display:none !important }. Layered
+    // important rules beat our unlayered stylesheet even at higher specificity.
+    // Keep only this owned list measurable; visibility:hidden still conceals
+    // folded rows and removes them from pointer/keyboard/accessibility exposure.
+    list.style.setProperty('display', 'block', 'important');
     list.setAttribute('tabindex', '0'); list.setAttribute('aria-label', '子代理列表');
     header.append(toggle, notice); panel.append(header, list);
     const detail = document.createElement('aside'); detail.className = 'bc-subagent-detail'; detail.id = 'bc-subagent-detail'; detail.hidden = true;
@@ -262,7 +267,10 @@
       setHidden(panel, !data.length);
       // Folded lists retain an invisible layout box, so measuring never changes
       // their visibility or triggers pointer leave/enter events during polling.
-      const expandedHeight = Math.min(height, header.getBoundingClientRect().height + list.getBoundingClientRect().height + 2);
+      const listHeight = list.getBoundingClientRect().height;
+      // A missing layout box is unknown geometry, not proof that the expanded
+      // panel would fit. Stay conservative if another host rule removes it.
+      const expandedHeight = listHeight > 0 ? Math.min(height, header.getBoundingClientRect().height + listHeight + 2) : height;
       const area = { left: left - 4, right: left + width + 4, top: top - 4, bottom: top + expandedHeight + 4 };
       const blocked = getContentRects(frame, area).filter(box => intersects(box, area));
       const signature = [threadId, left, top, width, expandedHeight, rect.width, rect.height, bottom, blocked.length > 0]
