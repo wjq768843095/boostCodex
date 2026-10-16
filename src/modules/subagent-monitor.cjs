@@ -5,6 +5,7 @@
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const os=require('node:os');
+const taskDescriptions=require('./subagent-task-description.cjs');
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const stamp=value=>{const result=typeof value==='number'?value:Date.parse(value);return Number.isFinite(result)?result:null;};
 const label=value=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,'').slice(0,160):null;
@@ -209,7 +210,7 @@ function createMonitor(options={}){
   const agents=descendants.map(({meta,depth})=>{
    const state=states.get(meta.id)||fresh(meta);
    applyControl(state,meta);
-   return {id:meta.id,parentId:meta.parentId,depth,name:meta.name||meta.nickname||meta.id,
+   return {id:meta.id,parentId:meta.parentId,depth,name:meta.name||meta.nickname||meta.id,title:taskDescriptions.getTitle(threadId,meta.id,meta.name||''),
     nickname:meta.nickname,model:state.model,effort:state.effort,
     status:state.status,startedAt:state.startedAt,
     completedAt:state.completedAt,elapsedMs:state.elapsedMs,

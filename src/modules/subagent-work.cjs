@@ -4,6 +4,7 @@
 // or inherited user context is projected. All filesystem access is read-only.
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
 const monitorModule=require('./subagent-monitor.cjs');
+const descriptions=require('./subagent-task-description.cjs');
 const stamp=value=>{const n=typeof value==='number'?value:Date.parse(value);return Number.isFinite(n)?n:null;};
 const failure=(code,status)=>Object.assign(new Error(code),{code,status});
 function createReader(options={}){
@@ -57,7 +58,7 @@ function createReader(options={}){
   }
   return needed.size>0;
  }
- function logState(meta){return {file:meta.file,offset:meta.offset,carry:Buffer.alloc(0),dropping:false,skipped:false,calls:new Map(),gate:false,progress:'',result:'',progressAt:null,resultAt:null,progressCut:false,resultCut:false,task:'',taskAt:null,taskCut:false};}
+ function logState(meta){return {file:meta.file,offset:meta.offset,carry:Buffer.alloc(0),dropping:false,skipped:false,calls:new Map(),gate:false,progress:'',result:'',progressAt:null,resultAt:null,progressCut:false,resultCut:false,task:'',taskAt:null,taskCut:false,plainTask:'',plainTaskAt:null};}
  function targetMatches(target,parent,child){
   if(typeof target!=='string')return false;
   if(monitorModule.validId(target))return target.toLowerCase()===child.id;
@@ -88,7 +89,15 @@ function createReader(options={}){
   if(time==null||meta.createdAt!=null&&time<meta.createdAt)return;
   // A native addressed agent-message marks the end of the inherited fork
   // context. Its encrypted or instruction content is never exposed.
-  if(e.type==='response_item'&&p.type==='agent_message'&&meta.agentPath&&p.recipient===meta.agentPath){s.gate=true;return;}
+  if(e.type==='response_item'&&p.type==='agent_message'&&meta.agentPath&&p.recipient===meta.agentPath){
+   s.gate=true;
+   // Only an explicitly addressed NEW_TASK payload can supplement assignment
+   // text. Other user/system/inherited messages remain excluded.
+   const text=Array.isArray(p.content)?p.content.filter(x=>x.type==='input_text'&&typeof x.text==='string').map(x=>x.text).join('\n'):'';
+   const match=/^Message Type: NEW_TASK\r?\n[\s\S]*?\r?\nPayload:\r?\n([\s\S]+)$/.exec(text);
+   if(match&&match[1].trim()&&!descriptions.encrypted(match[1])){s.plainTask=match[1].trim();s.plainTaskAt=time;}
+   return;
+  }
   // Older native sessions use an explicit user_message assignment event.
   if(e.type==='event_msg'&&p.type==='user_message'&&assignment.task&&!assignment.taskCut&&p.message===assignment.task){s.gate=true;return;}
   if(e.type==='response_item'&&p.type==='message'&&p.role==='user'&&assignment.task&&!assignment.taskCut&&Array.isArray(p.content)&&p.content.length===1&&p.content[0].type==='input_text'&&p.content[0].text===assignment.task){s.gate=true;return;}
@@ -134,8 +143,10 @@ function createReader(options={}){
   const a=state.parent,c=state.child,after=time=>time!=null&&(a.taskAt==null||time>=a.taskAt);
   const progress=after(c.progressAt)?c.progress:'',result=after(c.resultAt)?c.result:'';
   const times=[a.taskAt,progress?c.progressAt:null,result?c.resultAt:null].filter(x=>x!=null);
-  return {threadId,agentId,task:a.task,progress,result,updatedAt:times.length?Math.max(...times):null,
-   syncing:!!syncing,truncated:!!(a.skipped||c.skipped||a.taskCut||progress&&c.progressCut||result&&c.resultCut)};
+  const description=await descriptions.describe({threadId,agentId,task:a.task,name:agent.name,plainTask:after(c.plainTaskAt)?c.plainTask:'',home:options.descriptionHome});
+  const task=cap(description.task,limits.task);
+  return {threadId,agentId,...description,task:task.text,progress,result,updatedAt:times.length?Math.max(...times):null,
+   syncing:!!syncing,truncated:!!(task.truncated||a.skipped||c.skipped||a.taskCut||progress&&c.progressCut||result&&c.resultCut)};
  }
  function getWork(threadId,agentId){
   if(!monitorModule.validId(threadId)||!monitorModule.validId(agentId))return Promise.reject(failure('SUBAGENT_WORK_INPUT_INVALID',400));

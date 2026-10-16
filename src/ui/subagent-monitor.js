@@ -74,9 +74,11 @@
     if (legacy && legacy !== root.__boostCodexSubagentMonitor__) legacy.destroy?.();
     if (root.__betterCodexSubagentMonitor__ === legacy) delete root.__betterCodexSubagentMonitor__;
     root.__boostCodexSubagentMonitor__?.destroy();
-    let disposed = false, threadId = null, generation = 0, pending = null, lastPoll = 0, data = [], syncing = false, receivedAt = 0, observedAt = 0;
+    let disposed = false, threadId = null, generation = 0, pending = null, lastPoll = 0, data = [], syncing = false, receivedAt = 0, observedAt = 0, listError = false, syncSince = null;
     const rows = new Map(), memory = new Map();
     let layoutSignature = '', folded = false;
+    let panelCss = '', detailCss = '';
+    let followBottom = true;
     let detailId = null, detailEpoch = 0, detailPending = null, detailPollAt = -Infinity, hoverTimer = null, closeTimer = null, work = null, workError = false, detailPointer = false;
     const workCache = new Map();
     const panel = document.createElement('section'); panel.className = 'bc-subagent-panel'; panel.hidden = true;
@@ -90,6 +92,7 @@
     toggle.append(runningCount, completedCount, disclosure);
     const notice = document.createElement('span'); notice.className = 'bc-subagent-notice'; notice.setAttribute('role', 'status');
     const list = document.createElement('div'); list.className = 'bc-subagent-list'; list.id = 'bc-subagent-list'; toggle.setAttribute('aria-controls', list.id);
+    list.setAttribute('tabindex', '0'); list.setAttribute('aria-label', '子代理列表');
     header.append(toggle, notice); panel.append(header, list);
     const detail = document.createElement('aside'); detail.className = 'bc-subagent-detail'; detail.id = 'bc-subagent-detail'; detail.hidden = true;
     detail.setAttribute('aria-label', '子代理工作内容'); detail.setAttribute('data-boost-codex-owned', 'true');
@@ -109,8 +112,8 @@
     const style = document.createElement('style');
     style.textContent = `
       .bc-subagent-panel{position:fixed;z-index:30;width:180px;box-sizing:border-box;border:1px solid color-mix(in srgb,currentColor 15%,transparent);border-radius:9px;background:var(--bc-subagent-bg,#fff);color:var(--bc-subagent-fg,#252525);box-shadow:0 6px 24px #0002;font:12px/1.5 system-ui,sans-serif;overflow:hidden;isolation:isolate}
-      .bc-subagent-panel[hidden],.bc-subagent-list[hidden]{display:none!important}
-      .bc-subagent-header{display:flex;align-items:center;flex-wrap:wrap;padding:6px;gap:3px}
+      .bc-subagent-panel[hidden]{display:none!important}
+      .bc-subagent-header{position:relative;display:flex;align-items:center;padding:6px;gap:3px}
       .bc-subagent-toggle{display:flex;align-items:center;gap:4px;flex:1;min-width:0;text-align:left;background:none;border:0;padding:0;color:inherit;font:inherit;font-size:10px;font-weight:600;white-space:nowrap;cursor:pointer;-webkit-app-region:no-drag}
       .bc-subagent-count{display:inline-flex;align-items:center;justify-content:center;min-width:0;padding:2px 4px;border-radius:4px;color:#fff}
       .bc-subagent-count-running{background:#b88708}.bc-subagent-count-completed{background:#258456}
@@ -118,11 +121,15 @@
       .bc-subagent-disclosure{display:inline-block;flex-shrink:0;width:12px;height:12px;margin-left:auto;background:currentColor;mask:url("data:image/svg+xml;base64,PCEtLSBAbGljZW5zZSBsdWNpZGUtc3RhdGljIHYxLjI4LjAgLSBJU0MgLS0+CjxzdmcKICBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1wbGF5IgogIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICB3aWR0aD0iMjQiCiAgaGVpZ2h0PSIyNCIKICB2aWV3Qm94PSIwIDAgMjQgMjQiCiAgZmlsbD0ibm9uZSIKICBzdHJva2U9ImN1cnJlbnRDb2xvciIKICBzdHJva2Utd2lkdGg9IjIiCiAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIgogIHN0cm9rZS1saW5lam9pbj0icm91bmQiCj4KICA8cGF0aCBkPSJNNSA1YTIgMiAwIDAgMSAzLjAwOC0xLjcyOGwxMS45OTcgNi45OThhMiAyIDAgMCAxIC4wMDMgMy40NThsLTEyIDdBMiAyIDAgMCAxIDUgMTl6IiAvPgo8L3N2Zz4K") center/contain no-repeat}
       .bc-subagent-toggle[aria-expanded=true] .bc-subagent-disclosure{transform:rotate(90deg)}
       .bc-subagent-toggle:focus-visible{outline:2px solid #5689e9;outline-offset:3px;border-radius:3px}
-      .bc-subagent-notice{flex-basis:100%;font-size:10px;color:#888;white-space:nowrap;text-align:right}
+      .bc-subagent-notice{position:absolute;top:2px;right:2px;width:4px;height:4px;border-radius:50%;font-size:0;background:#b88708;pointer-events:none}
       .bc-subagent-notice:empty{display:none}
       .bc-subagent-list{overflow:auto;max-height:var(--bc-subagent-list-height,320px);overscroll-behavior:contain;padding:0 5px 5px}
+      /* Keep an invisible, out-of-flow layout box while folded. Its expanded
+         size remains measurable without briefly reopening the visible list. */
+      .bc-subagent-list[hidden]{display:block!important;position:absolute;left:0;right:0;top:0;visibility:hidden;pointer-events:none}
       .bc-subagent-row{border-top:1px solid color-mix(in srgb,currentColor 9%,transparent);padding:7px 2px 7px calc(2px + var(--bc-subagent-depth,0)*8px)}
       .bc-subagent-line{display:flex;align-items:center;gap:4px;min-width:0}
+      .bc-subagent-sequence{flex-shrink:0;font-size:10px;font-variant-numeric:tabular-nums;color:color-mix(in srgb,currentColor 60%,transparent)}
       .bc-subagent-name{font-size:11px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .bc-subagent-state{font-size:11px;white-space:nowrap;color:#777}
       .bc-subagent-state[data-state=running],.bc-subagent-state[data-state=starting]{color:#fff;background:#b88708;border-radius:3px;padding:1px 4px;font-size:10px}
@@ -147,13 +154,30 @@
     `;
     document.head.append(style); document.body.append(panel, detail);
     function setText(node, value) { if (node.textContent !== value) node.textContent = value; }
+    function setHidden(node, value) { if (node.hidden !== value) node.hidden = value; }
     function attr(node, key, value) { if (node.getAttribute(key) !== String(value)) node.setAttribute(key, String(value)); }
+    function taskTitle(agent) {
+      const title = workCache.get(threadId + ':' + agent.id)?.title || agent.title;
+      return typeof title === 'string' && /^[\u3400-\u9fff]{2,10}$/.test(title) ? title : '子代理任务';
+    }
+    function followLatest() {
+      if (!followBottom || folded || panel.hidden || document.hidden) return;
+      const bottom = Math.max(0, (list.scrollHeight || 0) - (list.clientHeight || 0));
+      if (Math.abs((list.scrollTop || 0) - bottom) > 1) list.scrollTop = bottom;
+    }
+    function onListScroll() {
+      if (folded || panel.hidden || document.hidden) return;
+      followBottom = (list.scrollHeight || 0) - (list.clientHeight || 0) - (list.scrollTop || 0) <= 4;
+      if (detailId) placeDetail();
+    }
+    list.addEventListener('scroll', onListScroll);
+    list.addEventListener('wheel', event => { if (event.deltaY < 0) followBottom = false; }, { passive: true });
     function clearHover() { if (hoverTimer !== null) { root.clearTimeout(hoverTimer); hoverTimer = null; } }
     function clearClose() { if (closeTimer !== null) { root.clearTimeout(closeTimer); closeTimer = null; } }
     function hideDetail() {
       clearHover(); clearClose();
       if (detailId) attr(rows.get(detailId)?.node || detail, 'aria-expanded', false);
-      detailId = null; detailEpoch++; detailPending = null; work = null; workError = false; detailPointer = false; detail.hidden = true;
+      detailId = null; detailEpoch++; detailPending = null; work = null; workError = false; detailPointer = false; setHidden(detail, true);
     }
     function placeDetail() {
       const row = rows.get(detailId)?.node;
@@ -172,18 +196,20 @@
       else { width = Math.min(380, viewportWidth - 24); left = Math.max(12, viewportWidth - width - 12); }
       const maxHeight = Math.min(460, bottom - 12), top = Math.max(12, Math.min(anchor.top, bottom - maxHeight));
       const css = `left:${left}px;top:${top}px;width:${width}px;max-height:${maxHeight}px`;
-      if (detail.style.cssText !== css) detail.style.cssText = css;
+      if (detailCss !== css) { detail.style.cssText = css; detailCss = css; }
     }
     function renderDetail() {
       const agent = data.find(item => item.id === detailId);
       if (!agent || getThreadId() !== threadId || document.hidden) { hideDetail(); return; }
-      setText(detailTitle, agent.name || agent.nickname || '子代理');
+      const sequence = rows.get(agent.id)?.sequence.textContent;
+      setText(detailTitle, (sequence ? sequence + ' ' : '') + taskTitle(agent));
       setText(detailMeta, [agent.nickname, agent.model || '未知', statuses[agent.status] || '未知'].filter(Boolean).join(' · '));
       setText(detailNotice, workError ? (work ? '同步中' : '暂时无法读取，请稍后重试。') : !work ? '正在读取工作内容…' : work.syncing ? '同步中' : work.truncated ? '内容较长，已显示部分内容。' : '');
-      setText(workFields.task, work?.task || (work ? '暂无任务说明' : ''));
+      const task = work?.task && !/^gAAAA[A-Za-z0-9_-]{60,}={0,2}$/.test(work.task.trim()) ? work.task : '';
+      setText(workFields.task, task || (work ? work.taskUnavailable ? '任务内容暂不可读取' : '暂无任务说明' : ''));
       setText(workFields.progress, work?.progress || (work ? '暂无进展记录' : ''));
       setText(workFields.result, work?.result || (work ? '尚无执行结果' : ''));
-      detail.hidden = false; placeDetail();
+      setHidden(detail, false); placeDetail();
     }
     async function pollDetail() {
       if (!detailId || detailPending || document.hidden) return;
@@ -196,7 +222,7 @@
         const key = owner + ':' + id; workCache.delete(key); workCache.set(key, result);
         if (workCache.size > 12) workCache.delete(workCache.keys().next().value);
       } catch { if (!disposed && epoch === detailEpoch) workError = true; }
-      finally { if (detailPending === job) detailPending = null; if (!disposed && epoch === detailEpoch && detailId) renderDetail(); }
+      finally { if (detailPending === job) detailPending = null; if (!disposed && epoch === detailEpoch && detailId) render(); }
     }
     function showDetail(id) {
       clearHover(); clearClose();
@@ -223,63 +249,71 @@
     function position() {
       const editor = [...document.querySelectorAll('[data-codex-composer]')].find(node => node.getClientRects().length && !node.closest('[inert]'));
       const frame = editor?.closest('[data-app-shell-thread-edge-divider]') || [...document.querySelectorAll('.app-shell-main-content-frame'), ...document.querySelectorAll('[data-app-shell-main-content-layout]')].find(node => node.getClientRects().length);
-      if (!frame || !frame.getClientRects().length) { panel.hidden = true; return; }
+      if (!frame || !frame.getClientRects().length) { setHidden(panel, true); return; }
       const rect = frame.getBoundingClientRect();
       const top = Math.max(8, rect.top + 54), left = Math.max(0, rect.left);
       const composer = editor?.closest('[data-composer-surface-variant]') || editor;
       const bottom = composer?.getClientRects().length ? composer.getBoundingClientRect().top - 12 : root.innerHeight - 16;
       const height = Math.min(380, bottom - top);
-      if (height < 50 || rect.width < 120) { panel.hidden = true; return; }
+      if (height < 50 || rect.width < 120) { setHidden(panel, true); return; }
       const width = Math.min(180, rect.width);
       const css = `left:${left}px;top:${top}px;width:${width}px;--bc-subagent-list-height:${Math.max(0, height - 42)}px`;
-      if (panel.style.cssText !== css) panel.style.cssText = css;
-      panel.hidden = !data.length;
-      // Always measure the expanded footprint. Using its collapsed height would
-      // alternate between safe/open and obstructing/closed on every refresh.
-      list.hidden = false;
-      const measured = panel.getBoundingClientRect();
-      const expandedHeight = Math.min(height, measured.height || height);
+      if (panelCss !== css) { panel.style.cssText = css; panelCss = css; }
+      setHidden(panel, !data.length);
+      // Folded lists retain an invisible layout box, so measuring never changes
+      // their visibility or triggers pointer leave/enter events during polling.
+      const expandedHeight = Math.min(height, header.getBoundingClientRect().height + list.getBoundingClientRect().height + 2);
       const area = { left: left - 4, right: left + width + 4, top: top - 4, bottom: top + expandedHeight + 4 };
       const blocked = getContentRects(frame, area).filter(box => intersects(box, area));
-      const signature = [threadId, left, top, width, expandedHeight, rect.width, rect.height, bottom,
-        ...blocked.flatMap(box => [box.left, box.top, box.right, box.bottom])].map(value => typeof value === 'number' ? Math.round(value / 4) : value).join(':');
+      const signature = [threadId, left, top, width, expandedHeight, rect.width, rect.height, bottom, blocked.length > 0]
+        .map(value => typeof value === 'number' ? Math.round(value / 4) : value).join(':');
       const manual = memory.get(threadId);
       folded = manual?.signature === signature ? manual.folded : blocked.length > 0;
       if (manual && manual.signature !== signature) memory.delete(threadId);
       layoutSignature = signature;
-      list.hidden = folded;
+      setHidden(list, folded);
       const active = data.filter(a => a.status === 'running' || a.status === 'starting').length;
       const completed = data.filter(a => a.status === 'completed').length;
       setText(runningCount, '进行中 ' + active); setText(completedCount, '已完成 ' + completed);
       const label = (folded ? '展开子代理' : '收起子代理') + '，进行中 ' + active + '，已完成 ' + completed;
       attr(toggle, 'aria-label', label); attr(toggle, 'title', label); attr(toggle, 'aria-expanded', !folded);
+      followLatest();
       if (detailId) { if (folded) hideDetail(); else renderDetail(); }
     }
     function render() {
       if (disposed) return;
-      if (document.hidden || !threadId || getThreadId() !== threadId || !data.length) { panel.hidden = true; hideDetail(); return; }
-      setText(notice, syncing ? '同步中' : '');
-      const ordered = [...data].sort((a, b) => Number(['running', 'starting'].includes(b.status)) - Number(['running', 'starting'].includes(a.status)) || (a.startedAt || 0) - (b.startedAt || 0) || a.id.localeCompare(b.id));
+      if (document.hidden || !threadId || getThreadId() !== threadId || !data.length) { setHidden(panel, true); hideDetail(); return; }
+      // Short successful discovery passes are routine background work. Avoid a
+      // blinking status and never let its appearance change the card's height.
+      if (syncing) { if (syncSince === null) syncSince = now(); } else syncSince = null;
+      const status = listError || syncSince !== null && now() - syncSince >= 1500 ? '同步中' : '';
+      setText(notice, status); attr(notice, 'aria-label', status); attr(notice, 'title', status);
+      // Creation order keeps both numbering and scroll anchors stable when a
+      // running agent completes. New agents belong at the bottom of the list.
+      const ordered = [...data].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0) || a.id.localeCompare(b.id));
       const ids = new Set();
       for (let index = 0; index < ordered.length; index++) {
         const agent = ordered[index]; ids.add(agent.id);
         let row = rows.get(agent.id);
         if (!row) {
           const node = document.createElement('article'); node.className = 'bc-subagent-row';
+          node.setAttribute('data-subagent-id', agent.id);
           node.setAttribute('tabindex', '0'); node.setAttribute('aria-controls', detail.id); node.setAttribute('aria-expanded', 'false');
           node.addEventListener('mouseenter', () => queueDetail(agent.id)); node.addEventListener('mouseleave', leaveDetail);
           node.addEventListener('focus', () => showDetail(agent.id)); node.addEventListener('blur', () => { if (!detailPointer) leaveDetail(); });
           node.addEventListener('keydown', event => { if (event.key === 'Escape') hideDetail(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showDetail(agent.id); } });
           const line = document.createElement('div'); line.className = 'bc-subagent-line';
+          const sequence = document.createElement('span'); sequence.className = 'bc-subagent-sequence';
           const name = document.createElement('span'); name.className = 'bc-subagent-name';
           const state = document.createElement('span'); state.className = 'bc-subagent-state';
           const meta = document.createElement('span'); meta.className = 'bc-subagent-meta';
           const footer = document.createElement('div'); footer.className = 'bc-subagent-footer';
           const nickname = document.createElement('span'), elapsed = document.createElement('span');
-          line.append(name, state); footer.append(nickname, elapsed); node.append(line, meta, footer);
-          row = { node, name, state, meta, nickname, elapsed }; rows.set(agent.id, row);
+          line.append(sequence, name, state); footer.append(nickname, elapsed); node.append(line, meta, footer);
+          row = { node, sequence, name, state, meta, nickname, elapsed }; rows.set(agent.id, row);
         }
-        const depth = Math.max(0, (agent.depth || 1) - 1), name = agent.name || agent.nickname || '子代理';
+        const depth = Math.max(0, (agent.depth || 1) - 1), name = taskTitle(agent);
+        setText(row.sequence, String(index + 1) + '.');
         attr(row.node, 'aria-label', '查看 ' + name + ' 的工作内容');
         setText(row.name, (depth ? '↳ ' : '') + name); attr(row.name, 'title', name + (depth ? '（第 ' + (depth + 1) + ' 级子代理）' : ''));
         attr(row.node, 'style', '--bc-subagent-depth:' + Math.min(depth, 5));
@@ -304,8 +338,8 @@
         const result = await api('/api/dev/subagents?threadId=' + encodeURIComponent(id), { timeoutMs: 15000 });
         if (disposed || epoch !== generation || id !== threadId || getThreadId() !== id) return;
         if (result?.threadId !== id || !Array.isArray(result.agents)) throw Error('invalid_subagents');
-        data = result.agents; syncing = !!result.syncing; receivedAt = now(); observedAt = result.observedAt || receivedAt;
-      } catch { if (!disposed && epoch === generation) syncing = true; }
+        data = result.agents; syncing = !!result.syncing; listError = false; receivedAt = now(); observedAt = result.observedAt || receivedAt;
+      } catch { if (!disposed && epoch === generation) { syncing = true; listError = true; } }
       finally { if (pending === job) pending = null; if (!disposed && epoch === generation) render(); }
     }
     function sync() {
@@ -313,25 +347,26 @@
       const id = getThreadId();
       if (id !== threadId) {
         hideDetail();
-        threadId = id; generation++; pending = null; lastPoll = -Infinity; data = []; syncing = false;
-        for (const row of rows.values()) row.node.remove(); rows.clear(); panel.hidden = true;
+        threadId = id; generation++; pending = null; lastPoll = -Infinity; data = []; syncing = false; listError = false; syncSince = null; followBottom = true;
+        for (const row of rows.values()) row.node.remove(); rows.clear(); setHidden(panel, true);
       }
-      if (document.hidden || !threadId) { panel.hidden = true; hideDetail(); return; }
+      if (document.hidden || !threadId) { setHidden(panel, true); hideDetail(); return; }
       render();
       if (!pending && now() - lastPoll >= 1000) void poll(threadId, generation);
       if (detailId && !detailPending && now() - detailPollAt >= 1000) void pollDetail();
     }
     function visible() { lastPoll = -Infinity; sync(); }
+    function onDocumentScroll(event) { if (event.target !== list && !detail.contains?.(event.target)) sync(); }
     document.addEventListener('visibilitychange', visible);
     root.addEventListener('resize', sync); root.addEventListener('popstate', sync);
-    document.addEventListener('scroll', sync, true);
+    document.addEventListener('scroll', onDocumentScroll, true);
     const timer = root.setInterval(sync, 1000);
     const controller = { sync, destroy() {
       if (disposed) return; disposed = true; generation++;
       hideDetail(); workCache.clear();
       root.clearInterval(timer); document.removeEventListener('visibilitychange', visible);
       root.removeEventListener('resize', sync); root.removeEventListener('popstate', sync);
-      document.removeEventListener('scroll', sync, true);
+      document.removeEventListener('scroll', onDocumentScroll, true);
       panel.remove(); detail.remove(); style.remove(); rows.clear();
       if (root.__boostCodexSubagentMonitor__ === controller) delete root.__boostCodexSubagentMonitor__;
     } };

@@ -7,8 +7,10 @@ const vm = require('node:vm');
 class Element {
   constructor(tag, owner) {
     this.tagName = tag; this.owner = owner; this.children = []; this.attributes = {}; this.listeners = {};
-    this.style = { cssText: '' }; this.hidden = false; this._text = '';
+    this.style = { _css: '', writes: 0, normalize: false, get cssText() { return this.normalize ? this._css.replace(/;/g, '; ') : this._css; }, set cssText(value) { this.writes++; this._css = value; } }; this.hidden = false; this._text = '';
   }
+  get hidden() { return this._hidden; }
+  set hidden(value) { this._hidden = value; this.hiddenWrites = (this.hiddenWrites || 0) + 1; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   set textContent(value) { this._text = String(value); for (const child of [...this.children]) child.remove(); }
   get isConnected() { return !!this.root || !!this.parentElement?.isConnected; }
@@ -72,7 +74,7 @@ function fixture() {
 }
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 const agent = (id, status, extras = {}) => ({ id, name: id, nickname: '昵称 ' + id, status, model: 'gpt-6.1-sol', effort: 'high', depth: 1, startedAt: 1000, elapsedMs: 0, runningSince: null, ...extras });
-const name = row => row.querySelector('.bc-subagent-name').textContent;
+const name = row => row.getAttribute('data-subagent-id');
 const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].textContent;
 
 (async () => {
@@ -95,13 +97,14 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   assert.equal(live.toggle.querySelector('.bc-subagent-count-completed').textContent, '已完成 1');
   assert.equal(live.toggle.querySelector('.bc-subagent-disclosure').getAttribute('aria-hidden'), 'true');
   assert.match(live.toggle.getAttribute('aria-label'), /^收起子代理/);
-  assert.deepEqual(live.rows().map(name), ['first', 'later', 'done', 'interrupted'], 'active agents precede finished agents, then use start time');
+  assert.deepEqual(live.rows().map(name), ['done', 'interrupted', 'first', 'later'], 'creation order keeps newest agents at the bottom regardless of status');
+  assert.deepEqual(live.rows().map(row=>row.querySelector('.bc-subagent-sequence').textContent),['1.','2.','3.','4.']);
   assert.match(live.panel.style.cssText, /left:240px;top:94px;width:180px/);
-  assert.equal(elapsed(live.rows()[1]), '22秒', 'running duration adds completed intervals and the server-observed active interval');
-  assert.equal(elapsed(live.rows()[2]), '1分5秒');
+  assert.equal(elapsed(live.rows()[3]), '22秒', 'running duration adds completed intervals and the server-observed active interval');
+  assert.equal(elapsed(live.rows()[0]), '1分5秒');
   live.advance(2000);
-  assert.equal(elapsed(live.rows()[1]), '24秒', 'the active interval advances by client time between responses');
-  assert.equal(elapsed(live.rows()[2]), '1分5秒', 'finished duration does not continue ticking');
+  assert.equal(elapsed(live.rows()[3]), '24秒', 'the active interval advances by client time between responses');
+  assert.equal(elapsed(live.rows()[0]), '1分5秒', 'finished duration does not continue ticking');
   live.calls.at(-1).reject(new Error('private server path')); await flush();
   assert.equal(live.notice.textContent, '同步中', 'poll errors report synchronization without exposing raw errors');
   assert.equal(live.rows().length, 4, 'poll errors preserve the last good data');
@@ -127,10 +130,16 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   const obstruction = { left: 300, right: 600, top: 340, bottom: 370 };
   adaptive.setContent([obstruction]); adaptive.complete([agent('adaptive', 'running')]); await flush();
   assert.equal(adaptive.list.hidden, true, 'content within the expanded footprint automatically folds the list');
+  const foldedWrites=adaptive.list.hiddenWrites,panelStyleWrites=adaptive.panel.style.writes;
+  adaptive.panel.style.normalize=true;
   adaptive.instance.sync(); adaptive.instance.sync();
   assert.equal(adaptive.list.hidden, true, 'measuring expanded geometry avoids collapse/expand oscillation');
+  assert.equal(adaptive.list.hiddenWrites,foldedWrites,'refresh measures a folded list without temporary visibility toggles');
+  assert.equal(adaptive.panel.style.writes,panelStyleWrites,'browser-normalized CSS does not cause repeated style assignments');
   adaptive.toggle.dispatch('click'); assert.equal(adaptive.list.hidden, false, 'click can open an obstructing panel');
   adaptive.instance.sync(); assert.equal(adaptive.list.hidden, false, 'manual expansion survives ordinary refresh with the same layout');
+  adaptive.setContent([{...obstruction,top:obstruction.top+8,bottom:obstruction.bottom+8}]);adaptive.instance.sync();
+  assert.equal(adaptive.list.hidden,false,'streamed text moving within the same obstructed region does not revoke a manual expansion');
   adaptive.setContent([]); adaptive.document.dispatch('scroll'); assert.equal(adaptive.list.hidden, false, 'scrolling into clear space automatically expands');
   adaptive.setContent([obstruction]); adaptive.document.dispatch('scroll');
   assert.equal(adaptive.list.hidden, true, 'returning to obstructing content automatically folds again');
@@ -143,6 +152,8 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   adaptive.frame.rect = { top: 40, left: 240, width: 700, height: 800 }; adaptive.window.dispatch('resize');
   assert.equal(adaptive.list.hidden, true, 'a resized layout reevaluates a previous manual expansion');
   adaptive.instance.destroy(); assert.equal((adaptive.document.listeners.scroll || []).length, 0);
+  const routine=fixture();routine.complete([agent('routine','completed')],{syncing:true});await flush();assert.equal(routine.notice.textContent,'','routine background catch-up has no immediate visible status');
+  routine.advance(1000);routine.complete([agent('routine','completed')]);await flush();assert.equal(routine.notice.textContent,'','one-poll discovery passes never flash a sync status');routine.instance.destroy();
 
   const stale = fixture();
   stale.setThread('thread-b'); stale.instance.sync();
@@ -168,8 +179,8 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   const row = unusual.rows()[0];
   assert.equal(row.querySelector('.bc-subagent-state').textContent, '未知');
   assert.equal(row.querySelector('.bc-subagent-meta').textContent, '未知 · 未知');
-  assert.equal(name(row), '↳ ' + longTitle, 'long titles remain literal text');
-  assert.equal(row.querySelector('.bc-subagent-name').getAttribute('title'), longTitle + '（第 12 级子代理）');
+  assert.equal(row.querySelector('.bc-subagent-name').textContent, '↳ 子代理任务', 'raw technical names never replace the Chinese task label');
+  assert.equal(row.querySelector('.bc-subagent-name').getAttribute('title'), '子代理任务（第 12 级子代理）');
   assert.equal(row.getAttribute('style'), '--bc-subagent-depth:5', 'deep hierarchy indentation stays bounded');
   assert.equal(unusual.document.querySelectorAll('img').length, 0, 'agent content cannot create markup');
   unusual.advance(1000); unusual.complete([], { syncing: true }); await flush();
@@ -227,7 +238,7 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   hover.list.rect = { left: 252, right: 472, top: 130, bottom: 380, width: 220, height: 250 };
   for (const [index, row] of hover.rows().entries()) row.rect = { left: 260, right: 464, top: 140 + index * 80, bottom: 210 + index * 80, width: 204, height: 70 };
   const workCalls = () => hover.calls.filter(call => call.route.includes('/work?'));
-  const reply = (call, id, fields = {}) => call.resolve({ threadId: 'thread-a', agentId: id, task: '核对接口权限', progress: '正在检查返回结果', result: '', syncing: false, truncated: false, ...fields });
+  const reply = (call, id, fields = {}) => call.resolve({ threadId: 'thread-a', agentId: id, title: '核对接口', task: '核对接口权限', progress: '正在检查返回结果', result: '', syncing: false, truncated: false, ...fields });
   hover.rows()[0].dispatch('mouseenter'); hover.advance(249); assert.equal(workCalls().length, 0, 'brief pointer crossings do not fetch work');
   hover.rows()[0].dispatch('mouseleave'); hover.advance(1); assert.equal(workCalls().length, 0);
   hover.rows()[0].dispatch('mouseenter'); hover.advance(250);
@@ -238,6 +249,8 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   reply(workCalls()[1], 'work-b', { result: '<img src=x onerror=alert(1)>完成权限核对' }); await flush();
   reply(workCalls()[0], 'work-a', { task: '不得出现的过期内容' }); await flush();
   assert.ok(!detail.textContent.includes('不得出现的过期内容')); assert.ok(detail.textContent.includes('完成权限核对'));
+  assert.equal(detail.querySelector('.bc-subagent-detail-title').textContent,'2. 核对接口');
+  assert.equal(hover.rows()[1].querySelector('.bc-subagent-name').textContent,'核对接口','list and detail share one Chinese task title');
   assert.equal(detail.querySelectorAll('img').length, 0, 'work excerpts remain literal text');
   hover.rows()[1].dispatch('mouseleave'); detail.dispatch('mouseenter'); hover.advance(300);
   assert.equal(detail.hidden, false, 'moving from a row into the card keeps it available for reading/copying');
@@ -254,5 +267,20 @@ const elapsed = row => row.querySelector('.bc-subagent-footer').children[1].text
   hover.rows()[0].dispatch('focus'); hover.toggle.dispatch('click'); assert.equal(detail.hidden, true, 'collapsing the list closes its card');
   hover.toggle.dispatch('click'); hover.rows()[0].dispatch('focus'); hover.document.hidden = true; hover.document.dispatch('visibilitychange'); assert.equal(detail.hidden, true);
   hover.instance.destroy(); assert.equal(hover.document.querySelector('.bc-subagent-detail'), null); assert.equal(hover.timers.size, 0);
+  const opaque=fixture();opaque.complete([agent('english_task_name','completed')]);await flush();opaque.rows()[0].dispatch('focus');
+  opaque.calls.at(-1).resolve({threadId:'thread-a',agentId:'english_task_name',title:'english_task_name',task:'gAAAAA'+'x'.repeat(100),taskUnavailable:true,progress:'正确进展',result:'正确结果'});await flush();
+  const opaqueDetail=opaque.document.querySelector('.bc-subagent-detail');
+  assert.equal(opaqueDetail.querySelector('.bc-subagent-detail-title').textContent,'1. 子代理任务');assert.ok(opaqueDetail.textContent.includes('任务内容暂不可读取'));assert.ok(!opaqueDetail.textContent.includes('gAAAAA'));assert.ok(opaqueDetail.textContent.includes('正确进展'));assert.ok(opaqueDetail.textContent.includes('正确结果'));opaque.instance.destroy();
+  const scrolling=fixture();scrolling.list.scrollHeight=900;scrolling.list.clientHeight=200;
+  const entries=Array.from({length:10},(_,i)=>agent('entry-'+String(i).padStart(2,'0'),'running',{startedAt:1000+i}));
+  scrolling.complete(entries);await flush();assert.equal(scrolling.list.scrollTop,700,'initial list follows the newest agent');
+  scrolling.advance(1000);entries.push(agent('new-one','running',{startedAt:2000}));scrolling.list.scrollHeight=1000;scrolling.complete(entries);await flush();assert.equal(scrolling.list.scrollTop,800);
+  scrolling.list.scrollTop=300;scrolling.document.dispatch('scroll',{target:scrolling.list});assert.equal(scrolling.list.scrollTop,300,'document capture must not snap a manual scroll back before the list handler');scrolling.list.dispatch('scroll');
+  scrolling.advance(1000);entries.push(agent('new-two','running',{startedAt:2100}));scrolling.list.scrollHeight=1100;scrolling.complete(entries);await flush();assert.equal(scrolling.list.scrollTop,300,'new agents do not interrupt reading older entries');
+  scrolling.list.scrollTop=900;scrolling.list.dispatch('scroll');scrolling.advance(1000);entries[0]={...entries[0],status:'completed'};entries.push(agent('new-three','running',{startedAt:2200}));scrolling.list.scrollHeight=1200;scrolling.complete(entries);await flush();assert.equal(scrolling.list.scrollTop,1000,'returning to the bottom resumes automatic following');
+  assert.equal(name(scrolling.rows()[0]),'entry-00');assert.equal(scrolling.rows()[0].querySelector('.bc-subagent-sequence').textContent,'1.');assert.equal(scrolling.rows().at(-1).querySelector('.bc-subagent-sequence').textContent,'13.');
+  scrolling.toggle.dispatch('click');scrolling.list.scrollHeight=1300;scrolling.instance.sync();assert.equal(scrolling.list.scrollTop,1000,'folded lists do not scroll their invisible measurement box');scrolling.toggle.dispatch('click');assert.equal(scrolling.list.scrollTop,1100,'reopening catches up when following');
+  scrolling.list.scrollTop=250;scrolling.list.dispatch('scroll');scrolling.toggle.dispatch('click');scrolling.toggle.dispatch('click');assert.equal(scrolling.list.scrollTop,250,'manual reading survives collapse and reopen');
+  scrolling.setThread('another-chat');scrolling.instance.sync();scrolling.list.scrollHeight=500;scrolling.complete([agent('another','running')]);await flush();assert.equal(scrolling.list.scrollTop,300,'another conversation defaults to latest');scrolling.instance.destroy();
   console.log('PASS: subagent monitor visibility, scoped polling, status/order, cumulative timing, adaptive occlusion/manual folding, stale/error responses, hierarchy, native composer identity and singleton lifecycle (mock data only)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

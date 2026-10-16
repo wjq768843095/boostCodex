@@ -10,7 +10,7 @@ const call=(time,name,args,id)=>event(time,'response_item',{type:'function_call'
 const output=(time,id,data)=>event(time,'response_item',{type:'function_call_output',call_id:id,output:JSON.stringify(data)});
 let counter=0;
 function fixture(limits={}){
- const home=path.join(temporary,String(++counter));const monitor=createMonitor({codexHome:home}),reader=createReader({codexHome:home,monitor,limits});
+ const home=path.join(temporary,String(++counter));const monitor=createMonitor({codexHome:home}),reader=createReader({codexHome:home,descriptionHome:home,monitor,limits});
  function file(id,parent,events=[],extra={}){
   const dir=path.join(home,extra.archived?'archived_sessions':'sessions','2026','10','16');fs.mkdirSync(dir,{recursive:true});
   const filename=path.join(dir,`rollout-${id}.jsonl`),agentPath=extra.agentPath||'/root/selected';
@@ -36,7 +36,7 @@ function fixture(limits={}){
    msg(1200,'Latest progress'),msg(1300,'Original final answer','final_answer')]);
   f.file(ids[2],ids[3],[msg(1400,'SECRET-OTHER-ROOT')]);
   f.file(ids[4],ids[0],[event(1003,'response_item',{type:'agent_message',recipient:'/root/second'}),msg(1250,'Second selected agent','final_answer')],{agentPath:'/root/second'});
-  let result=await f.get();assert.deepEqual(result,{threadId:ids[0],agentId:ids[1],task:'Actual assigned task',progress:'Latest progress',result:'Original final answer',updatedAt:1300,syncing:false,truncated:false});
+  let result=await f.get();assert.deepEqual(result,{threadId:ids[0],agentId:ids[1],task:'Actual assigned task',title:'子代理任务',taskUnavailable:false,progress:'Latest progress',result:'Original final answer',updatedAt:1300,syncing:false,truncated:false});
   assert.equal(JSON.stringify(result).includes('SECRET'),false);
   assert.equal((await f.get(ids[0],ids[4])).result,'Second selected agent','adjacent hovers reuse bounded filename candidates without a rescan');
   await assert.rejects(f.get(ids[0],ids[2]),{status:403});await assert.rejects(f.get('../escape',ids[1]),{status:400});await assert.rejects(f.get(ids[0],'bad'),{status:400});await assert.rejects(f.get(ids[0],ids[0]),{status:403});
@@ -68,6 +68,19 @@ function fixture(limits={}){
   const bounded=fixture({task:16,progress:12,result:20,bytes:2048});bounded.standard([msg(1100,'p'.repeat(100)),msg(1200,'r'.repeat(100),'final_answer')],[call(1050,'followup_task',{target:'selected',message:'t'.repeat(100)},'bound'),output(1051,'bound',{ok:true})]);
   for(let i=0;i<20;i++){result=await bounded.get();if(!result.syncing)break;}
   assert.equal(result.syncing,false);assert.equal(result.task.length,16);assert.equal(result.progress.length,12);assert.equal(result.result.length,20);assert.equal(result.truncated,true);
+  // Encrypted transport is never presented as assignment prose. A local
+  // recovery is scoped to both native IDs and the exact assignment fingerprint.
+  const {fingerprint}=require('../src/modules/subagent-task-description.cjs');
+  const encrypted='gAAAAA'+'x'.repeat(100),encoded=fixture();
+  const encodedFiles=encoded.standard([msg(1200,'Progress stays intact'),msg(1300,'Result stays intact','final_answer')],[call(1050,'followup_task',{target:'selected',message:encrypted},'encrypted'),output(1051,'encrypted',{ok:true})]);
+  result=await encoded.get();assert.equal(result.task,'');assert.equal(result.taskUnavailable,true);assert.equal(result.progress,'Progress stays intact');assert.equal(result.result,'Result stays intact');
+  fs.writeFileSync(path.join(encoded.home,'subagent-task-descriptions.json'),JSON.stringify({[`${ids[0]}:${ids[1]}`]:{assignmentHash:fingerprint(encrypted),title:'核对接口',task:'核对当前接口的参数与权限范围。'}}));
+  result=await encoded.get();assert.equal(result.task,'核对当前接口的参数与权限范围。');assert.equal(result.title,'核对接口');assert.equal(result.taskUnavailable,false);assert.equal(result.result,'Result stays intact');
+  assert.equal((await encoded.monitor.getSubagents(ids[0])).agents.find(a=>a.id===ids[1]).title,result.title,'list and work endpoints reuse the same resolved Chinese title');
+  encoded.append(encodedFiles.parent,[call(2000,'followup_task',{target:'selected',message:encrypted+'y'},'new-encrypted'),output(2001,'new-encrypted',{ok:true})]);
+  result=await encoded.get();assert.equal(result.task,'');assert.equal(result.taskUnavailable,true,'an old recovered task cannot replace a new encrypted assignment');
+  const addressed=fixture();addressed.standard([event(1100,'response_item',{type:'agent_message',author:'/root',recipient:'/root/selected',content:[{type:'input_text',text:'Message Type: NEW_TASK\nTask name: /root/selected\nSender: /root\nPayload:\n核对真实任务内容'}]})],[call(1050,'followup_task',{target:'selected',message:encrypted},'encoded'),output(1051,'encoded',{ok:true})]);
+  assert.equal((await addressed.get()).task,'核对真实任务内容');
   // Existing files disappearing yield a retry response; no unrelated fallback.
   fs.unlinkSync(files.child);await assert.rejects(f.get(),{status:503});
   // Exercise the real extension through HTTP, including status mapping and
