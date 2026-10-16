@@ -1,4 +1,5 @@
 "use strict";
+// Modified for boostCodex from the upstream desktop integration; see LICENSE and NOTICE.
 var boostCodexInjected = (() => {
   function isAuxiliaryDesktopUrl(value) {
     try {

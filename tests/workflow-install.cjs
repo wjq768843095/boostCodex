@@ -43,7 +43,8 @@ function legacyInstallation(options) {
 }
 try {
   put(path.join(repoRoot, 'src/skills/workflow-common.md'), fs.readFileSync(path.resolve(__dirname, '../src/skills/workflow-common.md')));
-  for (const name of SKILLS) put(path.join(repoRoot, 'src/skills', name, 'SKILL.md'), fs.readFileSync(path.resolve(__dirname, '../src/skills', name, 'SKILL.md')));
+  // A Windows checkout must preserve the explicit-invocation frontmatter guard.
+  for (const name of SKILLS) put(path.join(repoRoot, 'src/skills', name, 'SKILL.md'), fs.readFileSync(path.resolve(__dirname, '../src/skills', name, 'SKILL.md'), 'utf8').replace(/\r?\n/g, '\r\n'));
   put(path.join(repoRoot, 'integration/workflow-service.cjs'), '// fixture stable entry\n');
   const codex = path.join(userHome, '.codex/config.toml'); const claude = path.join(userHome, '.claude.json');
   const originalToml = 'model = "existing"\n[mcp_servers.unrelated]\ncommand = "kept"\nargs = ["private-test-value"]\n';

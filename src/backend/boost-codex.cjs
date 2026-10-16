@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Modified for boostCodex from Better Codex v0.4.18; see LICENSE and NOTICE.
 "use strict";
 require('../modules/brand.cjs').normalizeEnvironment();
 require("../modules/runtime-warnings.cjs").installSQLiteWarningFilter();

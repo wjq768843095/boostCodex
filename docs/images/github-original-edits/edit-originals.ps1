@@ -1,11 +1,13 @@
+param(
+ [Parameter(Mandatory = $true)]
+ [ValidateCount(3, 3)]
+ [string[]]$SourceImages
+)
+
 Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 $outDir = $PSScriptRoot
-$sources = @(
- 'C:\Users\admin\AppData\Local\Temp\codex-clipboard-f137027f-c30c-4ef2-b723-e6f40315dd9a.png',
- 'C:\Users\admin\AppData\Local\Temp\codex-clipboard-d4185dbb-1137-4c4f-891b-abc960e5933a.png',
- 'C:\Users\admin\AppData\Local\Temp\codex-clipboard-dd608d3d-318b-48f4-97c5-ec2c0af5534a.png'
-)
+$sources = $SourceImages
 function Fill($g,$x,$y,$w,$h,$color) {
  $b = [System.Drawing.SolidBrush]::new([System.Drawing.ColorTranslator]::FromHtml($color))
  $g.FillRectangle($b,$x,$y,$w,$h); $b.Dispose()

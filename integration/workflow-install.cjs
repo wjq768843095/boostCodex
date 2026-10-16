@@ -29,8 +29,8 @@ function safeFile(file) {
 }
 function renderSkill(repoRoot, name, client) {
   const prefix = 'mcp__boost_codex_workflow__';
-  const common = fs.readFileSync(path.join(repoRoot, 'src/skills/workflow-common.md'), 'utf8');
-  let source = fs.readFileSync(path.join(repoRoot, 'src/skills', name, 'SKILL.md'), 'utf8');
+  const common = fs.readFileSync(path.join(repoRoot, 'src/skills/workflow-common.md'), 'utf8').replace(/\r\n/g, '\n');
+  let source = fs.readFileSync(path.join(repoRoot, 'src/skills', name, 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
   source = source.replace('{{COMMON_WORKFLOW_RULES}}', common).replaceAll('{{CLIENT}}', client).replaceAll('{{TOOL_PREFIX}}', prefix);
   if (/\{\{[A-Z_]+\}\}/.test(source)) throw Error('Unresolved skill template: ' + name);
   if (client === 'claude') source = source.replace(/\n---\n/, '\ndisable-model-invocation: true\n---\n');

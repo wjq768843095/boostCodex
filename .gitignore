@@ -3,4 +3,12 @@ node_modules/
 *.log
 *.db*
 *.png
+!docs/images/github-original-edits/*.png
 .env*
+*.pem
+*.key
+*.p12
+*.pfx
+*.sql
+*.sqlite*
+coverage/
